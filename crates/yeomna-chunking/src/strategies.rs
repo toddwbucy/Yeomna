@@ -150,6 +150,10 @@ impl ChunkingStrategy for SlidingWindowChunking {
 
 /// Splits text on sentence boundaries, grouping sentences into chunks
 /// that don't exceed `max_chunk_size` characters.
+///
+/// Sizes are measured in Unicode characters over the full chunk span,
+/// including the whitespace between sentences. A single sentence longer
+/// than `max_chunk_size` stays whole rather than being split mid-sentence.
 pub struct SentenceChunking {
     /// Maximum characters per chunk.
     pub max_chunk_size: usize,
@@ -180,30 +184,49 @@ impl ChunkingStrategy for SentenceChunking {
         let mut chunks = Vec::new();
         let mut current_start: usize = sentences[0].0;
         let mut current_end: usize = sentences[0].0;
+        // Characters in `text[current_start..current_end]`, tracked
+        // incrementally so the loop stays linear in document length.
+        let mut current_chars: usize = 0;
 
         for &(sent_start, sent_end) in &sentences {
-            let current_len = current_end - current_start;
-            let sent_len = sent_end - sent_start;
+            let sent_chars = text[sent_start..sent_end].chars().count();
 
-            if current_len > 0 && current_len + sent_len > self.max_chunk_size {
-                // Flush current chunk.
-                chunks.push(TextChunk {
-                    text: text[current_start..current_end].to_string(),
-                    start_char: current_start,
-                    end_char: current_end,
-                    chunk_index: chunks.len(),
-                    total_chunks: 0,
-                });
-                current_start = sent_start;
+            if current_chars > 0 {
+                // Candidate length if this sentence joins the current chunk:
+                // the full span in characters, including the whitespace gap
+                // between the current chunk and this sentence.
+                let gap_chars = text[current_end..sent_start].chars().count();
+                let combined = current_chars + gap_chars + sent_chars;
+
+                if combined > self.max_chunk_size {
+                    // Flush current chunk.
+                    chunks.push(TextChunk {
+                        text: text[current_start..current_end].to_string(),
+                        start_char: current_start,
+                        end_char: current_end,
+                        chunk_index: chunks.len(),
+                        total_chunks: 0,
+                    });
+                    current_start = sent_start;
+                    current_chars = sent_chars;
+                } else {
+                    current_chars = combined;
+                }
+            } else {
+                current_chars = sent_chars;
             }
             current_end = sent_end;
         }
 
         // Flush remaining text.
         if current_end > current_start {
-            // Merge tiny trailing chunk into previous if possible.
-            let remaining_len = current_end - current_start;
-            if remaining_len < self.min_chunk_size && !chunks.is_empty() {
+            // Merge a tiny trailing chunk into the previous one, but only
+            // when the merged chunk still respects `max_chunk_size`.
+            let merge_ok = current_chars < self.min_chunk_size
+                && chunks.last().is_some_and(|last| {
+                    text[last.start_char..current_end].chars().count() <= self.max_chunk_size
+                });
+            if merge_ok {
                 let last = chunks.last_mut().unwrap();
                 last.text = text[last.start_char..current_end].to_string();
                 last.end_char = current_end;
@@ -377,15 +400,67 @@ mod tests {
     }
 
     #[test]
-    fn test_sentence_chunking_tiny_trailing_merged() {
-        // Short trailing text should be merged into previous chunk.
+    fn test_sentence_chunking_tiny_trailing_not_merged_over_max() {
+        // "OK." (3 chars) is below min_chunk_size, but merging it would make
+        // the previous chunk 32 chars, over max_chunk_size = 30. The merge
+        // must be refused and the tiny trailing chunk kept separate.
         let text = "A long enough sentence here. OK.";
         let chunker = SentenceChunking {
             max_chunk_size: 30,
             min_chunk_size: 10,
         };
         let chunks = chunker.chunk(text);
-        // "OK." is only 3 chars < min_chunk_size, merged into previous
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[1].text, "OK.");
+        for c in &chunks {
+            assert!(c.text.chars().count() <= 30);
+        }
+    }
+
+    #[test]
+    fn test_sentence_chunking_tiny_trailing_merged_within_max() {
+        // Same text with a larger max: the merge fits, so it happens.
+        let text = "A long enough sentence here. OK.";
+        let chunker = SentenceChunking {
+            max_chunk_size: 40,
+            min_chunk_size: 10,
+        };
+        let chunks = chunker.chunk(text);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, text);
+    }
+
+    #[test]
+    fn test_sentence_chunking_counts_chars_not_bytes() {
+        // Two sentences, 11 characters over the combined span but 19 bytes.
+        // A max of 12 fits the character count, so this must stay one chunk.
+        // Byte-based counting would split it.
+        let text = "\u{e9}\u{e9}\u{e9}\u{e9}. \u{e9}\u{e9}\u{e9}\u{e9}.";
+        assert_eq!(text.chars().count(), 11);
+        assert_eq!(text.len(), 19);
+        let chunker = SentenceChunking {
+            max_chunk_size: 12,
+            min_chunk_size: 1,
+        };
+        let chunks = chunker.chunk(text);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(
+            &text[chunks[0].start_char..chunks[0].end_char],
+            chunks[0].text
+        );
+    }
+
+    #[test]
+    fn test_sentence_chunking_exact_max_boundary() {
+        // Combined span of exactly max_chunk_size characters is allowed.
+        // "One two. Four five." is 19 chars.
+        let text = "One two. Four five.";
+        assert_eq!(text.chars().count(), 19);
+        let chunker = SentenceChunking {
+            max_chunk_size: 19,
+            min_chunk_size: 1,
+        };
+        let chunks = chunker.chunk(text);
         assert_eq!(chunks.len(), 1);
     }
 
