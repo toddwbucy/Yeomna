@@ -2,7 +2,7 @@
 //!
 //! Pure Rust text chunking with multiple strategies.  Each strategy
 //! implements the [`ChunkingStrategy`] trait, producing [`TextChunk`]
-//! values with character offsets for source attribution.
+//! values with byte offsets for source attribution.
 //!
 //! Late-chunking support (mean-pooling token-level embeddings per chunk)
 //! is in the [`late`] submodule.
