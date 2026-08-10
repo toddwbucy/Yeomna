@@ -115,9 +115,13 @@ fn mean_pool_and_normalize(token_embeddings: &[Vec<f32>]) -> Vec<f32> {
 }
 
 /// In-place L2 normalization for f32 vectors.
+///
+/// Every finite nonzero vector is normalized. A zero vector stays zero
+/// (avoiding division by zero), and a vector whose norm overflows to
+/// infinity is left untouched rather than collapsed to zeros.
 fn l2_normalize_f32(v: &mut [f32]) {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 1e-8 {
+    if norm > 0.0 && norm.is_finite() {
         for x in v.iter_mut() {
             *x /= norm;
         }
@@ -195,6 +199,28 @@ mod tests {
         l2_normalize_f32(&mut v);
         // Should not produce NaN; stays zero
         assert!(v.iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn test_l2_normalize_tiny_norm() {
+        // Norm well below the old 1e-8 guard must still normalize to a
+        // unit vector rather than pass through unnormalized.
+        let mut v = vec![3.0e-20, 4.0e-20];
+        l2_normalize_f32(&mut v);
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5, "norm = {norm}");
+        assert!((v[0] - 0.6).abs() < 1e-5);
+        assert!((v[1] - 0.8).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_l2_normalize_infinite_norm() {
+        // Components large enough to overflow the squared sum leave the
+        // vector untouched instead of collapsing it to zeros.
+        let mut v = vec![f32::MAX, f32::MAX];
+        let before = v.clone();
+        l2_normalize_f32(&mut v);
+        assert_eq!(v, before);
     }
 
     #[test]
