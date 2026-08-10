@@ -141,7 +141,7 @@ Taken from the reference on 2026-08-10, not assumed:
 | Module | LOC | `crate::` deps | External crates |
 |---|---|---|---|
 | `chunking/` | 733 | **none** | **none, pure std** |
-| `batch/` | 1,220 | **none** | serde, serde_json, tokio, tracing |
+| `batch/` | 1,220 | **none** | serde, serde_json, thiserror, chrono, tokio, tracing (tempfile dev) |
 | `persephone/` | 1,067 | **none** | hades_proto, hyper, hyperlocal, tonic, tower, http |
 | `db/keys.rs` | 493 | **none** | regex, sha2 |
 | `code/` | 9,294 | `db::keys`, `db::collections::CODEBASE`, `chunking` | clang, syn, rustpython_parser, tree_sitter, regex, sha2, url |
