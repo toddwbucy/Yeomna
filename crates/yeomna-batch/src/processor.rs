@@ -124,6 +124,13 @@ impl BatchProcessor {
         let batch_start = Instant::now();
         let total = items.len();
 
+        // Reject a zero-permit configuration before any state is touched:
+        // Semaphore::new(0) would hang forever on the first real item, a
+        // deadlock rather than an error.
+        if self.config.concurrency == 0 {
+            return Err(BatchError::Config("concurrency must be at least 1".into()));
+        }
+
         // Handle reset.
         if self.config.reset
             && let Some(ref path) = self.config.state_file
@@ -649,5 +656,28 @@ mod panic_tests {
         assert_eq!(summary.errors.len(), 1);
         assert_eq!(summary.errors[0].item_id, "bad");
         assert_eq!(summary.errors[0].stage, "spawn");
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_zero_concurrency_rejected_not_hung() {
+        let processor = BatchProcessor::new(BatchProcessorConfig {
+            concurrency: 0,
+            state_file: None,
+            ..Default::default()
+        });
+        let items = vec![("a".to_string(), 0u32)];
+        // Bounded wait: before the guard, this call deadlocked forever.
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            processor.process(items, |_id, _data| async { Ok(Value::Null) }),
+        )
+        .await
+        .expect("process must return, not hang");
+        assert!(matches!(outcome, Err(BatchError::Config(_))));
     }
 }

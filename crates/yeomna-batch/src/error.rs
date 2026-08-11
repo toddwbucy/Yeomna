@@ -9,6 +9,10 @@ pub enum BatchError {
     #[error("state file error: {0}")]
     State(#[from] std::io::Error),
 
+    /// Invalid configuration, rejected before any work or state change.
+    #[error("invalid configuration: {0}")]
+    Config(String),
+
     /// State file contains invalid JSON.
     #[error("state file corrupt: {0}")]
     StateCorrupt(#[from] serde_json::Error),
