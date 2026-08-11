@@ -25,6 +25,13 @@ sink will receive, and after this lift they compile in this repository.
 124 unit tests move with the code, plus three analyzer probes that skip rather
 than fail when their tool is absent.
 
+**Standing note, ruled 2026-08-11: this crate is a candidate independent
+crate**, on the level of `limen-tree` and `drey`. A multi-lingual code-graph
+extractor with no store, no service, and no Yeomna coupling beyond two small
+sibling crates is useful far outside this appliance, WeaverTools tooling
+included. Nothing in this lift changes for that, and the candidacy is a
+reason to keep the crate's boundary as clean as the lift leaves it.
+
 ## Workflow Type
 
 One lift, one branch (`lift/004-code`), one Issue, one draft PR. The move
