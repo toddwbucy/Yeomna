@@ -65,6 +65,13 @@ pub enum ExtractionError {
     /// Invalid response from the service.
     #[error("invalid response: {0}")]
     InvalidResponse(String),
+
+    /// Extraction succeeded but produced no content. Blank or image-only
+    /// documents land here, distinct from a malformed service response, so
+    /// callers can treat "nothing to index" differently from "the service
+    /// misbehaved".
+    #[error("extraction produced no content")]
+    EmptyExtraction,
 }
 
 /// Client for the Persephone extraction service.
@@ -213,10 +220,7 @@ impl ExtractionClient {
             && response.equations.is_empty()
             && response.images.is_empty()
         {
-            return Err(ExtractionError::InvalidResponse(
-                "extraction returned no content (empty text, no tables, equations, or images)"
-                    .to_string(),
-            ));
+            return Err(ExtractionError::EmptyExtraction);
         }
 
         let source_type = response
