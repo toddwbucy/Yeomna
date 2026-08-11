@@ -2,7 +2,7 @@
 //!
 //! Processes a list of items through a user-provided async function with:
 //! - Per-item error isolation (one failure does not abort the batch)
-//! - Resumable checkpoint state (`.hades-batch-state.json`)
+//! - Resumable checkpoint state (`.yeomna-batch-state.json`)
 //! - Throttled progress reporting to stderr
 //! - Bounded concurrency via `Semaphore`
 //! - Optional rate limiting
@@ -44,7 +44,7 @@ impl Default for BatchProcessorConfig {
     fn default() -> Self {
         Self {
             concurrency: 1,
-            state_file: Some(PathBuf::from(".hades-batch-state.json")),
+            state_file: Some(PathBuf::from(".yeomna-batch-state.json")),
             resume: false,
             reset: false,
             progress_interval: Duration::from_secs(1),

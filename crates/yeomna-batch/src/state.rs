@@ -1,7 +1,8 @@
 //! Persistent checkpoint state for resumable batch processing.
 //!
-//! Serializes to `.hades-batch-state.json`, wire-compatible with the
-//! Python HADES `BatchState` dataclass in `core/processors/batch.py`.
+//! Serializes to `.yeomna-batch-state.json` by default. The format is
+//! inherited from the reference and pinned by `test_python_compat`, which
+//! keeps old state files loadable even though nothing writes them here.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
