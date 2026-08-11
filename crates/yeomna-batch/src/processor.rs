@@ -322,6 +322,13 @@ impl BatchProcessor {
                     .remove(&e.id())
                     .unwrap_or_else(|| "unknown".into());
                 error!(item_id = %panicked_id, error = %e, "task panicked");
+                // A panic counts as a failure in progress accounting, the
+                // same as record_result's failure path, so percent, ETA,
+                // and the final report include it. Checkpoint state is
+                // deliberately not touched: a panicked item stays out of
+                // the skip set and a resume retries it.
+                progress.inc_failed();
+                progress.report(&panicked_id, ProgressStatus::Failed, false);
                 let item_error = ItemError {
                     item_id: panicked_id.clone(),
                     stage: "spawn".into(),
