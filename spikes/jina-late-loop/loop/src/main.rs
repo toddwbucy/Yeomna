@@ -1,5 +1,6 @@
 //! The test loop: Jina v4 token embeddings (real, from the charter) through
 //! late_chunk_embeddings, validated against Jina's own document vector.
+use sha2::{Digest, Sha256};
 use std::fs;
 use yeomna_chunking::{LateChunkConfig, late_chunk_embeddings};
 
@@ -64,7 +65,17 @@ fn main() {
     let (ts, te) = result.boundaries[1];
     let byte_start = offsets[ts].as_array().unwrap()[0].as_u64().unwrap() as usize;
     let byte_end = offsets[te - 1].as_array().unwrap()[1].as_u64().unwrap() as usize;
-    let doc = fs::read_to_string("/home/todd/git/Yeomna/README.md").unwrap();
+    // The document rides inside the fixture directory, and its hash must
+    // match what the dump embedded before we slice a single byte of it.
+    let doc_file = meta["doc_file"].as_str().unwrap();
+    let doc = fs::read_to_string(format!("{dir}/{doc_file}")).unwrap();
+    let digest = Sha256::digest(doc.as_bytes());
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex,
+        meta["doc_sha256"].as_str().unwrap(),
+        "fixture document does not match the hash the dump recorded"
+    );
     let rebased = byte_start.saturating_sub(prefix_bytes)..byte_end.saturating_sub(prefix_bytes);
     let snippet: String = doc[rebased.clone()].chars().take(60).collect();
     println!("chunk 1 tokens {ts}..{te} -> bytes {rebased:?}");

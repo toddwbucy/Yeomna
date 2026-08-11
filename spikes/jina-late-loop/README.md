@@ -23,6 +23,13 @@ python jina_dump.py            # writes ./fixtures (about 80MB, gitignored)
 cd loop && cargo run --release -- ../fixtures
 ```
 
+Reproducibility hard points, added after review: the model snapshot is pinned
+by full SHA in both scripts and recorded in `meta.json`. The dump aborts
+before writing anything if retokenization does not reproduce the forward's
+ids. The source document is copied into the fixture directory and the harness
+verifies its SHA-256 against the recorded hash before slicing, so the harness
+reads nothing outside the fixture directory.
+
 ## Results
 
 | Check | Result |

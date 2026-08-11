@@ -66,11 +66,15 @@ prefix_bytes = len(f"{PREFIX}: ".encode("utf-8"))
 np.save(f"{OUT}/hidden_states.npy", hs)
 np.save(f"{OUT}/single_vec.npy", sv)
 np.save(f"{OUT}/multi_vec.npy", mv)
+# The source document travels with the fixtures, so the harness never
+# reaches outside the fixture directory and can verify what it slices.
+open(f"{OUT}/doc.txt", "w").write(doc)
 # Raw f32 little-endian for the Rust reader, plus metadata.
 hs.astype("<f4").tofile(f"{OUT}/hidden_states.f32")
 sv.astype("<f4").tofile(f"{OUT}/single_vec.f32")
 meta = {
     "doc": "README.md",
+    "doc_file": "doc.txt",
     "doc_sha256": hashlib.sha256(doc.encode()).hexdigest(),
     "model": M,
     "model_revision": REVISION,
