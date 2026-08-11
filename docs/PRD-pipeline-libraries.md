@@ -144,7 +144,7 @@ Taken from the reference on 2026-08-10, not assumed:
 | `batch/` | 1,220 | **none** | serde, serde_json, thiserror, chrono, tokio, tracing (tempfile dev) |
 | `persephone/` | 1,067 | **none** | hades_proto, tonic, hyper, hyperlocal, hyper-util, http, http-body-util, tower, serde, serde_json, thiserror, tokio, tracing |
 | `db/keys.rs` | 493 | **none** | regex, sha2 |
-| `code/` | 9,294 | `db::keys`, `db::collections::CODEBASE`, `chunking` | clang, syn, rustpython_parser, tree_sitter, regex, sha2, url |
+| `code/` | 9,294 | `db::keys`, `db::collections::CODEBASE`, `chunking` | clang, proc-macro2, regex, rustpython-parser, serde, serde_json, sha2, syn, thiserror, tokio, tracing, tree-sitter plus 4 grammars, url |
 | `pipeline/` | 647 | `db::ArangoPool`, `db::ArangoError` | tokio, tracing |
 
 An apparent `code/ -> config` dependency was a false positive. The matches are
