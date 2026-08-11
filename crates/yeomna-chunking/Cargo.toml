@@ -1,0 +1,8 @@
+[package]
+name = "yeomna-chunking"
+description = "Document chunking engine, lifted from the reference per spec 001"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

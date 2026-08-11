@@ -229,6 +229,36 @@ functions run.
 `docs/persephone-embedding-api.md` in the reference. These clients talk to
 services that are currently down, so tests must not require a live embedder.
 
+**Late chunking is specified in the reference and never wired. Verified
+2026-08-10 at every layer.** PE-API v1 mandates always-late-chunked responses
+with no single-vector mode, bound to a large-context model (Jina V4, 32k),
+because chunk embeddings conditioned on full-document context are the
+retrieval-quality feature. But the deployed Python service returns one vector
+per input in the OpenAI shape, the Rust client parses no chunk metadata, the
+`late_chunk_embeddings` math has zero callers, and `codebase_ingest.rs` embeds
+each chunk text independently. The reference ran standard chunking while its
+contract promised late chunking.
+
+Consequences for this phase and after:
+
+- **Wiring late chunking is new construction dressed as a port**, like closing
+  the verb layer. The contract and the math come over. The connection between
+  them has never existed.
+- **A fork needs a ruling when Phase 3 is specced.** PE-API's shape has the
+  service pool and return per-chunk vectors with metadata. The alternative has
+  the service return per-token embeddings and the client pool. That second
+  shape is the one `late.rs` consumes, and its signature says nothing about
+  who produces the token embeddings, only what it takes in. Incompatible wire
+  contracts either way. The same ruling must settle boundary metadata: whether
+  the wire carries token-index ranges, `TextChunk` byte offsets, or an
+  explicit conversion between the two, since chunk text is stored by byte
+  span while late-chunk boundaries live in token space, and the two do not
+  align without a mapping. Pick with the code in hand, not here.
+- **The embedder constraint is permanent.** Large context (32k) and
+  late-chunking capability are what make the feature possible, and a
+  small-context substitute degrades it silently. Any embedder swap must be
+  checked against this line.
+
 ### Phase 4: Analysis
 
 `yeomna-code`, 9,294 lines, the largest single lift. Depends on Phases 1 and 2.
