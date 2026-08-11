@@ -1,13 +1,13 @@
-//! Persephone Embedding Client — OpenAI-compatible HTTP client for vector
-//! embedding generation.
+//! Embedding client — OpenAI-compatible HTTP client for vector embedding
+//! generation.
 //!
-//! HADES is **engine-agnostic** at the protocol layer: any embedding engine
+//! Yeomna is **engine-agnostic** at the protocol layer: any embedding engine
 //! that exposes the OpenAI `/v1/embeddings` surface (vLLM, HuggingFace TEI,
-//! `hades-weaver-bridge`, llama.cpp-server, ollama where capable, the
-//! upstream OpenAI/Anthropic APIs, etc.) is a valid backend. Engines speak
-//! the same wire shape; HADES doesn't care which one is running.
+//! a local bridge adapter, llama.cpp-server, ollama where capable) is a
+//! valid backend. Engines speak the same wire shape; the client does not
+//! care which one is running.
 //!
-//! HADES is **model-bound** at the data layer to Jina V4 (or a future model
+//! Yeomna is **model-bound** at the data layer to Jina V4 (or a future model
 //! with the same capability profile: 2048d, 32k context, multimodal,
 //! late-chunking-capable). Wrong model → invalidated stored vectors. The
 //! engine is fungible, the model is not.
@@ -21,9 +21,9 @@
 //! do (vLLM-serving-Jina, etc.) use them for retrieval-quality hints.
 //!
 //! Endpoint can be either an HTTP base URL (`http://localhost:8000/v1`) or a
-//! Unix socket path (`/run/.../embedder.sock`). The Unix socket path is
-//! intended for the `hades-weaver-bridge` adapter that exposes Weaver's gRPC
-//! embedder via a local OpenAI-compatible HTTP surface.
+//! Unix socket path. The Unix socket path is the appliance-native transport
+//! and is where a local adapter (the weaver-bridge pattern) or the future
+//! SPU embedder would expose an OpenAI-compatible surface.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -49,7 +49,7 @@ pub struct EmbeddingClientConfig {
     /// Endpoint for the OpenAI-compatible embedding service.
     pub endpoint: EmbeddingEndpoint,
     /// Model identifier sent in every request (`model` field of the OpenAI
-    /// embeddings request body). HADES is bound to Jina V4 capabilities;
+    /// embeddings request body). Yeomna is bound to Jina V4 capabilities;
     /// configure this to match whatever model your engine has loaded.
     pub model: String,
     /// Request timeout.
@@ -61,9 +61,8 @@ pub struct EmbeddingClientConfig {
 /// Endpoint for the embedding service.
 ///
 /// Both variants speak HTTP/1.1 JSON in the OpenAI-compatible shape; the
-/// only difference is the transport. Unix is intended for the
-/// `hades-weaver-bridge` adapter (Weaver coexistence mode); HTTP is the
-/// default for everything else.
+/// only difference is the transport. Unix is the appliance-native seam;
+/// HTTP is the default for everything else today.
 #[derive(Debug, Clone)]
 pub enum EmbeddingEndpoint {
     /// Unix domain socket path. The server listening on this socket must
@@ -75,12 +74,13 @@ pub enum EmbeddingEndpoint {
     Tcp(String),
 }
 
-/// Default model identifier. Jina V4 is HADES's reference model; future
+/// Default model identifier. Jina V4 is the bound model; future
 /// capability-equivalent models can be substituted by setting this.
 const DEFAULT_MODEL: &str = "jinaai/jina-embeddings-v4";
-/// Default endpoint: HADES-owned embedder on local URL. Port 8087 avoids
-/// collisions with vLLM/uvicorn (8000) and weaver-serve LLM API (8080).
-/// Override via config or `HADES_EMBEDDER_SOCKET` env var.
+/// Default endpoint: the local embedder URL. Port 8087 avoids collisions
+/// with vLLM/uvicorn (8000) and weaver-serve LLM API (8080). Override via
+/// [`EmbeddingClientConfig`] or [`EmbeddingClient::connect_at`]; no
+/// environment variable is consulted by this crate.
 const DEFAULT_ENDPOINT_URL: &str = "http://localhost:8087/v1";
 
 impl Default for EmbeddingClientConfig {
@@ -177,7 +177,7 @@ pub struct ProviderInfo {
     /// Whether the configured model appears in the engine's model list.
     pub model_loaded: bool,
     /// Embedding dimension. `None` unless the engine advertises it (most
-    /// don't via `/v1/models`); HADES expects 2048 for Jina V4 regardless.
+    /// don't via `/v1/models`); Yeomna expects 2048 for Jina V4 regardless.
     #[serde(default)]
     pub dimension: Option<u32>,
 }
@@ -360,7 +360,7 @@ impl EmbeddingClient {
     /// Send a single `POST /embeddings` request for the given texts.
     ///
     /// Sends `POST {base}/embeddings` in the OpenAI-compatible shape:
-    /// `{"model": ..., "input": [...]}`. The HADES-specific `task` hint
+    /// `{"model": ..., "input": [...]}`. The non-standard `task` hint
     /// (e.g. `"retrieval.query"`, `"retrieval.passage"` for Jina V4) and
     /// `batch_size` are sent as non-standard top-level fields — engines
     /// that don't understand them ignore them.

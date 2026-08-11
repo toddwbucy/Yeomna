@@ -1,6 +1,6 @@
-//! Persephone Extraction Client — gRPC client for document content extraction.
+//! Extraction client — gRPC client for document content extraction.
 //!
-//! Connects to the Persephone extraction service over a Unix domain socket
+//! Connects to the extraction service over a Unix domain socket
 //! or TCP endpoint.  Wraps the generated tonic client with connection
 //! management, health checking, and ergonomic Rust types.
 
@@ -74,7 +74,7 @@ pub enum ExtractionError {
     EmptyExtraction,
 }
 
-/// Client for the Persephone extraction service.
+/// Client for the extraction service.
 ///
 /// Provides ergonomic methods for extracting structured content
 /// from documents and querying extractor capabilities.
