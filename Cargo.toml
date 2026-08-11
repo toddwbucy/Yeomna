@@ -1,13 +1,23 @@
 [workspace]
-members = ["crates/yeomna-chunking", "crates/yeomna-keys"]
+members = ["crates/yeomna-chunking", "crates/yeomna-keys", "crates/yeomna-batch"]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+# let-chains (used in yeomna-batch) stabilized in 1.88.
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Versions match the reference's root manifest where a pin exists there.
 regex = "1"
 sha2 = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+anyhow = "1"
+tempfile = "3"
