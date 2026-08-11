@@ -66,11 +66,12 @@ pub enum ExtractionError {
     #[error("invalid response: {0}")]
     InvalidResponse(String),
 
-    /// Extraction succeeded but produced no content. Blank or image-only
-    /// documents land here, distinct from a malformed service response, so
-    /// callers can treat "nothing to index" differently from "the service
-    /// misbehaved".
-    #[error("extraction produced no content")]
+    /// Extraction succeeded but produced no indexable content. Blank,
+    /// whitespace-only, and image-only documents land here, distinct from a
+    /// malformed service response, so callers can treat "nothing to index"
+    /// differently from "the service misbehaved". Image references carry no
+    /// text to chunk or embed, which is why they do not count as content.
+    #[error("extraction produced no indexable content")]
     EmptyExtraction,
 }
 
@@ -215,11 +216,7 @@ impl ExtractionClient {
     async fn do_extract(&self, request: ExtractRequest) -> Result<ExtractResult, ExtractionError> {
         let response: ExtractResponse = self.inner.clone().extract(request).await?.into_inner();
 
-        if response.full_text.is_empty()
-            && response.tables.is_empty()
-            && response.equations.is_empty()
-            && response.images.is_empty()
-        {
+        if is_empty_extraction(&response) {
             return Err(ExtractionError::EmptyExtraction);
         }
 
@@ -337,5 +334,75 @@ impl std::fmt::Debug for ExtractionClient {
         f.debug_struct("ExtractionClient")
             .field("endpoint", &self.config.endpoint)
             .finish()
+    }
+}
+
+/// True iff the response carries nothing to index: no text beyond
+/// whitespace, no tables, no equations. Image references are refs, not
+/// text, so an image-only response is empty for indexing purposes.
+fn is_empty_extraction(response: &ExtractResponse) -> bool {
+    response.full_text.trim().is_empty()
+        && response.tables.is_empty()
+        && response.equations.is_empty()
+}
+
+#[cfg(test)]
+mod empty_extraction_tests {
+    use super::*;
+    use yeomna_proto::extraction::{Equation, ImageRef, Table};
+
+    fn base() -> ExtractResponse {
+        ExtractResponse {
+            full_text: String::new(),
+            tables: vec![],
+            equations: vec![],
+            images: vec![],
+            metadata: Default::default(),
+            source_type: SourceType::Pdf.into(),
+        }
+    }
+
+    #[test]
+    fn blank_is_empty() {
+        assert!(is_empty_extraction(&base()));
+    }
+
+    #[test]
+    fn whitespace_only_is_empty() {
+        let mut r = base();
+        r.full_text = "  \n\t  ".into();
+        assert!(is_empty_extraction(&r));
+    }
+
+    #[test]
+    fn image_only_is_empty() {
+        let mut r = base();
+        r.images = vec![ImageRef::default()];
+        assert!(is_empty_extraction(&r));
+    }
+
+    #[test]
+    fn table_only_is_content() {
+        let mut r = base();
+        r.tables = vec![Table {
+            content: "a | b".into(),
+            caption: String::new(),
+            index: 0,
+        }];
+        assert!(!is_empty_extraction(&r));
+    }
+
+    #[test]
+    fn equation_only_is_content() {
+        let mut r = base();
+        r.equations = vec![Equation::default()];
+        assert!(!is_empty_extraction(&r));
+    }
+
+    #[test]
+    fn text_is_content() {
+        let mut r = base();
+        r.full_text = "hello".into();
+        assert!(!is_empty_extraction(&r));
     }
 }
