@@ -44,7 +44,7 @@ pub enum ExtractionEndpoint {
 impl Default for ExtractionClientConfig {
     fn default() -> Self {
         Self {
-            endpoint: ExtractionEndpoint::Unix(PathBuf::from("/run/hades/extractor.sock")),
+            endpoint: ExtractionEndpoint::Unix(PathBuf::from("/run/yeomna/extractor.sock")),
             timeout: DEFAULT_TIMEOUT,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         }
