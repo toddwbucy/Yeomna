@@ -138,7 +138,7 @@ impl ExtractionClient {
     ///
     /// `file_name` is used for source-type detection when `source_type` is not
     /// explicitly set.
-    #[instrument(skip(self, content), fields(file_name, content_len = content.len()))]
+    #[instrument(skip(self, content), fields(file_name = %file_name, content_len = content.len()))]
     pub async fn extract_bytes(
         &self,
         file_name: &str,
