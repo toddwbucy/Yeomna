@@ -230,40 +230,30 @@ impl BatchProcessor {
             });
             task_id_map.insert(handle.id(), item_id);
 
-            // Collect completed tasks as we go (prevents unbounded memory growth).
-            while let Some(Ok(result)) = join_set.try_join_next() {
-                self.record_result(&mut state, &progress, result, &mut results);
+            // Collect completed tasks as we go (prevents unbounded memory
+            // growth). Panicked tasks are recorded, not dropped: the naive
+            // `Some(Ok(..))` pattern would consume a panic's JoinError and
+            // exit this loop with the item missing from results.
+            while let Some(join_result) = join_set.try_join_next_with_id() {
+                self.record_join(
+                    join_result,
+                    &mut task_id_map,
+                    &mut state,
+                    &progress,
+                    &mut results,
+                );
             }
         }
 
         // Drain remaining tasks.
-        while let Some(join_result) = join_set.join_next().await {
-            match join_result {
-                Ok(result) => {
-                    self.record_result(&mut state, &progress, result, &mut results);
-                }
-                Err(e) => {
-                    // Task panicked — recover the item ID from the task ID map.
-                    let panicked_id = task_id_map
-                        .remove(&e.id())
-                        .unwrap_or_else(|| "unknown".into());
-                    error!(item_id = %panicked_id, error = %e, "task panicked");
-                    let item_error = ItemError {
-                        item_id: panicked_id.clone(),
-                        stage: "spawn".into(),
-                        message: format!("task panicked: {e}"),
-                        duration_ms: 0,
-                    };
-                    results.push(ItemResult {
-                        item_id: panicked_id,
-                        success: false,
-                        skipped: None,
-                        data: None,
-                        error: Some(item_error),
-                        duration_ms: 0,
-                    });
-                }
-            }
+        while let Some(join_result) = join_set.join_next_with_id().await {
+            self.record_join(
+                join_result,
+                &mut task_id_map,
+                &mut state,
+                &progress,
+                &mut results,
+            );
         }
 
         // Save final state.
@@ -305,6 +295,49 @@ impl BatchProcessor {
             errors,
             duration_ms: batch_start.elapsed().as_millis() as u64,
         })
+    }
+
+    /// Record one joined task, panicked or not, and prune the task ID map.
+    ///
+    /// Shared by the incremental collection loop and the drain loop so both
+    /// handle panics identically. A panicked item is recorded as failed with
+    /// stage `"spawn"` and is deliberately not marked in the checkpoint
+    /// state, so a resume retries it.
+    fn record_join(
+        &self,
+        join_result: Result<(tokio::task::Id, ItemResult), tokio::task::JoinError>,
+        task_id_map: &mut std::collections::HashMap<tokio::task::Id, String>,
+        state: &mut BatchState,
+        progress: &ProgressReporter,
+        results: &mut Vec<ItemResult>,
+    ) {
+        match join_result {
+            Ok((task_id, result)) => {
+                task_id_map.remove(&task_id);
+                self.record_result(state, progress, result, results);
+            }
+            Err(e) => {
+                // Task panicked — recover the item ID from the task ID map.
+                let panicked_id = task_id_map
+                    .remove(&e.id())
+                    .unwrap_or_else(|| "unknown".into());
+                error!(item_id = %panicked_id, error = %e, "task panicked");
+                let item_error = ItemError {
+                    item_id: panicked_id.clone(),
+                    stage: "spawn".into(),
+                    message: format!("task panicked: {e}"),
+                    duration_ms: 0,
+                };
+                results.push(ItemResult {
+                    item_id: panicked_id,
+                    success: false,
+                    skipped: None,
+                    data: None,
+                    error: Some(item_error),
+                    duration_ms: 0,
+                });
+            }
+        }
     }
 
     /// Record a single result: update state, save checkpoint, report progress.
@@ -579,5 +612,35 @@ mod tests {
 
         // Both items should be processed (reset cleared the skip set).
         assert_eq!(call_count.load(Ordering::Relaxed), 2);
+    }
+}
+
+#[cfg(test)]
+mod panic_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_panicking_item_recorded_beside_success() {
+        let processor = BatchProcessor::new(BatchProcessorConfig {
+            state_file: None,
+            ..Default::default()
+        });
+        let items = vec![("good".to_string(), 1u32), ("bad".to_string(), 2u32)];
+        let summary = processor
+            .process(items, |id, _data| async move {
+                if id == "bad" {
+                    panic!("intentional panic for test");
+                }
+                Ok(serde_json::json!({"ok": true}))
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.completed, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.errors.len(), 1);
+        assert_eq!(summary.errors[0].item_id, "bad");
+        assert_eq!(summary.errors[0].stage, "spawn");
     }
 }
