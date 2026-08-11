@@ -24,7 +24,9 @@ impl RateLimiter {
     /// `max_retries` controls how many times a retryable error can be retried.
     pub fn new(requests_per_sec: f64, max_retries: u32) -> Self {
         let min_delay = if requests_per_sec > 0.0 {
-            Duration::from_secs_f64(1.0 / requests_per_sec)
+            // A rate small enough to overflow the Duration (or divide to
+            // infinity) saturates to Duration::MAX instead of panicking.
+            Duration::try_from_secs_f64(1.0 / requests_per_sec).unwrap_or(Duration::MAX)
         } else {
             Duration::ZERO
         };
@@ -67,7 +69,12 @@ impl RateLimiter {
         } else {
             self.min_delay
         };
-        base * 2u32.pow(attempt)
+        // Saturate rather than overflow: 2^attempt exceeds u32 at attempt 32,
+        // and the Duration multiply can overflow long before that with a
+        // large base. Either case caps at Duration::MAX instead of panicking.
+        2u32.checked_pow(attempt)
+            .and_then(|factor| base.checked_mul(factor))
+            .unwrap_or(Duration::MAX)
     }
 
     /// Maximum number of retry attempts.
@@ -100,12 +107,28 @@ mod tests {
     #[tokio::test]
     async fn test_rate_limit_unlimited() {
         let limiter = RateLimiter::new(0.0, 3);
-        let start = Instant::now();
         limiter.acquire().await;
         limiter.acquire().await;
         limiter.acquire().await;
-        // Should be nearly instant.
-        assert!(start.elapsed() < Duration::from_millis(10));
+        // Unlimited mode bypasses rate tracking entirely, which is a
+        // deterministic assertion where a wall-clock bound would flake.
+        assert!(limiter.last_permit.lock().await.is_none());
+    }
+
+    #[test]
+    fn test_backoff_saturates_instead_of_overflowing() {
+        let limiter = RateLimiter::new(2.0, 5);
+        // 2^attempt exceeds u32 at attempt 32.
+        assert_eq!(limiter.backoff_delay(64), Duration::MAX);
+        // Small attempts are unchanged by the saturating arithmetic.
+        assert_eq!(limiter.backoff_delay(1), Duration::from_millis(1000));
+    }
+
+    #[test]
+    fn test_tiny_rate_saturates_instead_of_panicking() {
+        // 1.0 / MIN_POSITIVE overflows Duration and must saturate, not panic.
+        let limiter = RateLimiter::new(f64::MIN_POSITIVE, 3);
+        assert_eq!(limiter.backoff_delay(0), Duration::MAX);
     }
 
     #[test]
