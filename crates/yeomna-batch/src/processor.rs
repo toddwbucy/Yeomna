@@ -154,6 +154,11 @@ impl BatchProcessor {
             .into_iter()
             .map(String::from)
             .collect::<std::collections::HashSet<String>>();
+        // Failures loaded from a previous run. A skipped-because-failed item
+        // must stay represented as an unresolved failure, not flip to
+        // success, or the checkpoint gets cleared and the second resume
+        // silently retries what the first resume skipped.
+        let failed_prior = state.failed.clone();
         let skipped_count = items.iter().filter(|(id, _)| skip_set.contains(id)).count();
         if skipped_count > 0 {
             info!(
@@ -178,16 +183,25 @@ impl BatchProcessor {
         let mut results: Vec<ItemResult> = Vec::with_capacity(total);
 
         for (item_id, item_data) in items {
-            // Skip items already processed in a previous run.
+            // Skip items already processed in a previous run. Previously
+            // completed items skip as successes. Previously failed items
+            // skip as unresolved failures, carrying the stored error, so
+            // the summary and checkpoint keep telling the truth about them.
             if skip_set.contains(&item_id) {
                 progress.inc_completed();
                 progress.report(&item_id, ProgressStatus::Skipped, false);
+                let prior_error = failed_prior.get(&item_id).map(|msg| ItemError {
+                    item_id: item_id.clone(),
+                    stage: "resume".into(),
+                    message: format!("unresolved failure from previous run: {msg}"),
+                    duration_ms: 0,
+                });
                 results.push(ItemResult {
+                    success: prior_error.is_none(),
+                    error: prior_error,
                     item_id,
-                    success: true,
                     skipped: Some(true),
                     data: None,
-                    error: None,
                     duration_ms: 0,
                 });
                 continue;
@@ -263,21 +277,21 @@ impl BatchProcessor {
             );
         }
 
-        // Save final state.
+        // Save final state. Unresolved failures include items skipped
+        // because they failed in a previous run: the checkpoint must
+        // survive while any failure remains unresolved, or the second
+        // resume forgets what the first one skipped.
         if let Some(ref path) = self.config.state_file {
-            let actual_failed = results
-                .iter()
-                .filter(|r| !r.success && r.skipped != Some(true))
-                .count();
-            if actual_failed == 0 {
-                // All succeeded — clean up state file.
+            let unresolved_failed = results.iter().filter(|r| !r.success).count();
+            if unresolved_failed == 0 {
+                // Everything resolved — clean up state file.
                 BatchState::clear(path)?;
                 debug!("batch complete with zero failures, state file cleared");
             } else {
                 state.save(path)?;
                 warn!(
-                    failures = actual_failed,
-                    "batch complete with failures, state file retained"
+                    failures = unresolved_failed,
+                    "batch complete with unresolved failures, state file retained"
                 );
             }
         }
@@ -679,5 +693,54 @@ mod config_tests {
         .await
         .expect("process must return, not hang");
         assert!(matches!(outcome, Err(BatchError::Config(_))));
+    }
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_resume_preserves_unresolved_failures_across_runs() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("state.json");
+        let cfg = |resume: bool| BatchProcessorConfig {
+            concurrency: 1,
+            state_file: Some(path.clone()),
+            resume,
+            reset: false,
+            ..Default::default()
+        };
+        let items = || vec![("x".to_string(), 0u32)];
+
+        // Run 1: the item fails, checkpoint retained.
+        let s1 = BatchProcessor::new(cfg(false))
+            .process(items(), |_id, _data| async { Err(anyhow::anyhow!("boom")) })
+            .await
+            .unwrap();
+        assert_eq!(s1.failed, 1);
+        assert!(path.exists(), "checkpoint retained after failure");
+
+        // Runs 2 and 3: resume must skip the item both times, keep it an
+        // unresolved failure, and keep the checkpoint. Before the fix the
+        // first resume flipped it to success and cleared the state file,
+        // so the second resume silently retried it.
+        for run in 2..=3 {
+            let s = BatchProcessor::new(cfg(true))
+                .process(items(), |_id, _data| async {
+                    panic!("must not be called on resume");
+                    #[allow(unreachable_code)]
+                    Ok(Value::Null)
+                })
+                .await
+                .unwrap();
+            assert_eq!(s.skipped, 1, "run {run}: item skipped");
+            assert_eq!(s.failed, 1, "run {run}: still an unresolved failure");
+            assert_eq!(s.completed, 0, "run {run}: nothing newly completed");
+            assert_eq!(s.errors.len(), 1, "run {run}: error carried");
+            assert_eq!(s.errors[0].stage, "resume");
+            assert!(path.exists(), "run {run}: checkpoint retained");
+        }
     }
 }

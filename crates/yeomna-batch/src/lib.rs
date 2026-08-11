@@ -17,6 +17,11 @@
 //! `reset` to clear the state file, and this is deliberate: a poisoned item
 //! that crashes the pipeline would otherwise be retried on every resume,
 //! defeating the fault isolation the checkpoint exists to provide.
+//!
+//! A skipped-because-failed item stays an **unresolved failure**: it counts
+//! in the summary's `failed`, carries its stored error at stage `"resume"`,
+//! and keeps the checkpoint file alive, so the semantics above hold across
+//! any number of resumes rather than evaporating after the first one.
 
 mod error;
 mod processor;
