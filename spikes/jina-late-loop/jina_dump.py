@@ -42,6 +42,11 @@ tok = model.processor.tokenizer
 enc = tok(prefixed, return_offsets_mapping=True, return_tensors="pt", max_length=32768, truncation=True)
 ids_match = bool((enc["input_ids"][0] == inputs["input_ids"][0].cpu()).all())
 print("retokenized ids match forward ids:", ids_match)
+if not ids_match:
+    raise SystemExit(
+        "ABORT: retokenized ids differ from forward-pass ids. "
+        "Offsets would not describe the embedded tokens. No fixtures written."
+    )
 prefix_chars = len(f"{PREFIX}: ")
 
 np.save(f"{OUT}/hidden_states.npy", hs)
