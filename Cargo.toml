@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/yeomna-chunking"]
+members = ["crates/yeomna-chunking", "crates/yeomna-keys"]
 resolver = "2"
 
 [workspace.package]
@@ -8,4 +8,6 @@ edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-# Populated as crates land. Phase 1 needs nothing.
+# Versions match the reference's root manifest where a pin exists there.
+regex = "1"
+sha2 = "0.11"

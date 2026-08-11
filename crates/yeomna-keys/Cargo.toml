@@ -1,0 +1,10 @@
+[package]
+name = "yeomna-keys"
+description = "Deterministic key derivation, lifted from the reference per spec 002"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+regex.workspace = true
+sha2.workspace = true
