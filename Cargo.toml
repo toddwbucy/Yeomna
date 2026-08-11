@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/yeomna-chunking", "crates/yeomna-keys", "crates/yeomna-batch", "crates/yeomna-proto"]
+members = ["crates/yeomna-chunking", "crates/yeomna-keys", "crates/yeomna-batch", "crates/yeomna-proto", "crates/yeomna-embed"]
 resolver = "2"
 
 [workspace.package]
@@ -25,3 +25,9 @@ tonic = "0.13"
 prost = "0.13"
 prost-types = "0.13"
 tonic-build = "0.13"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+hyperlocal = { version = "0.9", features = ["client"] }
+http = "1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
