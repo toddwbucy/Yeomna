@@ -25,6 +25,23 @@ ruling.
 35.1. Generated code is not committed, so the protoc version is part of the
 build environment. Recorded for the pinning conversation.
 
+## CodeRabbit round
+
+**`buf.yaml` restored**, byte-identical from the reference, after review
+caught that the lift dropped it. Inert to the cargo build.
+
+**`file_path` removal declined, recorded.** Review proposed removing the
+caller-controlled `file_path` field from `ExtractRequest` as a path-traversal
+surface. Declined on threat model: the extractor binds a Unix socket inside
+the sealed appliance, callers are admitted by filesystem permission, and
+charter section 9 rules out a network listener permanently, so any caller is
+already inside the trust boundary and still bounded by the service's own OS
+permissions. The dual path-or-content mode is deliberate co-resident design,
+and removing the field would rewrite wire semantics the Phase 6 server must
+speak. **Standing item:** if any front-end transport or third-party caller
+ever fronts this service, `file_path` becomes a named security review item
+before that opening ships.
+
 ## Verification
 
 - Build, 1 integration test passing, clippy clean, fmt clean.
