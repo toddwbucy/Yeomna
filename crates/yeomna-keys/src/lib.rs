@@ -99,6 +99,10 @@ pub fn file_key(rel_path: &str) -> String {
 /// cap (issue #180, frozen as contract). Keys that were previously storable are
 /// unchanged by this sanitization.
 ///
+/// `file_key` must already be normalized by [`file_key`]: this function
+/// folds it into the key verbatim (truncating only when overlong) and does
+/// not sanitize it, and the output contract is frozen, so it never will.
+///
 /// `line` is the symbol's 1-based definition line. It disambiguates symbols
 /// that share a qualified name within one file -- e.g. `impl Foo { fn new }` in
 /// sibling inline modules, whose qualified name collapses to `Foo::new` (the
@@ -194,6 +198,12 @@ pub fn symbol_key(file_key: &str, qualified_name: &str, line: usize) -> String {
 ///
 /// Format: `{from_prefix}__{kind}__{to_prefix}__{hash8}`
 ///
+/// `from` and `to` must already be derived keys (from [`symbol_key`] or
+/// [`file_key`]), and `kind` a plain lowercase relation name. This function
+/// performs no sanitization and no length capping of its own: it trusts its
+/// inputs to be key-legal because the functions that derive them guarantee
+/// it, and its output is frozen contract, so no such handling may be added.
+///
 /// # Examples
 /// ```
 /// # use yeomna_keys::edge_key;
@@ -222,6 +232,15 @@ pub fn edge_key(from: &str, kind: &str, to: &str) -> String {
 ///
 /// Returns the full hex-encoded SHA-256 of the model string. When the model
 /// name or version changes, the hash changes, triggering re-embedding.
+///
+/// # Examples
+/// ```
+/// # use yeomna_keys::model_hash;
+/// assert_eq!(
+///     model_hash("jinaai/jina-embeddings-v4"),
+///     "736b129f4f11172c958e05da3d30fcfd99ce4f2ff12b3afe8d5f5d49b2d663dc"
+/// );
+/// ```
 pub fn model_hash(model_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(model_id.as_bytes());

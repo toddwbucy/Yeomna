@@ -11,8 +11,11 @@ at spec time and again at move time.
 
 Test counts corrected against the spec: the spec estimated 17 moved tests.
 The true count at move time was 15 unit tests plus 8 doctests. After
-tightening: 21 unit tests (six golden pins added) plus 7 doctests (one left
-with `compliance_edge_key`).
+tightening: 21 unit tests (six golden pins added) plus 8 doctests. The
+`compliance_edge_key` doctest was removed with its function in commit 2,
+dropping the count to 7, and the CodeRabbit round restored it to 8 by adding
+the `model_hash` doctest FR-K5 wanted, pinning the same full SHA-256 literal
+as the golden test.
 
 ## Commit structure
 
