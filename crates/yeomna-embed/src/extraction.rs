@@ -7,14 +7,14 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use yeomna_proto::extraction::extraction_service_client::ExtractionServiceClient;
-use yeomna_proto::extraction::{
-    CapabilitiesRequest, ExtractRequest, ExtractResponse, ExtractorInfo, SourceType,
-};
 use hyper_util::rt::TokioIo;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
 use tracing::{debug, info, instrument, warn};
+use yeomna_proto::extraction::extraction_service_client::ExtractionServiceClient;
+use yeomna_proto::extraction::{
+    CapabilitiesRequest, ExtractRequest, ExtractResponse, ExtractorInfo, SourceType,
+};
 
 /// Default timeout for extraction requests (large PDFs can be slow).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(600); // 10 min
