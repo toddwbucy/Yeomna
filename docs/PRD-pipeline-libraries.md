@@ -245,9 +245,15 @@ Consequences for this phase and after:
   the verb layer. The contract and the math come over. The connection between
   them has never existed.
 - **A fork needs a ruling when Phase 3 is specced.** PE-API's shape has the
-  service pool and return per-chunk vectors with metadata. `late.rs` implies
-  the service returns per-token embeddings and the client pools. Incompatible
-  wire contracts. Pick one with the code in hand, not here.
+  service pool and return per-chunk vectors with metadata. The alternative has
+  the service return per-token embeddings and the client pool. That second
+  shape is the one `late.rs` consumes, and its signature says nothing about
+  who produces the token embeddings, only what it takes in. Incompatible wire
+  contracts either way. The same ruling must settle boundary metadata: whether
+  the wire carries token-index ranges, `TextChunk` byte offsets, or an
+  explicit conversion between the two, since chunk text is stored by byte
+  span while late-chunk boundaries live in token space, and the two do not
+  align without a mapping. Pick with the code in hand, not here.
 - **The embedder constraint is permanent.** Large context (32k) and
   late-chunking capability are what make the feature possible, and a
   small-context substitute degrades it silently. Any embedder swap must be
