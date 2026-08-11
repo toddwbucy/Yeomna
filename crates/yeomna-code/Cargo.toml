@@ -1,0 +1,32 @@
+[package]
+name = "yeomna-code"
+description = "Multi-lingual code-graph extractor: symbols, edges, chunks, and metrics from source trees. Lifted from the reference per spec 004"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+yeomna-keys = { path = "../yeomna-keys" }
+yeomna-chunking = { path = "../yeomna-chunking" }
+clang.workspace = true
+proc-macro2.workspace = true
+regex.workspace = true
+rustpython-parser.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+syn.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tree-sitter.workspace = true
+tree-sitter-cpp.workspace = true
+tree-sitter-go.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-rust.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

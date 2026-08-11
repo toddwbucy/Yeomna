@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/yeomna-chunking", "crates/yeomna-keys", "crates/yeomna-batch", "crates/yeomna-proto", "crates/yeomna-embed"]
+members = ["crates/yeomna-chunking", "crates/yeomna-keys", "crates/yeomna-batch", "crates/yeomna-proto", "crates/yeomna-embed", "crates/yeomna-code"]
 resolver = "2"
 
 [workspace.package]
@@ -31,3 +31,15 @@ hyperlocal = { version = "0.9", features = ["client"] }
 http = "1"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+# Code analysis. Grammar pins are behavior: a grammar bump changes parses,
+# which changes symbols, which changes derived keys (spec 004).
+clang = { version = "2.0", features = ["clang_10_0", "runtime"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+rustpython-parser = "0.4"
+syn = { version = "2", features = ["full", "visit"] }
+tree-sitter = "0.26.11"
+tree-sitter-cpp = "0.23.4"
+tree-sitter-go = "0.25.0"
+tree-sitter-python = "0.25.0"
+tree-sitter-rust = "0.24.2"
+url = "2"
