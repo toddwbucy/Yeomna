@@ -46,5 +46,9 @@ before that opening ships.
 
 - Build, 1 integration test passing, clippy clean, fmt clean.
 - `diff` against the reference proto shows exactly the two ruled lines.
-- `grep -ri persephone` on the crate and proto: nothing except this note and
-  the provenance citations in `lib.rs`.
+- `grep -ri persephone crates/yeomna-proto proto/` returns exactly three
+  lines, all of them intentional provenance in the crate docs of
+  `crates/yeomna-proto/src/lib.rs`: the citations of the trimmed
+  `persephone.embedding` and `persephone.common` packages and the note that
+  the wire package was renamed from `persephone.extraction`. This document
+  is outside the searched paths and is not counted.
