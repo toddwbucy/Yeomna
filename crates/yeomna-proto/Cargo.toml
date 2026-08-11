@@ -1,0 +1,15 @@
+[package]
+name = "yeomna-proto"
+description = "Generated protobuf for the extraction service protocol, lifted from the reference per spec 003"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tonic.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+
+[build-dependencies]
+tonic-build.workspace = true
