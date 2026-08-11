@@ -50,10 +50,13 @@ interaction projection, and pooling it would be wrong. The model's own
 `output_vlm_last_hidden_states`.
 
 **Boundary metadata: token ranges on the wire, bytes at the edge.** Late
-boundaries live in token space. Tokenizer offsets convert them to byte spans
-exactly, with one obligation: the task prefix (`"Passage: "`, 9 chars) must be
-tracked and rebased. Retokenization reproduced the forward's ids, so the
-mapping is trustworthy.
+boundaries live in token space. Tokenizer offsets convert them to byte spans,
+with two obligations. The task prefix (`"Passage: "`, 9 bytes) must be tracked
+and rebased. And HF fast tokenizers report **character** offsets, so the dump
+converts them to UTF-8 byte offsets before writing, since the consumer slices
+bytes. On pure-ASCII input the two coincide, which is how the mismatch stayed
+invisible until review. Retokenization must reproduce the forward's ids or the
+dump aborts.
 
 **What an embedder backend must expose for this design:** token-level last
 hidden states plus tokenizer offsets. Pooling then lives client side in

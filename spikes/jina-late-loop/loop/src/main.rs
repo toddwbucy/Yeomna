@@ -24,7 +24,7 @@ fn main() {
         serde_json::from_str(&fs::read_to_string(format!("{dir}/meta.json")).unwrap()).unwrap();
     let seq = meta["seq_len"].as_u64().unwrap() as usize;
     let dim = meta["hidden_dim"].as_u64().unwrap() as usize;
-    let prefix_chars = meta["prefix_chars"].as_u64().unwrap() as usize;
+    let prefix_bytes = meta["prefix_bytes"].as_u64().unwrap() as usize;
 
     let flat = read_f32(&format!("{dir}/hidden_states.f32"));
     assert_eq!(flat.len(), seq * dim, "fixture shape mismatch");
@@ -58,13 +58,14 @@ fn main() {
     let max = sims.iter().cloned().fold(f32::MIN, f32::max);
     println!("chunk-to-document cosine range: {min:.4} .. {max:.4}");
 
-    // 4. Boundary metadata: token windows convert to byte spans via offsets.
-    let offsets = meta["offsets_in_prefixed_text"].as_array().unwrap();
+    // 4. Boundary metadata: token windows convert to byte spans via offsets
+    //    (byte offsets, converted from tokenizer char offsets at dump time).
+    let offsets = meta["offsets_in_prefixed_text_bytes"].as_array().unwrap();
     let (ts, te) = result.boundaries[1];
     let byte_start = offsets[ts].as_array().unwrap()[0].as_u64().unwrap() as usize;
     let byte_end = offsets[te - 1].as_array().unwrap()[1].as_u64().unwrap() as usize;
     let doc = fs::read_to_string("/home/todd/git/Yeomna/README.md").unwrap();
-    let rebased = byte_start.saturating_sub(prefix_chars)..byte_end.saturating_sub(prefix_chars);
+    let rebased = byte_start.saturating_sub(prefix_bytes)..byte_end.saturating_sub(prefix_bytes);
     let snippet: String = doc[rebased.clone()].chars().take(60).collect();
     println!("chunk 1 tokens {ts}..{te} -> bytes {rebased:?}");
     println!("chunk 1 opens: {snippet:?}");

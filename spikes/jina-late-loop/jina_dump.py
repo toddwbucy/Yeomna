@@ -47,7 +47,17 @@ if not ids_match:
         "ABORT: retokenized ids differ from forward-pass ids. "
         "Offsets would not describe the embedded tokens. No fixtures written."
     )
-prefix_chars = len(f"{PREFIX}: ")
+
+# HF fast tokenizers return CHARACTER offsets. The Rust harness slices by
+# bytes, so convert via a cumulative char-to-byte table. On pure-ASCII input
+# the two coincide, which is exactly how this bug would have hidden.
+byte_at = [0]
+for ch in prefixed:
+    byte_at.append(byte_at[-1] + len(ch.encode("utf-8")))
+offsets_bytes = [
+    [byte_at[a], byte_at[b]] for a, b in enc["offset_mapping"][0].tolist()
+]
+prefix_bytes = len(f"{PREFIX}: ".encode("utf-8"))
 
 np.save(f"{OUT}/hidden_states.npy", hs)
 np.save(f"{OUT}/single_vec.npy", sv)
@@ -61,12 +71,12 @@ meta = {
     "model": M,
     "task": "retrieval",
     "prompt_name": "passage",
-    "prefix_chars": prefix_chars,
+    "prefix_bytes": prefix_bytes,
     "seq_len": int(seq),
     "hidden_dim": int(hs.shape[1]),
     "multivec_dim": int(mv.shape[1]),
     "ids_match": ids_match,
-    "offsets_in_prefixed_text": [[int(a), int(b)] for a, b in enc["offset_mapping"][0].tolist()],
+    "offsets_in_prefixed_text_bytes": offsets_bytes,
 }
 json.dump(meta, open(f"{OUT}/meta.json", "w"))
 print("fixtures written to", OUT)
