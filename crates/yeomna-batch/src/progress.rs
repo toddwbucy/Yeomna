@@ -3,6 +3,7 @@
 //! Emits structured JSON progress events to stderr at configurable
 //! intervals to prevent log spam during large batches.
 
+use std::io::Write;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -124,7 +125,10 @@ impl ProgressReporter {
         };
 
         if let Ok(json) = serde_json::to_string(&event) {
-            eprintln!("{json}");
+            // Progress is advisory. A closed or failing stderr must never
+            // panic or abort batch processing, so the write error is
+            // deliberately ignored (eprintln! would panic instead).
+            let _ = writeln!(std::io::stderr(), "{json}");
         }
     }
 
