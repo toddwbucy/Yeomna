@@ -579,17 +579,22 @@ impl EmbeddingClient {
             ));
         };
 
-        let response = tokio::time::timeout(timeout, response_future)
-            .await
-            .map_err(|_| EmbeddingError::Timeout(timeout.as_secs()))??;
-
-        let status = response.status();
-        let resp_bytes = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(|e| EmbeddingError::Connection(e.to_string()))?
-            .to_bytes();
+        // One deadline covers both the response headers and the body
+        // collection: a service that returns headers promptly and then
+        // stalls the body must still trip the timeout.
+        let (status, resp_bytes) = tokio::time::timeout(timeout, async {
+            let response = response_future.await?;
+            let status = response.status();
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|e| EmbeddingError::Connection(e.to_string()))?
+                .to_bytes();
+            Ok::<_, EmbeddingError>((status, bytes))
+        })
+        .await
+        .map_err(|_| EmbeddingError::Timeout(timeout.as_secs()))??;
 
         if !status.is_success() {
             let message = String::from_utf8_lossy(&resp_bytes).into_owned();
