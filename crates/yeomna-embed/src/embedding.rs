@@ -250,7 +250,7 @@ impl EmbeddingClient {
     /// Connect to an embedding service at the given endpoint string,
     /// auto-detecting the transport from the prefix.
     ///
-    /// - `http://...` or `https://...` → HTTP/TCP endpoint (the base URL,
+    /// - `http://...` → HTTP/TCP endpoint (the base URL,
     ///   typically including `/v1`)
     /// - `unix:///path/to/socket`      → Unix domain socket
     /// - `/path/to/socket`             → Unix domain socket (bare absolute path)
@@ -636,11 +636,22 @@ impl EmbeddingClient {
 /// Parse an endpoint string into an [`EmbeddingEndpoint`].
 ///
 /// Recognized prefixes:
-/// - `http://`, `https://`           → HTTP/TCP base URL (must include `/v1`)
+/// - `http://`                       → HTTP/TCP base URL (must include `/v1`)
 /// - `unix:///path/to/socket`        → Unix domain socket
 /// - `/path/to/socket` (bare path)   → Unix domain socket
+///
+/// `https://` is rejected: no TLS connector exists in this crate's
+/// dependency tree, so accepting the scheme would defer the failure to an
+/// obscure connect-time error. Inside the sealed appliance every internal
+/// seam is a Unix socket or localhost HTTP, so TLS support is a deliberate
+/// absence, not a gap.
 fn parse_endpoint(endpoint_str: &str) -> Result<EmbeddingEndpoint, EmbeddingError> {
-    if endpoint_str.starts_with("http://") || endpoint_str.starts_with("https://") {
+    if endpoint_str.starts_with("https://") {
+        Err(EmbeddingError::Connection(
+            "https:// endpoints are not supported: no TLS connector is built into this client"
+                .to_string(),
+        ))
+    } else if endpoint_str.starts_with("http://") {
         Ok(EmbeddingEndpoint::Tcp(endpoint_str.to_string()))
     } else if let Some(path) = endpoint_str.strip_prefix("unix://") {
         Ok(EmbeddingEndpoint::Unix(PathBuf::from(path)))
@@ -648,7 +659,7 @@ fn parse_endpoint(endpoint_str: &str) -> Result<EmbeddingEndpoint, EmbeddingErro
         Ok(EmbeddingEndpoint::Unix(PathBuf::from(endpoint_str)))
     } else {
         Err(EmbeddingError::Connection(format!(
-            "endpoint must start with http://, https://, unix://, or be an absolute path; got '{endpoint_str}'"
+            "endpoint must start with http://, unix://, or be an absolute path; got '{endpoint_str}'"
         )))
     }
 }
@@ -686,9 +697,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_endpoint_https() {
-        let ep = parse_endpoint("https://api.openai.com/v1").unwrap();
-        assert!(matches!(ep, EmbeddingEndpoint::Tcp(ref u) if u == "https://api.openai.com/v1"));
+    fn parse_endpoint_https_rejected() {
+        // No TLS connector exists, so the scheme fails at parse time with a
+        // clear message rather than at connect time with an obscure one.
+        let err = parse_endpoint("https://api.openai.com/v1").unwrap_err();
+        assert!(err.to_string().contains("TLS"), "got: {err}");
     }
 
     #[test]
