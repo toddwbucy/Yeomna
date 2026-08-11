@@ -17,9 +17,9 @@ Reviewer: Claude, with Todd. Date: 2026-08-11.
 test exercises requests, responses, enums, and maps against the generated
 types, and nothing referenced the three packages left behind.
 
-**The rename is two lines.** `package yeomna.extraction;` and the header
-comment. Service, rpc, message, and field names untouched, per the ruling's
-engineering-versus-mythology test.
+**The rename is two lines.** The `package yeomna.extraction` declaration and
+its header comment. Service, rpc, message, and field names untouched, per the
+ruling.
 
 **protoc dependency confirmed live.** The build script ran against libprotoc
 35.1. Generated code is not committed, so the protoc version is part of the
