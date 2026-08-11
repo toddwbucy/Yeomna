@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/yeomna-chunking", "crates/yeomna-batch"]
+members = ["crates/yeomna-chunking", "crates/yeomna-keys", "crates/yeomna-batch"]
 resolver = "2"
 
 [workspace.package]
@@ -11,6 +11,8 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 # Versions match the reference's root manifest where a pin exists there.
+regex = "1"
+sha2 = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
