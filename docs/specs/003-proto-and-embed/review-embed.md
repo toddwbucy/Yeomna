@@ -24,7 +24,7 @@ consumes `yeomna-proto`.
 
 **Preserved working behavior worth knowing:** client-side request batching
 with GPU-OOM halving retry, a 600 second default timeout sized for large
-PDFs, and endpoint parsing that accepts `http://`, `https://`, `unix://`,
+PDFs, and endpoint parsing that accepts `http://`, `unix://`,
 and absolute socket paths. All moved unchanged per FR-E3.
 
 **`extraction.rs` arrives with zero tests**, recorded per FR-E4. Candidates
