@@ -8,8 +8,14 @@ import torch
 from transformers import AutoModel, AutoTokenizer
 
 M = "jinaai/jina-embeddings-v4"
-tok = AutoTokenizer.from_pretrained(M, trust_remote_code=True)
-model = AutoModel.from_pretrained(M, trust_remote_code=True, torch_dtype=torch.float16)
+# Two snapshots exist in the local cache. Pin the one this spike ran on, so
+# both weights and the trust_remote_code modeling file are the same bytes on
+# every rerun.
+REVISION = "853c867b65b749f3c3c72a06868140d842e04f06"
+tok = AutoTokenizer.from_pretrained(M, trust_remote_code=True, revision=REVISION)
+model = AutoModel.from_pretrained(
+    M, trust_remote_code=True, revision=REVISION, torch_dtype=torch.float16
+)
 model = model.to("cuda:2")
 model.requires_grad_(False)
 

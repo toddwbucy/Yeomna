@@ -13,7 +13,11 @@ os.makedirs(OUT, exist_ok=True)
 
 doc = open("/home/todd/git/Yeomna/README.md").read()
 M = "jinaai/jina-embeddings-v4"
-model = AutoModel.from_pretrained(M, trust_remote_code=True, torch_dtype=torch.float16).to("cuda:2")
+# Pinned snapshot: weights and custom modeling code as one identity.
+REVISION = "853c867b65b749f3c3c72a06868140d842e04f06"
+model = AutoModel.from_pretrained(
+    M, trust_remote_code=True, revision=REVISION, torch_dtype=torch.float16
+).to("cuda:2")
 model.requires_grad_(False)
 
 PREFIX = "Passage"
@@ -69,6 +73,7 @@ meta = {
     "doc": "README.md",
     "doc_sha256": hashlib.sha256(doc.encode()).hexdigest(),
     "model": M,
+    "model_revision": REVISION,
     "task": "retrieval",
     "prompt_name": "passage",
     "prefix_bytes": prefix_bytes,
