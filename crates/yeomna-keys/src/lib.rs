@@ -455,3 +455,62 @@ mod tests {
         assert!(k.len() <= 254);
     }
 }
+
+#[cfg(test)]
+mod golden {
+    //! Full-literal pins per spec 002 FR-K3, captured from the moved code
+    //! before any tightening landed. These keys are Yeomna's idempotency
+    //! contract: if one of these tests fails, re-ingest has stopped being
+    //! idempotent, and the change that broke it is wrong no matter how
+    //! reasonable it looks.
+    use super::*;
+
+    #[test]
+    fn golden_file_key() {
+        assert_eq!(file_key("core/models.py"), "core_models_py");
+        assert_eq!(file_key("src/lib.rs"), "src_lib_rs");
+    }
+
+    #[test]
+    fn golden_chunk_and_embedding_key() {
+        assert_eq!(chunk_key("2501_12345", 3), "2501_12345_chunk_3");
+        assert_eq!(
+            embedding_key("2501_12345_chunk_3"),
+            "2501_12345_chunk_3_emb"
+        );
+    }
+
+    #[test]
+    fn golden_normalize_document_key() {
+        assert_eq!(normalize_document_key("2501.12345v2"), "2501_12345");
+        assert_eq!(normalize_document_key("hep-th/9901001"), "hep-th_9901001");
+    }
+
+    #[test]
+    fn golden_symbol_key_full_literal() {
+        assert_eq!(
+            symbol_key("src_lib_rs", "Config::new", 12),
+            "src_lib_rs__Config__new__086f8847"
+        );
+    }
+
+    #[test]
+    fn golden_edge_key_full_literal() {
+        assert_eq!(
+            edge_key(
+                "src_lib_rs__Config__new__a1b2c3d4",
+                "defines",
+                "src_lib_rs__Cfg__build__e5f6a7b8"
+            ),
+            "src_lib_rs__Config____defines__src_lib_rs__Cfg__bui__9eee290c"
+        );
+    }
+
+    #[test]
+    fn golden_model_hash_full_literal() {
+        assert_eq!(
+            model_hash("jinaai/jina-embeddings-v4"),
+            "736b129f4f11172c958e05da3d30fcfd99ce4f2ff12b3afe8d5f5d49b2d663dc"
+        );
+    }
+}
