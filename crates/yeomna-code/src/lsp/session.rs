@@ -452,7 +452,7 @@ pub fn version_args_for(analyzer: &str) -> &'static [&'static str] {
 pub struct AnalyzerStatus {
     /// The command that will actually be spawned.
     pub command: String,
-    /// Where it came from: "config/env" (pinned), "managed" (the HADES
+    /// Where it came from: "config/env" (pinned), "managed" (the Yeomna
     /// tools directory), or "PATH".
     pub source: &'static str,
     /// Whether it was explicitly pinned by the operator.
@@ -461,16 +461,16 @@ pub struct AnalyzerStatus {
     pub outcome: Result<String, String>,
 }
 
-/// The HADES-managed tools directory: `HADES_TOOLS_DIR` if set, else
-/// `~/.local/share/hades/tools`. Binaries here are standalone release
-/// builds installed by `hades tools install` — not rustup shims — so
+/// The Yeomna-managed tools directory: `YEOMNA_TOOLS_DIR` if set, else
+/// `~/.local/share/yeomna/tools`. Binaries here are standalone release
+/// builds installed by the tools-install verb — not rustup shims — so
 /// they resolve identically from every directory (#167).
 pub fn managed_tools_dir() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("HADES_TOOLS_DIR") {
+    if let Ok(dir) = std::env::var("YEOMNA_TOOLS_DIR") {
         return std::path::PathBuf::from(dir);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-    std::path::Path::new(&home).join(".local/share/hades/tools")
+    std::path::Path::new(&home).join(".local/share/yeomna/tools")
 }
 
 /// The managed binary for `analyzer`, if one is installed.
@@ -481,9 +481,9 @@ fn managed_tool_in(dir: &std::path::Path, analyzer: &str) -> Option<std::path::P
 
 /// Resolve an analyzer and probe it from `workspace`.
 ///
-/// Resolution order, strict: operator pin (config/env) → HADES-managed
+/// Resolution order, strict: operator pin (config/env) → Yeomna-managed
 /// tools directory → bare `PATH`. The single shared implementation for
-/// both the ingest preflight and `hades tools status`, so the two cannot
+/// both the ingest preflight and the tools-status verb, so the two cannot
 /// drift on resolution order or version-invocation form.
 pub fn resolve_and_probe(
     analyzer: &str,

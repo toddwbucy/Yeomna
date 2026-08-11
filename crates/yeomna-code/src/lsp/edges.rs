@@ -1,7 +1,7 @@
 //! Edge resolution from language-server extraction data.
 //!
 //! Materializes symbol nodes and edges from file-level extraction data
-//! for storage in ArangoDB graph collections:
+//! for storage in the sink's graph containers:
 //! - `codebase_symbols` — per-symbol documents
 //! - `codebase_defines_edges`, `codebase_calls_edges`, `codebase_implements_edges`, `codebase_imports_edges`
 
@@ -17,7 +17,8 @@ use yeomna_keys as keys;
 
 /// Edge types produced by the resolver.
 ///
-/// Each variant maps to a dedicated ArangoDB edge collection.
+/// Each variant maps to a dedicated edge container name (transitional,
+/// see [`crate::containers`]).
 /// `Pyo3Exposes` and `FfiExposes` were retired — those are now
 /// boolean attributes on the symbol document (`is_pyo3`, `is_ffi`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -44,7 +45,7 @@ impl EdgeKind {
         }
     }
 
-    /// The ArangoDB edge collection name for this edge kind.
+    /// The transitional edge container name for this edge kind.
     ///
     /// Derived from the [`CODEBASE`] singleton to prevent drift between
     /// the edge kind enum and the collection registry.
@@ -58,7 +59,7 @@ impl EdgeKind {
     }
 }
 
-/// A resolved edge ready for ArangoDB insertion.
+/// A resolved edge ready for sink insertion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrateEdge {
     /// Source vertex ID (e.g., `codebase_files/src_lib_rs`).
@@ -91,10 +92,10 @@ fn universal_kind_from_lsp(lsp_kind: &str) -> Option<&'static str> {
     }
 }
 
-/// A symbol document ready for ArangoDB insertion.
+/// A symbol document ready for sink insertion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolDocument {
-    /// ArangoDB document key.
+    /// Deterministic document key (see yeomna-keys).
     #[serde(rename = "_key")]
     pub key: String,
     pub name: String,

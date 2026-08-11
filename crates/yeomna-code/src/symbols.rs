@@ -133,7 +133,7 @@ impl SymbolKind {
         self.universal_kind().is_some()
     }
 
-    /// The language-specific kind string (stored as `lang_kind` in ArangoDB).
+    /// The language-specific kind string (stored as `lang_kind` in the sink).
     pub fn lang_kind(&self) -> &'static str {
         match self {
             Self::Function => "function",
@@ -253,7 +253,7 @@ impl std::fmt::Display for AnalysisTier {
 /// Sorts symbol names alphabetically, joins with newlines, and returns
 /// the hex-encoded SHA-256 digest.  Two files with the same symbol
 /// names (regardless of body changes) produce the same hash — this
-/// is intentional, matching the Python HADES behavior where only
+/// is intentional, matching the reference's Python-era behavior where only
 /// structural changes (added/removed/renamed symbols) trigger
 /// re-processing.
 pub fn compute_symbol_hash(symbols: &[Symbol]) -> String {

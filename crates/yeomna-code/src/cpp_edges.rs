@@ -3,7 +3,7 @@
 //! [`super::cpp`] stores each call's target USR, definition location, and
 //! qualified name on the caller symbol. This module resolves those records
 //! against all ingested C-family symbols after the per-file pass, so calls can
-//! cross translation units while still targeting HADES's span-based keys.
+//! cross translation units while still targeting Yeomna's span-based keys.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;

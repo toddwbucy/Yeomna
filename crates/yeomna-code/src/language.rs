@@ -42,7 +42,7 @@ impl Language {
     ///
     /// Extensionless scripts are identified only by their first line, so an
     /// extension-keyed lookup cannot see them at all. Returns `None` both for
-    /// non-shebang lines and for interpreters HADES has no analyzer for (shell,
+    /// non-shebang lines and for interpreters Yeomna has no analyzer for (shell,
     /// perl, …) — the caller still wants those files ingested, just through the
     /// parser-free raw-text path.
     pub fn from_shebang(first_line: &str) -> Option<Self> {
