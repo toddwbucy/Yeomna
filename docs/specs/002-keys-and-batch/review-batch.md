@@ -44,10 +44,17 @@ Phase 5 will compile against.
 least 80ms elapsed on a 100ms budget. Passing consistently here, left alone,
 loosened only if CI ever flakes.
 
-**stderr progress reporting** writes through `eprintln` inside
-`ProgressReporter`. Fine for a library consumed by a CLI, worth remembering
-when the daemon consumes it later, since a daemon's stderr goes to the
-journal.
+**stderr progress reporting** writes through `ProgressReporter`. Worth
+remembering when the daemon consumes it later, since a daemon's stderr goes
+to the journal. CodeRabbit review hardened the write so a closed stderr
+cannot panic the batch.
+
+**Per-item checkpointing, reviewed and kept.** CodeRabbit flagged
+`record_result` rewriting the full state file per item as O(N squared).
+Correct arithmetic, deliberate semantics: per-item durability is the crash
+resilience the checkpoint exists for, and interval checkpointing would lose
+up to an interval of completed work on crash. Revisit if a measured ingest
+shows the write cost, not before.
 
 ## Verification
 
