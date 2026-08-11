@@ -6,6 +6,8 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+# let-chains (used in yeomna-batch) stabilized in 1.88.
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Versions match the reference's root manifest where a pin exists there.

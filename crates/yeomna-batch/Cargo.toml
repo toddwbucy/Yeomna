@@ -4,6 +4,7 @@ description = "Resumable, fault-isolated batch processing, lifted from the refer
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
