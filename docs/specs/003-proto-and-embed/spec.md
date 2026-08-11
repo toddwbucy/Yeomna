@@ -45,21 +45,32 @@ the source protos stay readable in the reference. The dead embedding protocol
 in particular must not come over, for the same reason the dead ANN module did
 not.
 
-**Proto package and service names are wire contract and stay verbatim.** The
-deployed Python extractor implements `persephone.extraction.ExtractionService`.
-Renaming the package in the `.proto` would change the gRPC method paths and
-silently break the only working service this client can talk to. The crate is
-named `yeomna-proto`, the package inside it stays `persephone.extraction`, and
-the doc comments say why.
+**The wire package is renamed to `yeomna.extraction`, ruled 2026-08-11.** As
+first drafted, this spec froze `persephone.extraction` as wire contract. That
+freeze protected nothing: the extractor is down, its Python stubs are
+generated from this same proto file and regenerate under Phase 6, both ends
+of the wire become Yeomna's, and no third party anywhere speaks this
+protocol. This is not the keys situation, where golden values guard stored
+data. It is the FR-B4 situation, where a rename costs nothing while no
+deployment exists and stops costing nothing the day one does.
+
+It also serves a project goal directly: getting off the old mythological
+naming. Persephone named the reference's ML boundary, and the name was
+already overloaded in the reference's own house (the proto docs carry a
+"none of these are the Persephone PM system" disambiguation). The `package`
+line changes, and nothing else in the proto does: service, rpc, message, and
+field names are not mythology and renaming them would be refactor. Phase 6
+regenerates the Python stubs from this proto, so the service comes up
+speaking `yeomna.extraction` the day it comes up at all.
 
 ## Task Scope
 
 ### This Task Will
 
 1. Create `crates/yeomna-proto`: `build.rs`, a trimmed `lib.rs`, the
-   `proto/persephone/extraction/extraction.proto` file copied verbatim into a
-   workspace-root `proto/` directory, and the extraction-relevant parts of the
-   reference's `proto_types.rs` integration test.
+   extraction proto copied into a workspace-root `proto/` directory with its
+   `package` renamed to `yeomna.extraction` and nothing else changed, and the
+   extraction-relevant parts of the reference's `proto_types.rs` test.
 2. Create `crates/yeomna-embed` from `crates/hades-core/src/persephone/`:
    `mod.rs` to `lib.rs`, `embedding.rs`, `extraction.rs`.
 3. Rewrite `hades_proto::` imports to `yeomna_proto::`.
@@ -84,7 +95,7 @@ the doc comments say why.
 
 | Path | Source | Lines |
 |---|---|---|
-| `proto/persephone/extraction/extraction.proto` | `proto/persephone/extraction/extraction.proto`, verbatim | 143 |
+| `proto/yeomna/extraction/extraction.proto` | `proto/persephone/extraction/extraction.proto`, verbatim except the `package` line | 143 |
 | `crates/yeomna-proto/build.rs` | `crates/hades-proto/build.rs`, trimmed to one proto | ~30 |
 | `crates/yeomna-proto/src/lib.rs` | `crates/hades-proto/src/lib.rs`, trimmed | ~12 |
 | `crates/yeomna-proto/tests/proto_types.rs` | extraction-relevant parts of the reference's | part of 170 |
@@ -157,8 +168,8 @@ cost nothing while no deployment exists:
 2. **`DEFAULT_ENDPOINT_URL = "http://localhost:8087/v1"`**, a TCP default for
    the embedder client. The known compromise, on the client side. The unix://
    path support already exists, so this is a default, not a capability.
-3. **HADES branding in doc comments**, corrected as documentation in
-   tightening, store-grep and hades-grep clean at merge except provenance
+3. **HADES and Persephone branding in doc comments**, corrected as
+   documentation in tightening, greps clean at merge except provenance
    citations.
 
 ## Implementation Notes
@@ -174,7 +185,9 @@ cost nothing while no deployment exists:
 
 ### DON'T
 
-- **Do not rename anything inside the `.proto`.** Wire contract.
+- **Do not rename anything inside the `.proto` beyond the `package` line.**
+  Service, rpc, message, and field names are not mythology, and changing them
+  is refactor.
 - **Do not lift the three unconsumed proto packages.**
 - **Do not add integration tests that need a running service.**
 - **Do not resolve the PE-API fork here**, in code, in defaults, or in doc
@@ -199,14 +212,15 @@ Postgres, the embedder, the extractor, or the GPU.
 Per crate, at merge:
 
 1. Build, test, clippy, fmt clean from the repository root.
-2. `extraction.proto` byte-identical to the reference's copy.
+2. `extraction.proto` differs from the reference's copy by the `package`
+   line and its header comment only, shown by diff in the review.
 3. `yeomna-proto` generates exactly one package.
 4. `yeomna-embed`'s move commit diffs as module wiring, `hades_proto` to
    `yeomna_proto` import rewrites, and the provenance note, nothing else.
 5. The five endpoint-parsing tests pass unchanged.
-6. Store-reference grep clean at merge. `hades` grep clean at merge except
-   provenance citations and, pending the tightening decision, the default
-   socket path.
+6. Store-reference grep clean at merge. `hades` and `persephone` greps
+   clean at merge except provenance citations and, pending the tightening
+   decision, the default socket path.
 7. Review notes exist per crate.
 
 ## QA Acceptance Criteria

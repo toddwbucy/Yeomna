@@ -385,6 +385,20 @@ One thing the port scope does not cover: closing the verb layer is new
 construction, not a port, and section 6 calls it the largest single block of work
 in the build. It sits alongside the store swap rather than inside it.
 
+### Naming: the mythology stays behind
+
+Ruled 2026-08-11. Getting off the old mythological naming scheme is a project
+goal, and lifts apply it at the cheapest moment, which is before anything
+deploys. Persephone (the reference's ML-boundary brand, covering the embedder
+and extractor services and their protocols) does not enter Yeomna: the wire
+package became `yeomna.extraction` at the Phase 3 lift, the crates are
+`yeomna-proto` and `yeomna-embed`, and PE-API's successor contract gets a
+Yeomna-native name at birth. The test for what to rename: brands and package
+names are mythology and change, while service, rpc, message, and field names
+are engineering and stay. Contrast with the keys contract, which is frozen
+because golden values guard stored-data idempotency. A name is frozen only
+while something deployed speaks it.
+
 ### Three things, kept apart
 
 Every piece of the reference sorts into one of three buckets, and the sorting is
