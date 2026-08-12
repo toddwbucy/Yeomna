@@ -86,3 +86,25 @@ The extractor analyzed its own source and the codebase it was lifted from.
   missed `HADES_RA_BIN` override, so the exception list is provenance
   alone.
 - `containers.rs` values match the reference's `CODEBASE` static verbatim.
+
+## CodeRabbit round: fixed and follow-up ledger
+
+Ten fix commits landed above the move, summarized on the PR. The declined
+items are recorded here as the follow-up ledger, each skipped either because
+CodeRabbit itself marked it follow-up or because the no-refactor rule
+governs:
+
+1. **Diagnostics-aware tiering** (the substantive one): cpp parses that
+   downgraded from compile-database arguments or carried serious diagnostics
+   still report Semantic with no fallback_reason. Deserves its own reviewed
+   change to tier semantics.
+2. `find_item_start` includes leading blank lines in item spans. Changing
+   span starts changes chunk content hashes, so this identity-adjacent fix
+   needs its own scrutiny.
+3. Parse-once refactor: rust_ast parses three times, python re-parses after
+   its validating parse. Real waste, pure refactor.
+4. cpp_edges canonicalize caching, the CLANG_LOCK dedicated-analyzer-thread
+   design, attr-based CUDA metadata in func_symbol, unreachable branches in
+   resolve_call_target, the python_calls pass-through fn, go.work workspace
+   grouping, a timeout on analyzer preflight, and the cpp test-helper
+   restructure.
