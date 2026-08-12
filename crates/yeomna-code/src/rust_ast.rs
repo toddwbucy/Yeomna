@@ -424,14 +424,23 @@ fn find_item_start(source: &str, keyword_byte: usize) -> usize {
     let prefix = &source[..keyword_byte];
     let mut start = keyword_byte;
 
-    for line in prefix.lines().rev() {
-        let trimmed = line.trim();
+    // Walk backward line by line using real byte offsets from the source,
+    // never len()+1 arithmetic: that drifted one byte per CRLF line and
+    // could land start off a line boundary.
+    let mut line_end = prefix.len();
+    loop {
+        let line_start = prefix[..line_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let trimmed = prefix[line_start..line_end].trim();
         if trimmed.starts_with("#[")
             || trimmed.starts_with("///")
             || trimmed.starts_with("//!")
             || trimmed.is_empty()
         {
-            start = start.saturating_sub(line.len() + 1); // +1 for newline
+            start = line_start;
+            if line_start == 0 {
+                break;
+            }
+            line_end = line_start - 1;
         } else {
             break;
         }

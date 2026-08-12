@@ -127,20 +127,21 @@ fn split_at_lines(
     let mut current_start = base_offset;
     let mut byte_offset = 0usize;
 
-    for line in text.lines() {
-        let line_with_newline_len = line.len() + 1; // approximate
+    // split_inclusive keeps each line's real terminator (LF or CRLF), so
+    // byte offsets stay exact and chunk text equals the source slice it
+    // names. The old lines() + len()+1 arithmetic drifted one byte per
+    // CRLF line and appended a newline the source may not have had.
+    for line in text.split_inclusive('\n') {
+        let line_len = line.len();
 
-        if !current.is_empty() && current.len() + line_with_newline_len > max_chars {
+        if !current.is_empty() && current.len() + line_len > max_chars {
             out.push((current.clone(), current_start));
             current.clear();
             current_start = base_offset + byte_offset;
         }
 
-        if !current.is_empty() {
-            current.push('\n');
-        }
         current.push_str(line);
-        byte_offset += line.len() + 1; // +1 for newline
+        byte_offset += line_len;
     }
 
     if !current.is_empty() {
@@ -287,5 +288,34 @@ mod tests {
             assert_eq!(chunk.chunk_index, i);
             assert_eq!(chunk.total_chunks, chunks.len());
         }
+    }
+}
+
+#[cfg(test)]
+mod crlf_tests {
+    use super::*;
+
+    #[test]
+    fn split_at_lines_is_byte_exact_on_crlf() {
+        let text = "line one\r\nline two\r\nline three\r\n";
+        let mut out = Vec::new();
+        split_at_lines(text, 100, 12, &mut out);
+        // Every produced chunk must equal the source slice at its offset,
+        // terminators included, with no drift and no phantom newline.
+        for (chunk, start) in &out {
+            let rel = start - 100;
+            assert_eq!(&text[rel..rel + chunk.len()], chunk.as_str());
+        }
+        let total: usize = out.iter().map(|(c, _)| c.len()).sum();
+        assert_eq!(total, text.len(), "chunks must cover the text exactly");
+    }
+
+    #[test]
+    fn split_at_lines_preserves_unterminated_final_line() {
+        let text = "aaaa\nbb";
+        let mut out = Vec::new();
+        split_at_lines(text, 0, 5, &mut out);
+        let joined: String = out.iter().map(|(c, _)| c.as_str()).collect();
+        assert_eq!(joined, text, "no newline appended to the final line");
     }
 }
