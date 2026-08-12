@@ -49,16 +49,19 @@ Todd flagged mid-review that the Docling backend may be replaced by
 docling-rs now that the port era is closing, so the round was triaged by
 what survives that decision.
 
-**The important find, recorded as a hole rather than deep-fixed:**
-`DocumentConverter.convert_single` is Docling v1 API, and the dependency
-demands 2.x. The reference's primary extraction path most likely raised
-AttributeError on every PDF and silently rode the PyMuPDF fallback, joining
-the pattern of documented-but-never-wired features (the gRPC embedder, late
-chunking). The related v2-shape findings (format routing narrower than the
-advertised Capabilities, caption and page-count accessors) are part of the
-same hole: **"extraction backend: repair against Docling v2 or replace with
-docling-rs, decided at the functionality-test step."** A one-line
-convert-single-to-convert stopgap exists if the Python path is kept.
+**The important find, corrected by Todd and then ruled:**
+`DocumentConverter.convert_single` is Docling v1 API against a 2.x
+dependency bound. The path did run, on the previous deployment against the
+Docling of two years ago. The code predates v2 and needs updating either
+way, and Docling has since shipped a Rust implementation, so **Todd ruled:
+the extraction backend moves to docling-rs**, for real multithreaded
+operation and proper memory management. The v2-shape findings (format
+routing narrower than the advertised Capabilities, caption and page-count
+accessors) fold into that hole: **"extraction backend: replace with
+docling-rs."** The ported Python service stands as the behavioral reference
+and interim option until the docling-rs backend exists, with a one-line
+convert-single-to-convert stopgap if it must run against modern Docling in
+the meantime.
 
 **Applied, because they survive any backend:** defensive config parsing
 (non-numeric timeout no longer crashes boot, negatives rejected, symmetric
@@ -73,5 +76,5 @@ bound.
 single-concurrency executor for ML branches, async temp-file handling, idle
 monitor accessors, gRPC error classification), the Makefile PID management,
 pyproject packaging, and portable unit paths. Every one is real, and every
-one is polish on a Python server that a docling-rs decision may replace
-wholesale. They ride the same hole entry and get resolved with it.
+one is polish on a Python server the docling-rs ruling replaces. They ride
+the same hole entry and get resolved with it.
