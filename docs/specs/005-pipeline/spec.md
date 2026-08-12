@@ -182,7 +182,7 @@ cargo build && cargo test && cargo clippy --all-targets && cargo fmt --check
 ```
 
 Nothing requires Postgres or any service. The mock-sink test is the only
-executable proof this phase can honestly offer, and that is the point: the
+executable proof this phase can offer without pretending, and that is the point: the
 pipeline compiles against a store that does not exist yet.
 
 ## Success Criteria
