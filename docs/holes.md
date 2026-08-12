@@ -27,7 +27,7 @@ the `IngestSink` implementation on the sealed cluster.
 | Contract in hand | `crates/yeomna-pipeline/src/sink.rs` (two methods), byte-stable `chunk_doc`/`embedding_doc` JSON, the emitted types (`FileAnalysis`, `SymbolDocument`, `CrateEdge`, `TextChunk`), golden keys |
 | CLI holes it fills | 28 (`db` tree, `status`, `orient`) jointly with H2 |
 | Also fills | the deferred five-call-sequence test (spec 005), the stale-delete atomicity decision (M3, named in the orchestrator comment) |
-| Blocked by | ruling R2 below (R1 ruled 2026-08-12) |
+| Blocked by | nothing. R1 and R2 both ruled 2026-08-12 |
 
 ## H2. The verb layer
 
@@ -157,7 +157,7 @@ Recorded during lifts, riding in the review notes, none blocking:
 | # | Ruling | State |
 |---|---|---|
 | R1 | Q2 graph isolation | **Ruled 2026-08-12: graph_id column**, one table set, partition-by-graph as measured graduation. Recorded in the store PRD |
-| R2 | `full_page_writes` on ZFS | Safe to disable, currently on, raised twice |
+| R2 | `full_page_writes` on ZFS | **Ruled 2026-08-12: off**, CoW invariant stated in the conf. H1 unblocked |
 | R3 | Config file versus env (H10) | Not ruled |
 | R4 | Q3 verb naming | One option left standing (rename), lands with the verb spec |
 | R5 | PR #17 extraction direction | Held in draft pending docling-rs shape |
