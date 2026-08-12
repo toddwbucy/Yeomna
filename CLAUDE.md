@@ -103,7 +103,7 @@ violates charter section 5. Do not develop against the system instance.
 | Logs | `~/.local/share/yeomna/log` |
 | Roles | `yeomna_owner` (DDL), `yeomna_app` (runtime), `yeomna_audit` (owns audit) |
 | Database | `yeomna` |
-| Memory | `shared_buffers=64GB`, `huge_pages=on`, `effective_cache_size=96GB` |
+| Memory | `shared_buffers=8GB`, `huge_pages=on`, `effective_cache_size=8GB`, `full_page_writes=off` (safe only on CoW storage) |
 
 It runs as a systemd unit, `yeomna-postgres.service`, enabled at boot. Do not
 start it with `pg_ctl` by hand.
@@ -156,37 +156,36 @@ charter section 8.3 needs for copy-on-write checkpoint versioning. It carries
 `primarycache=metadata` locally, so ARC does not double-cache what
 `shared_buffers` already holds.
 
-### Huge pages, and how to not break this
+### Memory sizing, and the frame it follows
+
+Ruled 2026-08-12: **this is an agentic database app, and optimization targets
+traditional database performance, never RAM-cache maximization.** The corpus
+is RAM-resident at modest cache sizes (the reference's largest graph measured
+single-digit GB), an agent's query costs planner plus index descent plus a
+socket round trip, and the RAM on this box belongs to the models. The
+original 64GB `shared_buffers` was WeaverTools-era bleed-over, where RAM is
+the workload. Resized to 8GB, with `effective_cache_size` matching it because
+`primarycache=metadata` means nothing beyond `shared_buffers` caches data
+pages. `full_page_writes` is off (R2), safe only while pgdata lives on
+copy-on-write storage, stated in the conf comment.
 
 Memory settings live in `postgresql.conf`, not in `ALTER SYSTEM`, because an
-appliance ships a config file rather than a runtime override.
+appliance ships a config file rather than a runtime override. `huge_pages =
+on` stays strict (fail loud), and at this size the reservation is trivial.
 
-`huge_pages = on` is strict. The cluster refuses to start if the pages are not
-there, which is deliberate: silent degradation is worse than a loud failure on a
-box that was provisioned for the memory. The cost is that the page count has to
-be right.
+Two rules, learned the hard way on 2026-08-10, still binding:
 
-Two rules, both learned the hard way on 2026-08-10:
+1. **Ask Postgres, do not compute.** `postgres -D <datadir> -C
+   shared_memory_size_in_huge_pages` prints the exact count (server stopped).
+   Hand arithmetic once produced a count 152 pages short and a failed
+   service. Over-reserving is safe, under-reserving is the failure.
+2. **`HugePages_Free` is not what is available.** `HugePages_Rsvd` is counted
+   inside Free. Usable is `Free - Rsvd`.
 
-1. **Ask Postgres, do not compute.** `postgres -D <datadir> -c shared_buffers=64GB
-   -C shared_memory_size_in_huge_pages` prints the exact count without starting
-   the server. Hand arithmetic produced a count 152 pages short and a failed
-   service. The overhead above `shared_buffers` is roughly 800 pages, and
-   guessing it is what goes wrong.
-2. **`HugePages_Free` is not what is available.** `HugePages_Rsvd` is committed
-   but not yet faulted, and it is counted inside Free. Usable is
-   `Free - Rsvd`. A pool reporting 33,589 free had 33,525 usable against a
-   33,552 requirement.
-
-Current allocation is `vm.nr_hugepages = 33800` in
-`/etc/sysctl.d/98-hugepages.conf`. Yeomna commits 33,552, the system instance
-takes about 75, and true slack is 173 pages. **Changing `shared_buffers` means
-recomputing this number first.**
-
-The pool is global and the system `postgresql.service` is enabled at boot, so
-both postmasters draw from it. The system instance was reset to defaults so it
-takes almost nothing. If it were ever resized, whichever starts first would win
-and the other would fail to start.
+Current allocation is `vm.nr_hugepages = 5000` in
+`/etc/sysctl.d/98-hugepages.conf`, comfortably above the roughly 4.9k the 8GB
+setting commits. The pool is global and shared with the (default-sized,
+disabled) system instance.
 
 Undecided, raised and not ruled: `full_page_writes = off`, which is safe on ZFS
 because copy-on-write never tears a page. It is currently **on**, the Postgres
