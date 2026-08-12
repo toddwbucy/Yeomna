@@ -1,0 +1,20 @@
+//! Document processing pipeline — extract → chunk → embed → store.
+//!
+//! Orchestrates the extraction and embedding clients with the chunking
+//! engine and a storage sink. Supports single-document and batch processing
+//! with two-phase GPU memory optimization.
+//!
+//! Lifted from HADES-Burn `crates/hades-core/src/pipeline/` per
+//! `docs/specs/005-pipeline/spec.md`. This is the lift that is deliberately
+//! part construction: the orchestrator's four store coupling points became
+//! the [`IngestSink`] trait, defined in [`sink`] and implemented nowhere in
+//! this workspace. The store crate implements it (store PRD Phase 7), and
+//! until then the missing store is a typed hole rather than a design
+//! discussion.
+
+mod orchestrator;
+pub mod profile;
+pub mod sink;
+
+pub use orchestrator::{DocumentResult, Pipeline, PipelineConfig, PipelineError, PipelineSummary};
+pub use sink::{IngestSink, InsertOutcome};

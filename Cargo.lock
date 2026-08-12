@@ -2143,6 +2143,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "yeomna-pipeline"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "yeomna-chunking",
+ "yeomna-embed",
+ "yeomna-keys",
+]
+
+[[package]]
 name = "yeomna-proto"
 version = "0.1.0"
 dependencies = [

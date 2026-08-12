@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/yeomna-chunking", "crates/yeomna-keys", "crates/yeomna-batch", "crates/yeomna-proto", "crates/yeomna-embed", "crates/yeomna-code"]
+members = ["crates/yeomna-chunking", "crates/yeomna-keys", "crates/yeomna-batch", "crates/yeomna-proto", "crates/yeomna-embed", "crates/yeomna-code", "crates/yeomna-pipeline"]
 resolver = "2"
 
 [workspace.package]
