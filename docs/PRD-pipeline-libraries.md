@@ -15,6 +15,7 @@ syntax their language requires.
 | Version | Date | Change |
 |---|---|---|
 | 0.1 | 2026-08-10 | First draft. Crate split, dependency order, lift scope. |
+| 0.2 | 2026-08-12 | The severance ruling: all wanted code moves now, then HADES-Burn closes. Phase 6 collapses to the extraction service alone. The embedding service is not ported (boilerplate around a loader the SPU replaces). Everything ArangoDB-touching is excluded and named as a hole, filled from Yeomna's own contracts, never by consulting the reference. A CLI surface capture (clap trees, help text, output conventions, every handler a self-reporting hole) is added as the executable holes ledger. Motive: cross-session context integrity, one repo, one boundary. |
 
 ---
 
