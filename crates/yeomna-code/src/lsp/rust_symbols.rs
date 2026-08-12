@@ -74,13 +74,29 @@ impl<'a> RustSymbolExtractor<'a> {
         &self,
         file_path: &std::path::Path,
     ) -> Result<FileExtraction, RustAnalyzerError> {
-        let content = tokio::fs::read_to_string(if file_path.is_absolute() {
+        // A read failure must not silently become empty content: the
+        // symbols rust-analyzer reports for this file would then be scanned
+        // against zero lines, losing attributes at best and panicking at
+        // worst. Warn and skip the file instead.
+        let resolved = if file_path.is_absolute() {
             file_path.to_path_buf()
         } else {
             self.session.workspace_root().join(file_path)
-        })
-        .await
-        .unwrap_or_default();
+        };
+        let content = match tokio::fs::read_to_string(&resolved).await {
+            Ok(content) => content,
+            Err(error) => {
+                tracing::warn!(path = %resolved.display(), %error, "skipping unreadable file");
+                return Ok(FileExtraction {
+                    symbols: Vec::new(),
+                    impl_blocks: Vec::new(),
+                    implementations: Vec::new(),
+                    pyo3_exports: Vec::new(),
+                    ffi_boundaries: Vec::new(),
+                    analyzed_at: chrono::Utc::now().to_rfc3339(),
+                });
+            }
+        };
 
         let lines: Vec<&str> = content.lines().collect();
 
@@ -368,8 +384,11 @@ impl<'a> RustSymbolExtractor<'a> {
 /// Scan lines above a symbol for Rust attributes (#[...]).
 fn scan_attributes(lines: &[&str], start_line: u32, sel_line: u32) -> Vec<String> {
     let mut attrs = Vec::new();
-    let start = start_line as usize;
-    let sel = sel_line as usize;
+    // Clamp both ends: rust-analyzer line numbers describe the file it
+    // indexed, which can disagree with what was read (edits, encodings),
+    // and an out-of-range start must not panic the extraction.
+    let start = (start_line as usize).min(lines.len());
+    let sel = (sel_line as usize).max(start);
 
     // Attributes between range.start and selectionRange.start.
     for line in &lines[start..sel.min(lines.len())] {
