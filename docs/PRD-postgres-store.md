@@ -563,11 +563,19 @@ carries `basis` and `analyzer` as required typed fields**, which makes an
 unattributed edge unrepresentable rather than discouraged. A NOT NULL column
 alone would only move the failure from silent to runtime.
 
-**Q2. Graph isolation mechanism.** The reference runs several named graphs per
-database sharing no collections. Options are a `graph_id` column throughout,
-which the DDL above assumes, or a Postgres schema per graph. The column is
-simpler and makes cross-graph bridge edges possible later. A schema per graph
-gives stronger isolation and cheaper drop.
+**Q2. Graph isolation mechanism. Ruled 2026-08-12: the `graph_id` column,
+one logical table set, as the DDL assumes.** The column keeps the verb layer
+bind-parameter pure (schema names cannot be bind parameters, and dynamic SQL
+is the defect class the reference's bind-shape lesson exists to prevent),
+keeps RLS the single inherited access mechanism, keeps one diff log and one
+migration story, and leaves cross-graph bridges representable with ordinary
+foreign keys. What the schema-per-graph option offered (instant drop,
+per-corpus dump, per-graph HNSW) is reachable later by LIST-partitioning on
+`graph_id` within the same logical model if measurement demands it, a
+graduation not a fork. A `graphs` registry table (id, name, created_at)
+becomes real, since `DbGraphCreate`, `DbGraphList`, and `DbGraphDrop` operate
+on it. Bridge-edge representation stays undesigned until the first bridge
+exists, per the no-vocabulary rule.
 
 **Q3. Verb naming.** `DbCollections`, `DbCreateCollection`, and `DbGraphMaterialize`
 carry ArangoDB vocabulary into a relational store. The second option was to keep
