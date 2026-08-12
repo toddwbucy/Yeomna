@@ -113,7 +113,7 @@ pattern, and the compiler remains the final authority at move time:
 | Kind | Crates |
 |---|---|
 | Internal | `yeomna-keys`, `yeomna-chunking` |
-| External | clang, proc-macro2, regex, rustpython-parser, serde, serde_json, sha2, syn, thiserror, tokio, tracing, tree-sitter, tree-sitter-cpp, tree-sitter-go, tree-sitter-python, tree-sitter-rust, url |
+| External | chrono, clang, proc-macro2, regex, rustpython-parser, serde, serde_json, sha2, syn, thiserror, tokio, tracing, tree-sitter, tree-sitter-cpp, tree-sitter-go, tree-sitter-python, tree-sitter-rust, url (dev: tempfile) |
 
 Version pins copy the reference exactly, and two matter beyond convention:
 

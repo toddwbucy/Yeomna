@@ -79,6 +79,10 @@ The extractor analyzed its own source and the codebase it was lifted from.
 ## Verification
 
 - Workspace gate: all crates green, clippy clean, fmt clean.
-- `grep -rn 'ArangoDB|HADES|hades' src tests` clean except the provenance
-  citation in `lib.rs` and the two flagged candidates above.
+- `grep -rnE 'ArangoDB|HADES|hades|persephone|Persephone' src tests` (the
+  -E form, rerun after the CodeRabbit rounds) returns only the provenance
+  citation in `lib.rs`. The former flagged candidates, the readiness-probe
+  string and the URI fixture, were renamed in the review round with the
+  missed `HADES_RA_BIN` override, so the exception list is provenance
+  alone.
 - `containers.rs` values match the reference's `CODEBASE` static verbatim.

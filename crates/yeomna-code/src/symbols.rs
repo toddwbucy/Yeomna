@@ -100,15 +100,17 @@ pub enum SymbolKind {
 impl SymbolKind {
     /// Map to the universal graph semantic primitive.
     ///
-    /// Five primitives: `file`, `module`, `type`, `callable`, `value`.
-    /// Returns `None` for non-primitive kinds (`Import`, `Impl`) that
-    /// should not be stored as symbol vertices in the graph.
+    /// Returns one of the four symbol primitives: `module`, `type`,
+    /// `callable`, `value`. (`file` is the fifth primitive of the ontology
+    /// but belongs to file documents, never to a `SymbolKind`.) Returns
+    /// `None` for non-primitive kinds (`Import`, `Impl`) that should not be
+    /// stored as symbol vertices in the graph.
     ///
     /// - `Import` → produces edges, not vertices
     /// - `Impl` → scaffolding; methods extracted individually as `callable`
     ///
     /// **Keep in sync with `universal_kind_from_lsp()`** in
-    /// `code::lsp::edges`, which maps LSP kind strings to the
+    /// [`crate::lsp::edges`], which maps LSP kind strings to the
     /// same four primitives for the rust-analyzer enrichment path.
     pub fn universal_kind(&self) -> Option<&'static str> {
         match self {

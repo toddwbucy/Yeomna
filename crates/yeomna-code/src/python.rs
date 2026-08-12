@@ -23,7 +23,9 @@ pub fn analyze(source: &str) -> Result<FileAnalysis, super::CodeAnalysisError> {
         .map_err(|e| super::CodeAnalysisError::ParseError(e.to_string()))?;
     let line_offsets = build_line_offsets(source);
 
-    // Parse once — share the AST across all extraction phases.
+    // Validating parse. The extraction phases below currently re-parse
+    // rather than sharing this AST, a known inefficiency recorded on the
+    // lift PR as follow-up work, not a behavior of this comment's claim.
     let module = parse_module(source);
 
     let symbols = match &module {
