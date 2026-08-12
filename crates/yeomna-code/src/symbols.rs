@@ -461,3 +461,65 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod tier_and_name_tests {
+    use super::*;
+
+    #[test]
+    fn tier_ordering_backs_the_downgrade_guard() {
+        assert!(AnalysisTier::Text < AnalysisTier::Structural);
+        assert!(AnalysisTier::Structural < AnalysisTier::Semantic);
+    }
+
+    #[test]
+    fn tier_as_str_round_trips_every_variant() {
+        for tier in [
+            AnalysisTier::Text,
+            AnalysisTier::Structural,
+            AnalysisTier::Semantic,
+        ] {
+            let s = tier.as_str();
+            let parsed = match s {
+                "text" => AnalysisTier::Text,
+                "structural" => AnalysisTier::Structural,
+                "semantic" => AnalysisTier::Semantic,
+                other => panic!("unknown tier string {other}"),
+            };
+            assert_eq!(parsed, tier);
+        }
+    }
+
+    fn sym(name: &str, metadata: serde_json::Value) -> Symbol {
+        Symbol {
+            name: name.to_string(),
+            kind: SymbolKind::Function,
+            start_line: 1,
+            end_line: 1,
+            metadata,
+        }
+    }
+
+    #[test]
+    fn qualified_name_metadata_wins_over_impl_context() {
+        let s = sym(
+            "new",
+            serde_json::json!({
+                "qualified_name": "explicit::path::new",
+                "impl_context": "Config",
+            }),
+        );
+        assert_eq!(s.qualified_name(), "explicit::path::new");
+    }
+
+    #[test]
+    fn module_path_produces_double_colon_qualified_name() {
+        // The ::-joined form is the contract: it matches what rust-analyzer
+        // emits, so both analyzers overwrite the same vertex.
+        let s = sym(
+            "helper",
+            serde_json::json!({ "module_path": "core::utils" }),
+        );
+        assert_eq!(s.qualified_name(), "core::utils::helper");
+    }
+}
