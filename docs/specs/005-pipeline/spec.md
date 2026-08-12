@@ -101,6 +101,12 @@ adapted to the consts, a counted edit class.
 3. Carry the transitional profile struct and consts.
 4. Move the three unit tests, adapted to the consts, and add a mock-sink test
    proving the trait is implementable and the hole is exactly sink-shaped.
+   Amended during execution: the five-call-sequence assertion through
+   `Pipeline` waits for the sink-implementation PR, because
+   `ExtractionClient::connect` is eager and no `Pipeline` constructs without
+   a live extractor. The mock test proves implementability, records calls,
+   and carries a compile-time genericity check, with the deferral stated in
+   its own docs.
 5. Leave build, test, clippy, fmt clean at merge.
 
 ### Out of Scope
