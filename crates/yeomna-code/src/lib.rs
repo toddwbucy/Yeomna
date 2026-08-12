@@ -240,6 +240,11 @@ mod tests {
             analyze_with_fallback("", Language::Go, "empty.go", &AnalysisOptions::default());
         assert!(matches!(empty, AnalyzerOutcome::Success(_)));
 
+        // "func (" must be a hard parse error, not an error-node tree.
+        // That behavior is a property of the exactly-pinned tree-sitter-go
+        // version in the workspace manifest: a grammar bump can turn hard
+        // errors into recoverable error nodes, which is one reason the
+        // grammar pins use = requirements.
         let malformed = analyze_with_fallback(
             "func (",
             Language::Go,
