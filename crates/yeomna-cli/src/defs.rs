@@ -277,7 +277,7 @@ pub enum DbCmd {
     // NOTE: there is deliberately no `drop-database` command. Dropping a whole
     // database is a console-only ritual — the data is sacrosanct, the blast
     // radius is total and irreversible, and no agent workflow needs it. Use the
-    // ArangoDB console directly. See issue #118.
+    // store console directly. See the reference's issue #118.
     /// Empty a collection in place (keeps the collection and its indexes).
     Truncate {
         /// Collection name.

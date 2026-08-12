@@ -40,4 +40,6 @@ backends. `yeomna --help` renders the kept contract.
 ## Verification
 
 Workspace gate green (296 tests including the census), clippy clean, fmt
-clean, brand grep clean.
+clean. The first brand grep caught four missed lines in the Cli
+docs (the about text, the --db doc, a defs comment), swept in a follow-up
+commit, after which the grep is clean except reference citations.

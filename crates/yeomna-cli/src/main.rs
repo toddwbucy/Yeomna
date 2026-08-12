@@ -14,12 +14,12 @@ use std::process::ExitCode;
 use clap::Parser;
 use defs::*;
 
-/// HADES-Burn — AI model interface for semantic search over academic papers,
-/// backed by ArangoDB with vector similarity and graph traversal.
+/// Yeomna: a sealed appliance turning a firm's documents and code into
+/// queryable context, served over a single audited verb surface.
 #[derive(Parser)]
 #[command(name = "yeomna", version, about)]
 pub struct Cli {
-    /// Target ArangoDB database name (overrides config/env).
+    /// Target graph name (overrides config/env).
     #[arg(long = "database", alias = "db", global = true)]
     database: Option<String>,
 
