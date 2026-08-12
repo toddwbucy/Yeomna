@@ -1,0 +1,18 @@
+[project]
+name = "yeomna-services"
+version = "0.1.0"
+description = "Yeomna compute services. Extraction only: the embedding service is a named hole the SPU fills."
+requires-python = ">=3.12"
+dependencies = [
+    # gRPC server + stub generation
+    "grpcio>=1.62",
+    "grpcio-tools>=1.62",
+    "protobuf>=4.25",
+    # ML - Extraction
+    "docling>=2.0",
+    # PyMuPDF fallback when Docling fails
+    "pymupdf>=1.24",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
