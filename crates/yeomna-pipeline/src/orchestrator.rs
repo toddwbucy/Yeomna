@@ -107,7 +107,7 @@ impl PipelineSummary {
 /// The document processing pipeline.
 ///
 /// Orchestrates extraction, chunking, embedding, and storage for
-/// documents flowing through the HADES knowledge graph system.
+/// documents flowing into the Yeomna knowledge graph.
 pub struct Pipeline<S: IngestSink> {
     extractor: ExtractionClient,
     embedder: EmbeddingClient,
@@ -134,7 +134,7 @@ impl<S: IngestSink> Pipeline<S> {
     /// Process a single document through the full pipeline.
     ///
     /// Extracts content, chunks text, embeds chunks, and stores everything
-    /// in the configured ArangoDB collections.
+    /// through the configured sink containers.
     #[instrument(skip(self, chunker), fields(doc_id))]
     pub async fn process_document(
         &self,
@@ -301,7 +301,7 @@ impl<S: IngestSink> Pipeline<S> {
             .await
     }
 
-    /// Chunk extracted text, embed chunks, store in ArangoDB.
+    /// Chunk extracted text, embed chunks, store through the sink.
     async fn chunk_embed_store(
         &self,
         doc_key: &str,
@@ -341,7 +341,7 @@ impl<S: IngestSink> Pipeline<S> {
         Ok(chunks.len())
     }
 
-    /// Store metadata, chunks, and embeddings in ArangoDB.
+    /// Store metadata, chunks, and embeddings through the sink.
     async fn store(
         &self,
         doc_key: &str,
@@ -437,10 +437,11 @@ impl<S: IngestSink> Pipeline<S> {
         profile: &CollectionProfile,
         doc_key: &str,
     ) -> Result<(), PipelineError> {
-        // Deletes go through `query::remove_docs_by_fields`, which builds one
-        // bind object per query — the shape that makes the ArangoDB-1552
-        // declared-but-unused defect (every `--force` refresh aborting, #169)
-        // unrepresentable rather than merely fixed.
+        // Deletes go through the sink's remove-by-fields operation. In the
+        // reference this shape (one bind object per query) is what made the
+        // store's declared-but-unused parameter defect (every `--force`
+        // refresh aborting, #169) unrepresentable rather than merely fixed,
+        // and a sink implementation should preserve that property.
         //
         // The filter matches `doc_key` (what this pipeline has always written)
         // OR the profile's declared foreign key: rows written by the legacy
@@ -453,12 +454,11 @@ impl<S: IngestSink> Pipeline<S> {
         // embeddings run, so a transient failure of the second call leaves
         // orphaned embeddings until the next successful overwrite of the same
         // document, which clears them (each run deletes before writing).
-        // The window could be closed without a stream transaction by folding
-        // both removes into one multi-collection AQL query, as
-        // `db_purge_document` in dispatch.rs already does — a deliberate
-        // reuse-vs-atomicity tradeoff: the shared helper keeps the delete
-        // shape uniform across the doc and codebase pipelines, and the
-        // orphan state is accepted because it self-heals and is
+        // The window could be closed by folding both removes into one
+        // multi-container operation or a transaction, which is the store
+        // PRD's M3 decision to make, not this trait's. The reference chose
+        // the same non-atomic shape deliberately (reuse over atomicity),
+        // and the orphan state is accepted because it self-heals and is
         // read-invisible (search joins embeddings to chunks that no longer
         // exist and drops them).
         let match_fields = ["doc_key", profile.foreign_key];
