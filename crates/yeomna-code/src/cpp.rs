@@ -91,13 +91,11 @@ enum Mode {
     Cpp,
 }
 
-fn detect_mode(file_path: &str, source: &str) -> Mode {
-    if file_path.ends_with(".cu")
-        || file_path.ends_with(".cuh")
-        || source.contains("__global__")
-        || source.contains("__device__")
-        || source.contains("__host__")
-    {
+fn detect_mode(file_path: &str, _source: &str) -> Mode {
+    // CUDA is an extension decision. Content markers were consulted here
+    // once, and an ordinary C++ file mentioning __global__ in a comment or
+    // a string would flip to CUDA parse arguments, so they no longer are.
+    if file_path.ends_with(".cu") || file_path.ends_with(".cuh") {
         Mode::Cuda
     } else if file_path.ends_with(".c") {
         Mode::C
@@ -256,6 +254,12 @@ fn compilation_database_directory(path: &Path) -> Option<PathBuf> {
 fn discover_compilation_database(file: &Path) -> Option<PathBuf> {
     let start = file.parent()?;
     for ancestor in start.ancestors() {
+        // A relative path's final ancestor is "", and joining from it
+        // searches the process working directory, which would make ingest
+        // results depend on where the process was launched.
+        if ancestor.as_os_str().is_empty() {
+            continue;
+        }
         if ancestor.join("compile_commands.json").is_file() {
             return Some(ancestor.to_path_buf());
         }
