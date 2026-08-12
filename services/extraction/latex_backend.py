@@ -82,7 +82,7 @@ class LaTeXExtractor:
                         error=f"Archive expanded size {total_bytes} bytes exceeds limit of {self.MAX_TAR_EXPANDED_BYTES}",
                         processing_time=time.time() - start,
                     )
-                tar.extractall(tmp_path, members=safe)
+                tar.extractall(tmp_path, members=safe, filter="data")
 
             # Find the main .tex file (largest)
             tex_files = list(tmp_path.rglob("*.tex"))
@@ -220,7 +220,7 @@ class LaTeXExtractor:
 
         for i, m in enumerate(
             re.finditer(
-                r"\\begin\{table\}(.*?)\\end\{table\}",
+                r"\\begin\{table\*?\}(.*?)\\end\{table\*?\}",
                 latex,
                 re.DOTALL,
             )

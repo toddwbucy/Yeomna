@@ -9,7 +9,7 @@ dependencies = [
     "grpcio-tools>=1.62",
     "protobuf>=4.25",
     # ML - Extraction
-    "docling>=2.0",
+    "docling>=2.0,<3",
     # PyMuPDF fallback when Docling fails
     "pymupdf>=1.24",
 ]
