@@ -42,3 +42,36 @@ the dead store group having no business in a Yeomna unit.
 
 This is the last living port. What remains of the reference is excluded by
 the severance ruling and named as holes.
+
+## CodeRabbit round, triaged under the docling-rs signal
+
+Todd flagged mid-review that the Docling backend may be replaced by
+docling-rs now that the port era is closing, so the round was triaged by
+what survives that decision.
+
+**The important find, recorded as a hole rather than deep-fixed:**
+`DocumentConverter.convert_single` is Docling v1 API, and the dependency
+demands 2.x. The reference's primary extraction path most likely raised
+AttributeError on every PDF and silently rode the PyMuPDF fallback, joining
+the pattern of documented-but-never-wired features (the gRPC embedder, late
+chunking). The related v2-shape findings (format routing narrower than the
+advertised Capabilities, caption and page-count accessors) are part of the
+same hole: **"extraction backend: repair against Docling v2 or replace with
+docling-rs, decided at the functionality-test step."** A one-line
+convert-single-to-convert stopgap exists if the Python path is kept.
+
+**Applied, because they survive any backend:** defensive config parsing
+(non-numeric timeout no longer crashes boot, negatives rejected, symmetric
+boolean parsing), the unread `device` setting removed with the conf comment
+naming CUDA_VISIBLE_DEVICES as the effective control, `table*` starred
+environments matched, tar's explicit data filter, the tmpfiles config the
+reference relied on but never shipped (with the RuntimeDirectory trap
+documented), unit ordering after tmpfiles setup, and the docling 2.x upper
+bound.
+
+**Skipped with the fate reason:** the server-architecture findings (shared
+single-concurrency executor for ML branches, async temp-file handling, idle
+monitor accessors, gRPC error classification), the Makefile PID management,
+pyproject packaging, and portable unit paths. Every one is real, and every
+one is polish on a Python server that a docling-rs decision may replace
+wholesale. They ride the same hole entry and get resolved with it.
