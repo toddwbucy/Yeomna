@@ -321,7 +321,16 @@ fn pick_best_import_target<'a>(
             .filter(|seg| path_parts.contains(seg))
             .count();
 
-        if best.is_none() || score > best.unwrap().2 {
+        // Strictly-better score wins. Equal scores break the tie on the
+        // lexicographically smallest rel_path, never iteration order, so
+        // resolution is deterministic across runs (re-ingest idempotency).
+        let better = match best {
+            None => true,
+            Some((best_path, _, best_score)) => {
+                score > best_score || (score == best_score && rel_path.as_str() < best_path)
+            }
+        };
+        if better {
             best = Some((rel_path.as_str(), skey.as_str(), score));
         }
     }

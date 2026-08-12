@@ -209,7 +209,13 @@ fn pick_best<'a>(entries: &'a [(String, String)], prefer_file: &str) -> Option<(
             return Some((path.as_str(), skey.as_str()));
         }
     }
-    entries.first().map(|(p, k)| (p.as_str(), k.as_str()))
+    // Deterministic ambiguity resolution: the lexicographically smallest
+    // (path, key) pair, never container iteration order. Edge targets must
+    // not differ between runs, or re-ingest stops being idempotent.
+    entries
+        .iter()
+        .min_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)))
+        .map(|(p, k)| (p.as_str(), k.as_str()))
 }
 
 #[cfg(test)]
