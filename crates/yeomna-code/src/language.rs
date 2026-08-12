@@ -27,7 +27,9 @@ impl Language {
 
     /// Detect language from a bare file extension (without the dot).
     pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext {
+        // Extensions match case-insensitively: MAIN.RS and kernel.CU are
+        // the same languages as their lowercase twins.
+        match ext.to_ascii_lowercase().as_str() {
             "py" | "pyi" | "pyw" => Some(Self::Python),
             "rs" => Some(Self::Rust),
             "c" | "cc" | "cpp" | "cxx" | "c++" | "h" | "hh" | "hpp" | "hxx" | "cu" | "cuh" => {
@@ -161,5 +163,27 @@ mod path_tests {
     fn test_display() {
         assert_eq!(format!("{}", Language::Python), "Python");
         assert_eq!(format!("{}", Language::Rust), "Rust");
+    }
+}
+
+#[cfg(test)]
+mod extension_tests {
+    use super::*;
+
+    #[test]
+    fn cpp_family_extensions_map_to_cpp() {
+        for ext in [
+            "c", "cc", "cpp", "cxx", "c++", "h", "hh", "hpp", "hxx", "cu", "cuh",
+        ] {
+            assert_eq!(Language::from_extension(ext), Some(Language::Cpp), "{ext}");
+        }
+    }
+
+    #[test]
+    fn extensions_are_case_insensitive() {
+        assert_eq!(Language::from_extension("RS"), Some(Language::Rust));
+        assert_eq!(Language::from_extension("Py"), Some(Language::Python));
+        assert_eq!(Language::from_extension("CU"), Some(Language::Cpp));
+        assert_eq!(Language::from_extension("GO"), Some(Language::Go));
     }
 }
