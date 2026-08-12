@@ -119,15 +119,15 @@ async fn syn_ident_line_agrees_with_ra_selection_range() {
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("Cargo.toml"),
-        "[package]\nname = \"probe148\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        "[package]\nname = \"probe148\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
     )
     .unwrap();
     std::fs::write(root.join("src/lib.rs"), FIXTURE).unwrap();
 
-    // Honor an explicit binary override (HADES_RA_BIN) -- the default
+    // Honor an explicit binary override (YEOMNA_RA_BIN) -- the default
     // `rust-analyzer` on PATH may be a rustup proxy resolving to a toolchain
     // that lacks the component.
-    let ra_bin = std::env::var("HADES_RA_BIN").ok();
+    let ra_bin = std::env::var("YEOMNA_RA_BIN").ok();
     let start = match ra_bin.as_deref() {
         Some(bin) => RustAnalyzerSession::start_with_options(root, Some(bin), 60).await,
         None => RustAnalyzerSession::start(root).await,

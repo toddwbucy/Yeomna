@@ -1,5 +1,7 @@
 //! Workstation-capability probe for #99 using a self-contained Go module.
 
+#![cfg(unix)]
+
 use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -89,13 +91,19 @@ func Use() string {
     // makes the probe work in read-only-home CI and sandbox environments.
     let gopls = gopls_path().expect("gopls path should be discoverable");
     let cache = root.join("gocache");
+    let gopath = root.join("gopath");
+    let gomodcache = root.join("gomodcache");
     std::fs::create_dir_all(&cache).unwrap();
+    std::fs::create_dir_all(&gopath).unwrap();
+    std::fs::create_dir_all(&gomodcache).unwrap();
     let wrapper = root.join("gopls-with-cache");
     std::fs::write(
         &wrapper,
         format!(
-            "#!/bin/sh\nGOCACHE='{}' exec '{}' \"$@\"\n",
+            "#!/bin/sh\nGOCACHE='{}' GOPATH='{}' GOMODCACHE='{}' exec '{}' \"$@\"\n",
             cache.display(),
+            gopath.display(),
+            gomodcache.display(),
             gopls.display()
         ),
     )

@@ -8,7 +8,11 @@ use yeomna_code as code;
 
 #[test]
 fn clang_extracts_cuda_kernel_symbols() {
-    let fixture = "/home/todd/olympus/NL_Hecate/core/kernels/elementwise.cu";
+    // A CUDA fixture can be supplied via YEOMNA_CUDA_FIXTURE; the default
+    // is this workstation's known kernel file. Absent either way, skip.
+    let fixture = std::env::var("YEOMNA_CUDA_FIXTURE")
+        .unwrap_or_else(|_| "/home/todd/olympus/NL_Hecate/core/kernels/elementwise.cu".to_string());
+    let fixture = fixture.as_str();
     if !Path::new(fixture).exists() {
         eprintln!("SKIP: fixture not present: {fixture}");
         return;

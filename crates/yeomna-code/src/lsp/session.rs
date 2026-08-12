@@ -173,7 +173,7 @@ impl<S: LanguageServer> LspSession<S> {
                 .client
                 .request(
                     "workspace/symbol",
-                    serde_json::json!({ "query": "__hades_readiness_probe__" }),
+                    serde_json::json!({ "query": "__yeomna_readiness_probe__" }),
                     probe_timeout,
                 )
                 .await
@@ -352,7 +352,7 @@ impl<S: LanguageServer> LspSession<S> {
                 .client
                 .request(
                     "workspace/symbol",
-                    serde_json::json!({ "query": "__hades_readiness_probe__" }),
+                    serde_json::json!({ "query": "__yeomna_readiness_probe__" }),
                     probe_timeout,
                 )
                 .await
@@ -385,9 +385,9 @@ mod tests {
 
     #[test]
     fn file_uri_round_trips_spaces_and_unicode() {
-        let path = Path::new("/tmp/hades source/λ.go");
+        let path = Path::new("/tmp/yeomna source/λ.go");
         let uri = path_to_uri(path).unwrap();
-        assert_eq!(uri, "file:///tmp/hades%20source/%CE%BB.go");
+        assert_eq!(uri, "file:///tmp/yeomna%20source/%CE%BB.go");
         assert_eq!(uri_to_path(&uri).as_deref(), Some(path));
     }
 

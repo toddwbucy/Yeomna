@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn finds_and_groups_crate_files() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let files = vec![root.join("src/lib.rs"), root.join("src/code/mod.rs")];
+        let files = vec![root.join("src/lib.rs"), root.join("src/lsp/mod.rs")];
         let groups = group_files_by_crate(&files);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups.values().next().unwrap().len(), 2);
