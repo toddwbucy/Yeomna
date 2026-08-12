@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/yeomna-chunking", "crates/yeomna-keys", "crates/yeomna-batch", "crates/yeomna-proto", "crates/yeomna-embed", "crates/yeomna-code", "crates/yeomna-pipeline"]
+members = ["crates/yeomna-chunking", "crates/yeomna-keys", "crates/yeomna-batch", "crates/yeomna-proto", "crates/yeomna-embed", "crates/yeomna-code", "crates/yeomna-pipeline", "crates/yeomna-cli"]
 resolver = "2"
 
 [workspace.package]
@@ -20,6 +20,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
 tempfile = "3"
 tonic = "0.13"
 prost = "0.13"

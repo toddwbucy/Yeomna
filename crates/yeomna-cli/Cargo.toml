@@ -1,0 +1,17 @@
+[package]
+name = "yeomna-cli"
+description = "The captured CLI surface: the kept command contract with every handler a self-reporting hole, per spec 007"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "yeomna"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap = { workspace = true }
+serde_json.workspace = true
