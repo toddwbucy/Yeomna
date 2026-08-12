@@ -59,7 +59,7 @@ pub fn analyze(source: &str, language: Language) -> Result<FileAnalysis, String>
     Ok(FileAnalysis {
         language,
         symbols: collector.symbols,
-        metrics: compute_metrics(source),
+        metrics: compute_metrics(source, language),
         symbol_hash,
         top_level_defs: collector.defs,
         analysis_tier: AnalysisTier::Structural,
@@ -256,7 +256,10 @@ impl Collector<'_> {
             .child_by_field_name("function")
             .or_else(|| node.named_child(0))?;
         let expression = self.text(callee).trim();
-        let name = expression
+        // Truncate template argument lists before name extraction, so
+        // apply<int>(x) yields "apply" rather than a name with '<' inside.
+        let base = expression.split('<').next().unwrap_or(expression).trim();
+        let name = base
             .rsplit([':', '.', '>'])
             .find(|part| !part.is_empty() && *part != "-")?
             .trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
@@ -351,7 +354,7 @@ fn push_metadata_array(metadata: &mut Value, key: &str, value: Value) {
     }
 }
 
-fn compute_metrics(source: &str) -> CodeMetrics {
+fn compute_metrics(source: &str, language: Language) -> CodeMetrics {
     let mut blank_lines = 0;
     let mut comment_lines = 0;
     let mut lines_of_code = 0;
@@ -359,7 +362,12 @@ fn compute_metrics(source: &str) -> CodeMetrics {
         let line = line.trim();
         if line.is_empty() {
             blank_lines += 1;
-        } else if line.starts_with("//") || line.starts_with('#') || line.starts_with("/*") {
+        } else if line.starts_with("//")
+            || line.starts_with("/*")
+            || (language == Language::Python && line.starts_with('#'))
+        {
+            // '#' opens a comment in Python only. In C, C++, and CUDA it
+            // opens the preprocessor, and #include or #define is code.
             comment_lines += 1;
         } else {
             lines_of_code += 1;
@@ -439,5 +447,23 @@ void launch(float* out) { kernel<<<1, 1>>>(out); }
         assert!(analyze("func (", Language::Go).is_err());
         let empty = analyze("", Language::Go).unwrap();
         assert!(empty.symbols.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod metrics_tests {
+    use super::*;
+
+    #[test]
+    fn hash_is_comment_only_in_python() {
+        let src = "#include <stdio.h>\n// real comment\nint main() {}\n";
+        let m = compute_metrics(src, Language::Cpp);
+        assert_eq!(m.lines_of_code, 2, "#include counts as code in C/C++");
+        assert_eq!(m.comment_lines, 1);
+
+        let py = "# comment\nx = 1\n";
+        let m = compute_metrics(py, Language::Python);
+        assert_eq!(m.comment_lines, 1);
+        assert_eq!(m.lines_of_code, 1);
     }
 }
