@@ -9,11 +9,16 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and specs at `docs/specs/NNN-slug/spec.md` with review notes alongside.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`. First crate is `yeomna-chunking`, lifted from the
-reference per spec 001 (733 lines, zero dependencies, 20 tests). Commands are
-`cargo build`, `cargo test`, `cargo clippy --all-targets`, `cargo fmt --check`,
-all from the repository root. Per charter section 13, the string `yeomna` is
-what belongs in crate metadata.
+`rust-toolchain.toml`, seven crates, 240 tests. **The Rust side of the
+pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
+005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
+and merged. The pipeline compiles against the `IngestSink` trait
+(`crates/yeomna-pipeline/src/sink.rs`), which nothing implements: the store
+crate implements it (store PRD Phase 7) and nothing else may. Phase 6 (the
+Python services) waits on the SPU and config rulings. Commands are
+`cargo build`, `cargo test`, `cargo clippy --all-targets`,
+`cargo fmt --check`, all from the repository root. Per charter section 13,
+the string `yeomna` is what belongs in crate metadata.
 
 ## How work is done here
 
