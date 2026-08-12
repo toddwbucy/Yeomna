@@ -44,7 +44,7 @@ extraction service therefore arrives with zero tests, recorded plainly.
 5. Carry the systemd unit and env-file templates renamed
    (`yeomna-extractor.service`, `extractor.conf`), as deployment templates,
    not enabled anything.
-6. Best-effort verification, honestly bounded: stub generation succeeds,
+6. Best-effort verification, bounded and stated: stub generation succeeds,
    every file passes `py_compile`, `config.py` imports and resolves its
    defaults without Docling installed. Standing the service up on GPU 2 with
    the full Docling stack is the functionality-test step of the severance
