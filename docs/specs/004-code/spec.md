@@ -95,6 +95,11 @@ such), `Cargo.toml`, and `tests/` holding the three moved probes.
 5. Doctest crate paths, `hades_core::code::...` to `yeomna_code::...`, the
    same class the keys lift established.
 6. The provenance note in crate docs, and the new `containers.rs`.
+7. Added during execution, the compiler-forced class: `canonical_json.rs`, a
+   63-line hidden internal module of `hades-core` that `cpp.rs` and
+   `tree_sitter.rs` hash symbol metadata through, carried byte-identical,
+   plus `chrono` (inline paths in lsp timestamps) and `tempfile` (probe
+   dev-dependency). The sixth dependency correction of the pattern.
 
 Nothing else. The `#[serde(rename = "_key")]` attributes and every emitted
 field name are sink wire shape and move untouched. ArangoDB and HADES doc
@@ -108,7 +113,7 @@ pattern, and the compiler remains the final authority at move time:
 | Kind | Crates |
 |---|---|
 | Internal | `yeomna-keys`, `yeomna-chunking` |
-| External | clang, proc-macro2, regex, rustpython-parser, serde, serde_json, sha2, syn, thiserror, tokio, tracing, tree-sitter, tree-sitter-cpp, tree-sitter-go, tree-sitter-python, tree-sitter-rust, url |
+| External | chrono, clang, proc-macro2, regex, rustpython-parser, serde, serde_json, sha2, syn, thiserror, tokio, tracing, tree-sitter, tree-sitter-cpp, tree-sitter-go, tree-sitter-python, tree-sitter-rust, url (dev: tempfile) |
 
 Version pins copy the reference exactly, and two matter beyond convention:
 
