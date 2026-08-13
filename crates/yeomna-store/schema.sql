@@ -120,13 +120,18 @@ CREATE TABLE IF NOT EXISTS node_log (
 
 -- The audit table (charter section 6, integrity as a shipped default).
 -- The verb layer writes it and defines actor semantics (peercred).
+-- outcome is V-Q1's attempt logging (spec 010): NULL is an attempt whose
+-- completion was never recorded, which is the crash story told by the
+-- schema. Set to 'ok' or 'failed: <kind>' when the verb completes.
 CREATE TABLE IF NOT EXISTS audit_log (
-    id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    at    timestamptz NOT NULL DEFAULT now(),
-    actor text NOT NULL,
-    verb  text NOT NULL,
-    args  jsonb NOT NULL DEFAULT '{}'
+    id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    at      timestamptz NOT NULL DEFAULT now(),
+    actor   text NOT NULL,
+    verb    text NOT NULL,
+    args    jsonb NOT NULL DEFAULT '{}',
+    outcome text
 );
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS outcome text;
 
 -- Grants. yeomna_app reads and writes data, appends to the logs, and can
 -- never rewrite history. yeomna_audit owns the audit table.
@@ -143,4 +148,7 @@ GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO yeomna_app;
 ALTER TABLE audit_log OWNER TO yeomna_audit;
 GRANT INSERT ON audit_log TO yeomna_app;
 REVOKE UPDATE, DELETE ON audit_log FROM yeomna_app;
+-- The one exception, column-scoped (spec 010): the completion mark is
+-- updatable, history is not.
+GRANT UPDATE (outcome) ON audit_log TO yeomna_app;
 REVOKE UPDATE, DELETE ON node_log FROM yeomna_app;

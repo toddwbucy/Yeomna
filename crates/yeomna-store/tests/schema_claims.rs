@@ -308,6 +308,22 @@ async fn claim_6_the_logs_are_append_only_for_the_app_role() {
         .await
         .expect_err("audit history is not rewritable");
     assert_eq!(err.as_db_error().unwrap().code().code(), "42501");
+    // The one exception, column-scoped (spec 010): the completion mark is
+    // updatable while history stays immutable on the same row.
+    app.execute(
+        "UPDATE audit_log SET outcome = 'ok' WHERE verb = 'claim6'",
+        &[],
+    )
+    .await
+    .expect("outcome is column-granted to the app role");
+    let err = app
+        .execute(
+            "UPDATE audit_log SET actor = 'tampered' WHERE verb = 'claim6'",
+            &[],
+        )
+        .await
+        .expect_err("actor stays immutable");
+    assert_eq!(err.as_db_error().unwrap().code().code(), "42501");
     owner_c
         .execute("DELETE FROM graphs WHERE id = $1", &[&g])
         .await
