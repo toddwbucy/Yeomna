@@ -8,6 +8,7 @@ honestly, or actually.
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 2026-08-13 | First draft. Architecture, audit, transport, naming, phases. |
+| 0.2 | 2026-08-13 | Todd's review round. V-Q1 ruled (attempt logging), V-Q2 ruled (inherit role policy from Postgres, daemon authors nothing), crate layout confirmed. V-Q3 restated as structured self-description, pending nod. New V-Q4 (multi-database utility) replaces the removal of the database commands. |
 
 ## Executive Summary
 
@@ -188,6 +189,8 @@ Two new crates, one boundary each:
   lifecycle, dispatch into `yeomna-verbs`. No SQL, no business logic, in
   deliberate contrast to the reference's 7.9k-line dispatch file.
 
+Layout confirmed by Todd, 2026-08-13.
+
 `yeomna-cli` gains a client module speaking the frame protocol and loses
 nothing else.
 
@@ -217,7 +220,7 @@ Applied to every inherited name that assumed document-store structure:
 | `DbCollections` | absorbed into `schema show` | the schema is shipped and fixed, there is no dynamic collection set to list |
 | `DbCreateCollection` | removed | tables are born in `schema apply`, not at runtime |
 | `DbCreateIndex` | removed from runtime, absorbed into `schema apply` | same reason, the appliance ships its indexes |
-| CLI `db databases`, `db create-database` | removed | one database, one appliance |
+| CLI `db databases`, `db create-database` | kept, contract under V-Q4 | multiple databases are Postgres utility, not a second engine. The open question is the reach surface, not the lifecycle |
 | CLI `db truncate`, `db drop-collection` | absorbed into `graph drop` and `purge` | the destructive verbs that exist carry the audit story |
 | `DbQuery` | `query` with the structured filter | the name survives, the raw surface does not |
 | everything else | keeps its name minus the `Db` prefix | engineering, not mythology |
@@ -245,12 +248,15 @@ BEGIN
 COMMIT
 ```
 
-Read verbs use the same shape with no mutation inside. The audit insert
-is first so a verb that fails still leaves its attempt on the record
-with the failure noted in a second completion column, or leaves nothing
-if the transaction aborts entirely. Which of those two the product wants
-(attempt logging versus completed-action logging) is Open Question V-Q1,
-and the schema change either way is one column.
+Read verbs use the same shape with no mutation inside. **Ruled by Todd,
+2026-08-13 (V-Q1): attempt logging.** A failed verb leaves its audit row
+marked failed. Mechanically: the audit insert commits in its own small
+transaction before the verb executes, and an `outcome` column (default
+`ok`, set to `failed` with the error name) is updated after. A crash
+between the two leaves an attempt row with no outcome, which reads as
+exactly what it was. The mutation itself still runs in one transaction
+with its `node_log` appends. The `outcome` column is a one-line schema
+amendment landing with the Phase 1 spec.
 
 ## Testing Strategy
 
@@ -296,16 +302,33 @@ and the schema change either way is one column.
 
 ## Open Questions
 
-- **V-Q1. Attempt logging or completed-action logging.** Does a failed
-  verb leave an audit row marked failed, or no row? Compliance instinct
-  says attempts matter. One column either way, ruled before Phase 4.
-- **V-Q2. Session policy depth.** Single-operator today. Whether the
-  daemon distinguishes read-only versus read-write sessions before the
-  directory era arrives, or leaves that entirely to the future
-  inheritance, ruled before Phase 5.
-- **V-Q3. The `orient` contract.** The one verb whose output is prose
-  for an agent's benefit. What it must contain is product design, not
-  engineering, and it deserves its own short ruling before Phase 2.
+- **V-Q1. RULED 2026-08-13: attempt logging.** A failed verb leaves an
+  audit row marked failed. Mechanics in the audit section above.
+- **V-Q2. RULED 2026-08-13: inherit, do not author.** The daemon carries
+  zero permission logic. Peercred identity maps to a Postgres role and
+  grants decide what the session can do, the same mechanism that already
+  makes the audit log append-only. Read and write both exist from day
+  one. Who holds which role is user and database level policy, which is
+  the deployment-era directory inheritance the charter names.
+- **V-Q3. The `orient` contract, restated.** This system is the KG an
+  agent consults, not an agent itself, so `orient` returns structured
+  facts rather than prose: the graphs and their sizes, the verb
+  vocabulary, the schema version, corpus counts. The store describing
+  itself as data, with any narrative written by the visiting agent.
+  Pending Todd's nod on that shape.
+- **V-Q4. Multi-database utility.** Raised by Todd at review: multiple
+  databases on the one cluster are Postgres utility, not a second
+  engine, and nothing should prevent using them agentically or for
+  services. The database lifecycle verbs are kept. The open question is
+  the reach surface for non-KG databases. Option A, conventional
+  Postgres clients over the socket outside the verb layer, which creates
+  an unaudited path on the box. Option B, recommended: a scoped `sql`
+  verb valid only against non-KG databases, refusing the `yeomna`
+  database by name, running under a role holding zero grants on the KG
+  (enforced by Postgres, not verb code), full statement text in its
+  audit args. Option B keeps one audited entry point and leaves charter
+  section 6 intact, because the store that section protects is the
+  knowledge graph, not the cluster. Awaiting the ruling.
 
 ## Timeline
 
