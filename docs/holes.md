@@ -44,7 +44,7 @@ ported: the excluded reference code is not consulted.
 
 | | |
 |---|---|
-| Owner | a verb-layer PRD, not yet written |
+| Owner | `docs/PRD-verb-layer.md`, drafted v0.1 2026-08-13 |
 | Contract in hand | the 32-verb inventory (store PRD), the captured CLI surface and envelope conventions (`yeomna-cli`), charter section 6 (audit log as shipped default, one audited entry point) |
 | CLI holes it fills | the same 28, jointly with H1, plus `daemon` (H7) |
 | Includes | Q3 renames of ArangoDB-vocabulary command names, the audit table wiring, peercred policy |
