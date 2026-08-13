@@ -185,10 +185,14 @@ async fn claim_4_the_cascade_is_complete() {
     )
     .await
     .unwrap();
+    // Two edges so each FK endpoint is exercised on its own: a self-edge
+    // and a distinct-destination edge.
+    let m = node(&c, g, "dst", "document").await;
     c.execute(
         "INSERT INTO edges (graph_id, src_id, dst_id, relation, basis, analyzer)
-         VALUES ($1, $2, $2, 'contains', 'declared', 'test')",
-        &[&g, &n],
+         VALUES ($1, $2, $2, 'contains', 'declared', 'test'),
+                ($1, $2, $3, 'contains', 'declared', 'test')",
+        &[&g, &n, &m],
     )
     .await
     .unwrap();
@@ -209,6 +213,7 @@ async fn claim_4_the_cascade_is_complete() {
         ("node_log", "node_id", n),
         ("embeddings", "chunk_id", chunk_id),
         ("edges", "src_id", n),
+        ("edges", "dst_id", m),
     ] {
         let count: i64 = c
             .query_one(

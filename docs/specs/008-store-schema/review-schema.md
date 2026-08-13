@@ -5,13 +5,15 @@ build era, executed against the sealed dev cluster.
 
 ## What exists now
 
-`crates/yeomna-store`: `schema.sql` (128 lines, ruling citations inline),
+`crates/yeomna-store`: `schema.sql` (138 lines, ruling citations inline),
 an idempotent concurrency-safe applier (`pg_advisory_lock` serializes
 appliers, since concurrent IF NOT EXISTS DDL races in the catalogs), and
 the seven claims as integration tests that ran green against the cluster in
 0.04 seconds and skip cleanly when no socket exists.
 
-The schema is applied to the dev cluster. Eight objects: `graphs`, `nodes`,
+The schema is applied to the dev cluster. Eight logical components, with
+partitions counted under `edges` and indexes and identity sequences not
+counted: `graphs`, `nodes`,
 `chunks`, `embeddings`, `edges` with its three basis partitions, `node_log`,
 `audit_log`, and the `edge_basis` enum.
 
@@ -60,7 +62,7 @@ row cascades too, claim 6 skips when the `yeomna_app` peer mapping is
 absent (environmental, same class as no cluster), the two embedding
 inserts bind the vector literal as a parameter, the advisory lock waits at
 most 30 seconds and a failed unlock is logged, and `connect` uses
-`host_path` with a 10 second connection timeout.
+`host_path` with a 10-second connection timeout.
 
 Deferred, not fixed: an edge uniqueness constraint on `(graph_id, src_id,
 dst_id, relation, basis)`. The reviewer is right that the sink needs an
