@@ -99,6 +99,14 @@ CREATE TABLE IF NOT EXISTS edges_asserted
 CREATE INDEX IF NOT EXISTS edges_src ON edges (graph_id, src_id);
 CREATE INDEX IF NOT EXISTS edges_dst ON edges (graph_id, dst_id);
 
+-- Edge identity (ruled in spec 009): an edge is its endpoints, relation,
+-- and basis. analyzer, status, and payload are attributes. Every analyzer
+-- already dedups on this triple at emission, so the index encodes a
+-- promise the emitters make, and it is the ON CONFLICT target for edge
+-- writes when H3 arrives. basis is in the key, as partitioning requires.
+CREATE UNIQUE INDEX IF NOT EXISTS edges_identity
+    ON edges (graph_id, src_id, dst_id, relation, basis);
+
 -- The diff log (charter 8.2). Append-only by grant. The head row in nodes
 -- is materialized convenience: if head and log disagree, the log wins.
 CREATE TABLE IF NOT EXISTS node_log (

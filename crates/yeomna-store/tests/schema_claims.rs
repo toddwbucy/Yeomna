@@ -384,3 +384,52 @@ async fn claim_7_the_pinned_pipeline_shapes_land_losslessly() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn claim_8_edge_identity_is_endpoints_relation_and_basis() {
+    require_cluster!(c);
+    let g = scratch_graph(&c, "claim8").await;
+    let a = node(&c, g, "a", "callable").await;
+    let b = node(&c, g, "b", "callable").await;
+    let insert = "INSERT INTO edges
+                  (graph_id, src_id, dst_id, relation, basis, analyzer)
+                  VALUES ($1, $2, $3, 'calls', 'structural', $4)";
+    c.execute(insert, &[&g, &a, &b, &"lsp"]).await.unwrap();
+    // Same identity, different analyzer: the analyzer is an attribute,
+    // not part of identity, so this is a duplicate (spec 009 ruling).
+    let err = c
+        .execute(insert, &[&g, &a, &b, &"tree-sitter"])
+        .await
+        .expect_err("duplicate edge identity must be refused");
+    assert_eq!(
+        err.as_db_error().unwrap().code().code(),
+        "23505",
+        "unique violation on edges_identity"
+    );
+    // The index is the ON CONFLICT target H3's edge writes will use.
+    c.execute(
+        "INSERT INTO edges (graph_id, src_id, dst_id, relation, basis, analyzer)
+         VALUES ($1, $2, $3, 'calls', 'structural', 'tree-sitter')
+         ON CONFLICT (graph_id, src_id, dst_id, relation, basis)
+         DO UPDATE SET analyzer = EXCLUDED.analyzer",
+        &[&g, &a, &b],
+    )
+    .await
+    .expect("upsert through the identity index");
+    let (count, analyzer): (i64, String) = {
+        let row = c
+            .query_one(
+                "SELECT count(*) OVER (), analyzer FROM edges
+                 WHERE graph_id = $1 AND src_id = $2 AND dst_id = $3",
+                &[&g, &a, &b],
+            )
+            .await
+            .unwrap();
+        (row.get(0), row.get(1))
+    };
+    assert_eq!(count, 1, "one row per edge identity");
+    assert_eq!(analyzer, "tree-sitter", "last writer wins on attributes");
+    c.execute("DELETE FROM graphs WHERE id = $1", &[&g])
+        .await
+        .unwrap();
+}
