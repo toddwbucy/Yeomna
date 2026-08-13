@@ -9,7 +9,7 @@ honestly, or actually.
 |---|---|---|
 | 0.1 | 2026-08-13 | First draft. Architecture, audit, transport, naming, phases. |
 | 0.2 | 2026-08-13 | Todd's review round. V-Q1 ruled (attempt logging), V-Q2 ruled (inherit role policy from Postgres, daemon authors nothing), crate layout confirmed. V-Q3 restated as structured self-description, pending nod. New V-Q4 (multi-database utility) replaces the removal of the database commands. |
-| 0.3 | 2026-08-13 (a) | V-Q3 ruled: orient is a per-graph survey, welcome text is deployment config (H10). V-Q4 clarified (the yeomna database means each appliance's own KG database, customer data, nothing of ours ships), Option B pending final nod. |
+| 0.3 | 2026-08-13 | V-Q3 ruled: orient is a per-graph survey, welcome text is deployment config (H10). V-Q4 clarified (the yeomna database means each appliance's own KG database, customer data, nothing of ours ships), Option B pending final nod. |
 | 0.4 | 2026-08-13 | V-Q4 ruled: immutable in structure, not in content. Databases are the customer's, the yeomna pattern is stampable, the scoped sql verb serves plain databases and refuses KG-pattern ones. All open questions closed. |
 
 ## Executive Summary
