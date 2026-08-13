@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_python_compat() {
-        // Matches Python HADES BatchState.to_dict() output format.
+        // Matches the reference's Python-era BatchState.to_dict() format.
         let json = r#"{
             "completed": ["2501.12345", "2501.67890"],
             "failed": {"2501.99999": "connection timeout"},

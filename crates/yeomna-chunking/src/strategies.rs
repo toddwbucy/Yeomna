@@ -10,7 +10,7 @@ use super::{ChunkingStrategy, TextChunk};
 /// tokens with `overlap` tokens of overlap between consecutive chunks.
 ///
 /// Uses a simple whitespace tokenizer.  For ML-accurate token counts, the
-/// Persephone service handles BPE tokenization; this is a fast, deterministic
+/// embedding service handles BPE tokenization; this is a fast, deterministic
 /// approximation suitable for chunk boundary calculation.
 pub struct TokenChunking {
     /// Target tokens per chunk.

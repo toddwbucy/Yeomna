@@ -307,8 +307,8 @@ mod tests {
         assert_eq!(file_key("README.md"), "README_md");
         assert_eq!(file_key("src/lib.rs"), "src_lib_rs");
         assert_eq!(
-            file_key("core/persephone/models.py"),
-            "core_persephone_models_py"
+            file_key("core/services/models.py"),
+            "core_services_models_py"
         );
     }
 
