@@ -229,9 +229,10 @@ async fn embedding_rejections_are_per_document() {
         .await
         .unwrap();
     assert_eq!((out.created, out.errors), (0, 1), "EC-1: no model recorded");
-    // EC-2: a chunk_key that does not round-trip through the pinned format.
+    // EC-2: a chunk_key that does not round-trip through the pinned
+    // format. Leading zeros parse but never reconstruct.
     let mut mangled = embedding_doc("docE", 0);
-    mangled["chunk_key"] = json!("docE_chunk_9");
+    mangled["chunk_key"] = json!("docE_chunk_007");
     let out = sink
         .insert_documents("embeddings", &[mangled], true)
         .await

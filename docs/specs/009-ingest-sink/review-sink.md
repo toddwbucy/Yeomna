@@ -51,6 +51,23 @@ tests including the five-call sequence.
    key, which counts as the error the reference's import semantics
    expect, and the stored row is proven unchanged.
 
+## CodeRabbit round (2026-08-13)
+
+Six findings, all verified real, all fixed on the PR as a follow-up
+commit. The two that mattered: the parent-node lookups were swallowing
+transport errors into per-document rejection counts, defeating the
+transport-abort rule the savepoint path implements (`parent_node` now
+returns the driver error so callers `?` it), and the `i64` to `i32`
+casts wrapped silently, so a pathological `chunk_index` could have
+overwritten chunk 0 under `overwrite: true` (checked conversions now
+reject and count). Also from the round: a non-numeric embedding element
+is an explicit rejection rather than a smuggled `NaN`, an empty removal
+fields slice is refused with the same contract error as an unknown
+field, the idle-and-dedicated connection precondition is stated on the
+constructor, and the EC-2 integration case now uses a key that fails
+round-trip reconstruction (`docE_chunk_007`, leading zeros parse but
+never reconstruct) instead of one that reached the missing-chunk path.
+
 ## The M3 restatement (spec success criterion 5)
 
 Each `insert_documents` batch is one READ COMMITTED transaction with a

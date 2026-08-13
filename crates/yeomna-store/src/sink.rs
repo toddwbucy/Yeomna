@@ -70,6 +70,11 @@ impl PgSink {
     /// The connection should carry the runtime role (`yeomna_app`), whose
     /// grants cover everything this sink does. `apply_schema` stays owner
     /// work and is not this type's concern.
+    ///
+    /// The client must be idle and dedicated to this sink. Batch inserts
+    /// issue explicit BEGIN and COMMIT, so a connection carrying a
+    /// caller-owned open transaction would have that transaction committed
+    /// or rolled back from under it.
     pub async fn new(client: Client, graph_name: &str) -> Result<Self, StoreError> {
         // DO UPDATE rather than DO NOTHING so RETURNING yields the id on
         // the already-exists path too.
@@ -91,11 +96,15 @@ impl PgSink {
     }
 
     /// Resolve a parent node id by natural key, memoized per batch.
+    ///
+    /// Returns the driver error directly so callers inside the savepoint
+    /// path can `?` it: only a missing parent is `Ok(None)`, a transport
+    /// failure propagates and aborts the batch.
     async fn parent_node(
         &self,
         cache: &mut HashMap<String, Option<i64>>,
         doc_key: &str,
-    ) -> Result<Option<i64>, StoreError> {
+    ) -> Result<Option<i64>, tokio_postgres::Error> {
         if let Some(hit) = cache.get(doc_key) {
             return Ok(*hit);
         }
@@ -211,13 +220,18 @@ impl PgSink {
         ) else {
             return Ok(false);
         };
-        let Ok(node_id) = self.parent_node(cache, doc_key).await else {
+        let Some(node_id) = self.parent_node(cache, doc_key).await? else {
             return Ok(false);
         };
-        let Some(node_id) = node_id else {
+        // Checked conversions: an out-of-range value is a counted
+        // rejection, never a silently wrapped write.
+        let (Ok(index), Ok(start), Ok(end)) = (
+            i32::try_from(index),
+            i32::try_from(start),
+            i32::try_from(end),
+        ) else {
             return Ok(false);
         };
-        let (index, start, end) = (index as i32, start as i32, end as i32);
         let sql = if overwrite {
             "INSERT INTO chunks (node_id, chunk_index, text, start_char, end_char)
              VALUES ($1, $2, $3, $4, $5)
@@ -257,14 +271,17 @@ impl PgSink {
         let Some(index) = chunk_index_from_key(doc_key, chunk_key) else {
             return Ok(false);
         };
-        let Ok(Some(node_id)) = self.parent_node(cache, doc_key).await else {
+        let Ok(index) = i32::try_from(index) else {
+            return Ok(false);
+        };
+        let Some(node_id) = self.parent_node(cache, doc_key).await? else {
             return Ok(false);
         };
         let Some(chunk_row) = self
             .client
             .query_opt(
                 "SELECT id FROM chunks WHERE node_id = $1 AND chunk_index = $2",
-                &[&node_id, &(index as i32)],
+                &[&node_id, &index],
             )
             .await?
         else {
@@ -284,14 +301,16 @@ impl PgSink {
             // worth surfacing per document.
             return Ok(false);
         };
-        let literal = format!(
-            "[{}]",
-            embedding
-                .iter()
-                .map(|v| v.as_f64().unwrap_or(f64::NAN).to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
+        // A non-numeric element is an explicit rejection, not a NaN
+        // smuggled into the literal for halfvec to refuse obscurely.
+        let Some(values) = embedding
+            .iter()
+            .map(|v| v.as_f64().map(|f| f.to_string()))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Ok(false);
+        };
+        let literal = format!("[{}]", values.join(","));
         let sql = if overwrite {
             "INSERT INTO embeddings (chunk_id, vec, model, model_hash)
              VALUES ($1, $2::text::halfvec, $3, $4)
@@ -368,6 +387,11 @@ impl IngestSink for PgSink {
         fields: &[&str],
         key: &str,
     ) -> Result<(), StoreError> {
+        // An empty slice would pass the unknown-field scan and delete with
+        // no declared key field, so the contract check rejects it too.
+        if fields.is_empty() {
+            return Err(StoreError::UnknownRemovalField(String::new()));
+        }
         if let Some(bad) = fields.iter().find(|f| !PARENT_KEY_FIELDS.contains(f)) {
             return Err(StoreError::UnknownRemovalField((*bad).to_string()));
         }
@@ -420,6 +444,8 @@ mod tests {
         // EC-2: wrong parent, wrong index, or junk never round-trips.
         assert_eq!(chunk_index_from_key("docB", &key), None);
         assert_eq!(chunk_index_from_key("docA", "docA_chunk_x"), None);
+        // Leading zeros parse as an integer but never reconstruct.
+        assert_eq!(chunk_index_from_key("docA", "docA_chunk_007"), None);
         assert_eq!(chunk_index_from_key("docA", "docA_chunk_"), None);
         assert_eq!(chunk_index_from_key("docA", "unrelated"), None);
     }
