@@ -9,15 +9,17 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and specs at `docs/specs/NNN-slug/spec.md` with review notes alongside.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, eight crates, 247 tests. **The Rust side of the
+`rust-toolchain.toml`, eight crates, 257 tests. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
-and merged. **The store schema exists** (spec 008, merged 2026-08-13):
-`crates/yeomna-store` carries `schema.sql`, applied to the dev cluster, with
-the seven schema claims as integration tests that skip without a cluster.
-The pipeline compiles against the `IngestSink` trait
-(`crates/yeomna-pipeline/src/sink.rs`), which nothing implements yet: the
-store crate implements it next (spec 009) and nothing else may. Phase 6 (the
+and merged. **The store exists and holes-ledger H1 is filled** (specs 008
+and 009, both merged 2026-08-13): `crates/yeomna-store` carries the schema,
+applied to the dev cluster with eight claims as integration tests, and
+`PgSink` implements the `IngestSink` trait
+(`crates/yeomna-pipeline/src/sink.rs`), its only implementor, with the
+five-call sequence as integration tests. All cluster-gated tests skip
+without a cluster. Edge identity is ruled (R6, spec 009). Next per the fill
+order is H3, the ingest orchestrator. Phase 6 (the
 Python services) waits on the SPU and config rulings. Commands are
 `cargo build`, `cargo test`, `cargo clippy --all-targets`,
 `cargo fmt --check`, all from the repository root. Per charter section 13,

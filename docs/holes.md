@@ -1,6 +1,6 @@
 # The Holes Ledger
 
-Status: v1.0, 2026-08-12. The hole-mapping step of the severance sequence
+Status: v1.1, 2026-08-13. H1 retired. The hole-mapping step of the severance sequence
 (PRD-pipeline-libraries v0.2). This is the map of everything Yeomna needs and
 does not yet have, each hole named, owned, and sourced. The executable form
 is `yeomna-cli`: 56 commands, every one a self-reporting hole whose census is
@@ -16,18 +16,25 @@ surface, this ledger), never by consulting the closed reference.
 
 ---
 
-## H1. The store
+## H1. The store. FILLED 2026-08-13
 
 The largest hole and the reason the appliance exists. Postgres schema plus
-the `IngestSink` implementation on the sealed cluster.
+the `IngestSink` implementation on the sealed cluster. Both halves are
+merged and live: spec 008 (PR #23) put the schema on the cluster with the
+seven claims as permanent tests, and spec 009 (PR #25) made `PgSink` the
+trait's only implementor, retiring the spec 005 five-call deferral and
+ruling edge identity (R6). The 28 CLI holes named below still wait on H2,
+because the verbs are the surface and the store is what they reach. M3
+(stale-delete window, concurrent ingest) is restated in the 009 review
+notes and stays open.
 
 | | |
 |---|---|
 | Owner | `docs/PRD-postgres-store.md`, phases 2 through 7 |
 | Contract in hand | `crates/yeomna-pipeline/src/sink.rs` (two methods), byte-stable `chunk_doc`/`embedding_doc` JSON, the emitted types (`FileAnalysis`, `SymbolDocument`, `CrateEdge`, `TextChunk`), golden keys |
 | CLI holes it fills | 28 (`db` tree, `status`, `orient`) jointly with H2 |
-| Also fills | the deferred five-call-sequence test (spec 005), the stale-delete atomicity decision (M3, named in the orchestrator comment) |
-| Blocked by | nothing. R1 and R2 both ruled 2026-08-12 |
+| Filled | the deferred five-call-sequence test (spec 005), edge identity (R6) |
+| Still open | the M3 decisions, named not resolved |
 
 ## H2. The verb layer
 
@@ -145,7 +152,8 @@ Recorded during lifts, riding in the review notes, none blocking:
   caching, CLANG_LOCK analyzer-thread design, go.work grouping, preflight
   timeout, and the CUDA kernel-launch capability gap on this box (needs a
   compilation database or clang crate feature work).
-- **005 (`yeomna-pipeline`):** the five-call-sequence test, lands with H1.
+- **005 (`yeomna-pipeline`):** the five-call-sequence test. Landed with H1
+  (spec 009), store side.
 - **006 (extraction):** everything riding H5.
 - **003 follow-up:** the embed client integration tests (type and config
   portions) belong in `yeomna-embed`.
@@ -161,12 +169,15 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R3 | Config file versus env (H10) | Not ruled |
 | R4 | Q3 verb naming | One option left standing (rename), lands with the verb spec |
 | R5 | PR #17 extraction direction | Held in draft pending docling-rs shape |
+| R6 | Edge identity | **Ruled 2026-08-13 (spec 009): an edge is (graph_id, src_id, dst_id, relation, basis)**, analyzer and status and payload are attributes. `edges_identity` unique index, claim 8 |
+| R7 | `edge_basis` Rust mapping | Deferred to H3, where edge writes exist |
 
 ## The fill order, as the dependencies read
 
-1. R1 and R2 rule, then the store schema spec (H1 begins).
-2. The sink implementation, the ingest orchestrator (H3), first end-to-end
-   code ingest, dogfooding this repo.
+1. R1 and R2 rule, then the store schema spec (H1 begins). Done, spec 008.
+2. The sink implementation (done, spec 009, H1 retired), the ingest
+   orchestrator (H3, next), first end-to-end code ingest, dogfooding this
+   repo.
 3. The verb-layer PRD (H2, with H6 and H7), turning CLI holes into behavior.
 4. The embedder contract and SPU (H4) with late chunking wired.
 5. The extraction backend (H5) when document corpora arrive.
