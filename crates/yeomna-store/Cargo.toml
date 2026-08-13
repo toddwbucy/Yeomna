@@ -7,11 +7,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-postgres.workspace = true
 tracing.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
 yeomna-keys = { path = "../yeomna-keys" }
+yeomna-pipeline = { path = "../yeomna-pipeline" }

@@ -9,6 +9,9 @@
 
 use tokio_postgres::{Client, NoTls};
 
+mod sink;
+pub use sink::PgSink;
+
 /// The schema, embedded. Every statement tolerates re-application.
 pub const SCHEMA_SQL: &str = include_str!("../schema.sql");
 
@@ -18,6 +21,14 @@ pub enum StoreError {
     /// Database error.
     #[error("database error: {0}")]
     Db(#[from] tokio_postgres::Error),
+    /// A container name outside the closed profile vocabulary: a caller
+    /// bug, never a counted per-document error.
+    #[error("unknown container: {0}")]
+    UnknownContainer(String),
+    /// A removal field outside the known parent-key set. Refused rather
+    /// than guessed, because a guess deletes the wrong rows silently.
+    #[error("unknown removal field: {0}")]
+    UnknownRemovalField(String),
 }
 
 /// Connect over a Unix socket directory as the given role.
