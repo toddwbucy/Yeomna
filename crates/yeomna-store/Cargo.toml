@@ -1,0 +1,17 @@
+[package]
+name = "yeomna-store"
+description = "The store: schema and sink over the sealed Postgres cluster, per spec 008"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+yeomna-keys = { path = "../yeomna-keys" }
