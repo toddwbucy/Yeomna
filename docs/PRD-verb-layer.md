@@ -8,6 +8,7 @@ honestly, or actually.
 | Version | Date | Changes |
 |---|---|---|
 | 0.1 | 2026-08-13 | First draft. Architecture, audit, transport, naming, phases. |
+| 0.3 | 2026-08-13 | V-Q3 ruled: orient is a per-graph survey, welcome text is deployment config (H10). V-Q4 clarified (the yeomna database means each appliance's own KG database, customer data, nothing of ours ships), Option B pending final nod. |
 | 0.2 | 2026-08-13 | Todd's review round. V-Q1 ruled (attempt logging), V-Q2 ruled (inherit role policy from Postgres, daemon authors nothing), crate layout confirmed. V-Q3 restated as structured self-description, pending nod. New V-Q4 (multi-database utility) replaces the removal of the database commands. |
 
 ## Executive Summary
@@ -310,12 +311,13 @@ amendment landing with the Phase 1 spec.
   makes the audit log append-only. Read and write both exist from day
   one. Who holds which role is user and database level policy, which is
   the deployment-era directory inheritance the charter names.
-- **V-Q3. The `orient` contract, restated.** This system is the KG an
-  agent consults, not an agent itself, so `orient` returns structured
-  facts rather than prose: the graphs and their sizes, the verb
-  vocabulary, the schema version, corpus counts. The store describing
-  itself as data, with any narrative written by the visiting agent.
-  Pending Todd's nod on that shape.
+- **V-Q3. RULED 2026-08-13: orient is a per-graph survey.** Point it at
+  a KG and it answers what that graph is about and where it stands:
+  counts by node kind, edge counts by relation and basis, embedding
+  coverage and model, last ingest activity, schema version. Structured
+  facts, since this system is the KG an agent consults, not an agent.
+  A welcome message is a deployment decision: a config-file field (H10)
+  whose text rides in the response when the deployment sets one.
 - **V-Q4. Multi-database utility.** Raised by Todd at review: multiple
   databases on the one cluster are Postgres utility, not a second
   engine, and nothing should prevent using them agentically or for
