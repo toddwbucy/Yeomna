@@ -49,6 +49,27 @@ The schema is applied to the dev cluster. Eight objects: `graphs`, `nodes`,
    golden-key upsert, append-only grants, and the pinned shapes landing with
    FTS answering over them.
 
+## CodeRabbit round (2026-08-13)
+
+Fixed on the PR as a follow-up commit: `CREATE EXTENSION IF NOT EXISTS
+vector` now leads the schema (it applied here only because bring-up week
+had enabled the extension, a fresh database would have failed at the first
+`halfvec`), the grant block states its role prerequisites, claim 2 asserts
+a server refusal without matching pgvector prose, claim 4 asserts the edge
+row cascades too, claim 6 skips when the `yeomna_app` peer mapping is
+absent (environmental, same class as no cluster), the two embedding
+inserts bind the vector literal as a parameter, the advisory lock waits at
+most 30 seconds and a failed unlock is logged, and `connect` uses
+`host_path` with a 10 second connection timeout.
+
+Deferred, not fixed: an edge uniqueness constraint on `(graph_id, src_id,
+dst_id, relation, basis)`. The reviewer is right that the sink needs an
+`ON CONFLICT` target, but whether two calls edges between the same pair
+may coexist (distinct call sites in `payload`) is edge identity semantics,
+which is spec 009's decision to make from what the emitters produce. The
+constraint is one `CREATE UNIQUE INDEX` when ruled, and `basis` already
+sits in the candidate key so partitioning does not block it.
+
 ## Verification
 
 - Live: 7/7 claims green, schema applied idempotently (every test applies

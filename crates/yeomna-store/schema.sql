@@ -3,6 +3,12 @@
 -- Rulings cited inline: Q1 (typed provenance), Q2/R1 (graph_id column),
 -- D1..D7 (store PRD resolved decisions), charter section 6 (audit defaults).
 
+-- pgvector supplies halfvec and hnsw below. Installing the package does
+-- not enable it per database, so a fresh database fails at the first
+-- halfvec reference without this. When the extension already exists the
+-- statement is a notice-level no-op with no privilege check.
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- Graphs registry (Q2). Dropping a graph cascades through everything:
 -- T4 made mechanical, the graph is a rebuildable index.
 CREATE TABLE IF NOT EXISTS graphs (
@@ -116,6 +122,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 -- Grants. yeomna_app reads and writes data, appends to the logs, and can
 -- never rewrite history. yeomna_audit owns the audit table.
+-- Prerequisites, provisioned at cluster creation and not by this file:
+-- the roles yeomna_app and yeomna_audit exist, and the applying role
+-- (yeomna_owner) is a member of yeomna_audit, which ALTER TABLE ...
+-- OWNER TO requires.
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON graphs, nodes, chunks, embeddings, edges,
        edges_declared, edges_structural, edges_asserted

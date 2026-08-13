@@ -31,10 +31,11 @@ pub async fn connect(
     database: &str,
 ) -> Result<Client, StoreError> {
     let (client, connection) = tokio_postgres::Config::new()
-        .host(socket_dir)
+        .host_path(socket_dir)
         .port(port)
         .user(role)
         .dbname(database)
+        .connect_timeout(std::time::Duration::from_secs(10))
         .connect(NoTls)
         .await?;
     tokio::spawn(async move {
@@ -54,13 +55,19 @@ pub async fn connect(
 pub async fn apply_schema(client: &Client) -> Result<(), StoreError> {
     /// Arbitrary but stable: the advisory key for schema application.
     const SCHEMA_LOCK: i64 = 0x59454f4d; // "YEOM"
+    // Bound the wait: a stalled applier must surface as an error, not as
+    // every other applier hanging forever.
+    client.batch_execute("SET lock_timeout = '30s'").await?;
     client
         .execute("SELECT pg_advisory_lock($1)", &[&SCHEMA_LOCK])
         .await?;
     let result = client.batch_execute(SCHEMA_SQL).await;
-    let _ = client
+    if let Err(e) = client
         .execute("SELECT pg_advisory_unlock($1)", &[&SCHEMA_LOCK])
-        .await;
+        .await
+    {
+        tracing::warn!(%e, "advisory unlock failed, lock releases on disconnect");
+    }
     result?;
     Ok(())
 }
