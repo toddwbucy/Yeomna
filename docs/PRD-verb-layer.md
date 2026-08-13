@@ -9,7 +9,8 @@ honestly, or actually.
 |---|---|---|
 | 0.1 | 2026-08-13 | First draft. Architecture, audit, transport, naming, phases. |
 | 0.2 | 2026-08-13 | Todd's review round. V-Q1 ruled (attempt logging), V-Q2 ruled (inherit role policy from Postgres, daemon authors nothing), crate layout confirmed. V-Q3 restated as structured self-description, pending nod. New V-Q4 (multi-database utility) replaces the removal of the database commands. |
-| 0.3 | 2026-08-13 | V-Q3 ruled: orient is a per-graph survey, welcome text is deployment config (H10). V-Q4 clarified (the yeomna database means each appliance's own KG database, customer data, nothing of ours ships), Option B pending final nod. |
+| 0.3 | 2026-08-13 (a) | V-Q3 ruled: orient is a per-graph survey, welcome text is deployment config (H10). V-Q4 clarified (the yeomna database means each appliance's own KG database, customer data, nothing of ours ships), Option B pending final nod. |
+| 0.4 | 2026-08-13 | V-Q4 ruled: immutable in structure, not in content. Databases are the customer's, the yeomna pattern is stampable, the scoped sql verb serves plain databases and refuses KG-pattern ones. All open questions closed. |
 
 ## Executive Summary
 
@@ -137,7 +138,9 @@ emit the D7 `UNION` node-dedup form with basis filters that prune
 partitions (claim 1 is the guarantee). Path-returning forms are the
 named exception, enumerating with the hard row cap the store PRD fixed.
 `graph drop` is the first destructive verb and sets the audit pattern
-for the rest.
+for the rest. Database lifecycle rides here too: `database list`,
+`database create` (kg pattern applies the schema at birth, plain comes
+up empty), `database drop`, all audited.
 
 ### Phase 4: Write verbs and the audit transaction
 
@@ -146,7 +149,10 @@ every node mutation appends to `node_log` and the head row stays
 materialized convenience. The audit row, the mutation, and the log entry
 commit or roll back together. This phase is where G1's same-transaction
 requirement is proven by a crash-shaped test (fail after mutation,
-before commit, observe neither).
+before commit, observe neither). The scoped `sql` verb lands here as well,
+carrying the V-Q4 ruling: full utility against plain databases with
+statement text in the audit args, refusal against KG-pattern databases,
+running under a role that Postgres itself gives no KG grants.
 
 ### Phase 5: The daemon
 
@@ -221,7 +227,7 @@ Applied to every inherited name that assumed document-store structure:
 | `DbCollections` | absorbed into `schema show` | the schema is shipped and fixed, there is no dynamic collection set to list |
 | `DbCreateCollection` | removed | tables are born in `schema apply`, not at runtime |
 | `DbCreateIndex` | removed from runtime, absorbed into `schema apply` | same reason, the appliance ships its indexes |
-| CLI `db databases`, `db create-database` | kept, contract under V-Q4 | multiple databases are Postgres utility, not a second engine. The open question is the reach surface, not the lifecycle |
+| CLI `db databases`, `db create-database` | kept as `database list`, `database create` (with a kind: kg pattern or plain), plus `database drop` | ruled under V-Q4, the yeomna pattern is stampable and lifecycle is the customer's |
 | CLI `db truncate`, `db drop-collection` | absorbed into `graph drop` and `purge` | the destructive verbs that exist carry the audit story |
 | `DbQuery` | `query` with the structured filter | the name survives, the raw surface does not |
 | everything else | keeps its name minus the `Db` prefix | engineering, not mythology |
@@ -318,19 +324,21 @@ amendment landing with the Phase 1 spec.
   facts, since this system is the KG an agent consults, not an agent.
   A welcome message is a deployment decision: a config-file field (H10)
   whose text rides in the response when the deployment sets one.
-- **V-Q4. Multi-database utility.** Raised by Todd at review: multiple
-  databases on the one cluster are Postgres utility, not a second
-  engine, and nothing should prevent using them agentically or for
-  services. The database lifecycle verbs are kept. The open question is
-  the reach surface for non-KG databases. Option A, conventional
-  Postgres clients over the socket outside the verb layer, which creates
-  an unaudited path on the box. Option B, recommended: a scoped `sql`
-  verb valid only against non-KG databases, refusing the `yeomna`
-  database by name, running under a role holding zero grants on the KG
-  (enforced by Postgres, not verb code), full statement text in its
-  audit args. Option B keeps one audited entry point and leaves charter
-  section 6 intact, because the store that section protects is the
-  knowledge graph, not the cluster. Awaiting the ruling.
+- **V-Q4. RULED 2026-08-13: immutable in structure, not in content.**
+  Customers create and drop databases freely, their box and their data.
+  The yeomna pattern is stampable: `create-database` takes a kind, and a
+  KG-pattern database gets the schema applied at birth while a plain one
+  comes up empty. On KG-pattern databases, structure (tables,
+  constraints, grants) is owned by `schema apply` and unreachable from
+  the runtime surface, while content is fully mutable through the KG
+  verbs, up to and including dropping the database, since the graph is a
+  rebuildable index (T4). The scoped `sql` verb serves plain databases
+  with full utility and audited statement text, and refuses KG-pattern
+  databases, not to fence the customer's data but because raw SQL on KG
+  content would break the guarantees they are paying for: the diff log's
+  head-versus-log rule and the audit log's completeness. Every operation
+  raw SQL could perform on KG content, a verb performs with the record
+  intact.
 
 ## Timeline
 
