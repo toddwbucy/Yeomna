@@ -28,8 +28,11 @@ binding. The `audit_log.outcome` column landed with it under a column-scoped
 grant, which is how attempt logging coexists with an append-only table. A
 workspace lint keeps SQL inside `yeomna-store` and `yeomna-verbs`. Next are
 Phase 2 (read verbs) and H3 (the ingest orchestrator), which are parallel-safe
-now that the contract pins the shapes both need. Phase 6 (the
-Python services) waits on the SPU and config rulings. Commands are
+now that the contract pins the shapes both need.
+
+The pipeline-libraries PRD's own Phase 6, the Python services, waits on the
+SPU and config rulings. Note that phase numbers are per PRD and do not
+correspond across them. Commands are
 `cargo build`, `cargo test`, `cargo clippy --all-targets`,
 `cargo fmt --check`, all from the repository root. Per charter section 13,
 the string `yeomna` is what belongs in crate metadata.
