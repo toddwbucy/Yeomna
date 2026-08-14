@@ -48,6 +48,29 @@ async fn role_exists(c: &Client, role: &str) -> bool {
     .get(0)
 }
 
+/// Owner connection for the claim that also needs the runtime role.
+///
+/// The provisioning question is asked before the schema is applied and
+/// before any row exists, so an unprovisioned cluster is never written to
+/// on its way to being skipped, and no scratch graph outlives the early
+/// return. Prints its own skip reason, which the caller does not repeat.
+async fn owner_needing_app() -> Option<Client> {
+    let Some(dir) = socket_dir() else {
+        eprintln!("SKIP: no cluster socket (set YEOMNA_TEST_DB)");
+        return None;
+    };
+    let Ok(client) = connect(&dir, PORT, "yeomna_owner", "yeomna").await else {
+        eprintln!("SKIP: cannot connect as yeomna_owner");
+        return None;
+    };
+    if !role_exists(&client, "yeomna_app").await {
+        eprintln!("SKIP: yeomna_app is not provisioned on this cluster");
+        return None;
+    }
+    apply_schema(&client).await.expect("schema applies");
+    Some(client)
+}
+
 /// A scratch graph whose teardown is claim 4's subject matter.
 async fn scratch_graph(c: &Client, name: &str) -> i64 {
     c.execute("DELETE FROM graphs WHERE name = $1", &[&name])
@@ -280,7 +303,11 @@ async fn claim_5_idempotent_upsert_on_golden_keys() {
 
 #[tokio::test]
 async fn claim_6_the_logs_are_append_only_for_the_app_role() {
-    require_cluster!(owner_c);
+    // Gated on the runtime role before anything is written, since this is
+    // the one claim that needs it.
+    let Some(owner_c) = owner_needing_app().await else {
+        return;
+    };
     let g = scratch_graph(&owner_c, "claim6").await;
     let n = node(&owner_c, g, "doc", "document").await;
     owner_c
@@ -292,16 +319,9 @@ async fn claim_6_the_logs_are_append_only_for_the_app_role() {
         .unwrap();
 
     let dir = socket_dir().unwrap();
-    // Whether the runtime role is provisioned is the environmental
-    // question, and pg_roles answers it exactly. Sniffing SQLSTATE 28
-    // cannot: that class covers every authorization failure, so it would
-    // also swallow a broken pg_hba and let the assertions below pass by
-    // never running. An unprovisioned box skips. A provisioned one that
-    // cannot connect is a misconfiguration and says so.
-    if !role_exists(&owner_c, "yeomna_app").await {
-        eprintln!("SKIP: yeomna_app is not provisioned on this cluster");
-        return;
-    }
+    // The role exists (checked before any write, above), so connecting as
+    // it must succeed. A failure here is misconfiguration rather than
+    // absence, and says so instead of skipping the assertions below.
     let app = connect(&dir, PORT, "yeomna_app", "yeomna")
         .await
         .expect("yeomna_app exists, so connecting as it must succeed");

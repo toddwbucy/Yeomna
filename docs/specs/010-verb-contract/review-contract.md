@@ -113,6 +113,30 @@ code only approximates it.
 Verified live: 17 store tests green with the role present, clusterless
 runs still skip-pass.
 
+## CodeRabbit round three (2026-08-14)
+
+Two findings, both fixed, and the first had a consequence worth naming.
+
+**The gate sat after the writes it was meant to precede.** Claim 6
+checked provisioning only after `owner()` had applied the schema and
+after a scratch graph, node, and log row existed, and its early return
+then bypassed its own cleanup. An unprovisioned cluster was therefore
+written to and left with a leaked `claim6` graph on the way to being
+skipped. The check now runs immediately after connecting, before the
+schema is applied, in both the claims (via an `owner_needing_app`
+helper) and the sink fixtures.
+
+**A missing role reported itself as a missing socket.** The sink's
+`require_sink!` printed "no cluster socket" for every `None` from
+`fixtures`, including the provisioning case that had already printed
+its own accurate reason. Each cause now names itself inside `fixtures`
+and the macro adds nothing.
+
+Verified by pointing the provisioning check at a role that does not
+exist: the skip prints "yeomna_app is not provisioned on this
+cluster", and the cluster is left with zero rows from the skipped
+tests, which is the property the reordering buys.
+
 ## The M3 and phase notes
 
 Nothing in this phase touches a connection, so the M3 statements are
