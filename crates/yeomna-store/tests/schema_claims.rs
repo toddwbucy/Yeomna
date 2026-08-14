@@ -7,7 +7,7 @@
 //! so the workspace gate holds on boxes with no cluster (G2).
 
 use tokio_postgres::Client;
-use yeomna_store::{StoreError, apply_schema, connect};
+use yeomna_store::{apply_schema, connect};
 
 const PORT: u16 = 5433;
 
@@ -34,6 +34,18 @@ macro_rules! require_cluster {
             return;
         };
     };
+}
+
+/// Is a role provisioned on this cluster. The precise environmental
+/// question, asked of the catalog rather than inferred from an error.
+async fn role_exists(c: &Client, role: &str) -> bool {
+    c.query_one(
+        "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
+        &[&role],
+    )
+    .await
+    .unwrap()
+    .get(0)
 }
 
 /// A scratch graph whose teardown is claim 4's subject matter.
@@ -280,22 +292,19 @@ async fn claim_6_the_logs_are_append_only_for_the_app_role() {
         .unwrap();
 
     let dir = socket_dir().unwrap();
-    // A missing pg_ident mapping for the second role is environmental, the
-    // same class as no cluster: skip, do not fail the workspace gate. Only
-    // that class skips. Any other failure (no such database, refused
-    // connection) fails loudly, because a blanket skip here would let the
-    // permission assertions below pass by never running.
-    let app = match connect(&dir, PORT, "yeomna_app", "yeomna").await {
-        Ok(c) => c,
-        Err(StoreError::Db(e))
-            if e.as_db_error()
-                .is_some_and(|d| d.code().code().starts_with("28")) =>
-        {
-            eprintln!("SKIP: no peer mapping for yeomna_app");
-            return;
-        }
-        Err(e) => panic!("app connection failed for a non-environmental reason: {e}"),
-    };
+    // Whether the runtime role is provisioned is the environmental
+    // question, and pg_roles answers it exactly. Sniffing SQLSTATE 28
+    // cannot: that class covers every authorization failure, so it would
+    // also swallow a broken pg_hba and let the assertions below pass by
+    // never running. An unprovisioned box skips. A provisioned one that
+    // cannot connect is a misconfiguration and says so.
+    if !role_exists(&owner_c, "yeomna_app").await {
+        eprintln!("SKIP: yeomna_app is not provisioned on this cluster");
+        return;
+    }
+    let app = connect(&dir, PORT, "yeomna_app", "yeomna")
+        .await
+        .expect("yeomna_app exists, so connecting as it must succeed");
     let audit_id: i64 = app
         .query_one(
             "INSERT INTO audit_log (actor, verb) VALUES ('test', 'claim6')

@@ -65,9 +65,9 @@ disproved. The rest:
   marked.
 - **Claim 6's app-connection skip was blanket,** which meant a real
   authentication or database failure would silently bypass the
-  permission assertions and pass. It now skips only on SQLSTATE class
-  28 (the missing pg_ident mapping this guard was written for) and
-  panics on anything else.
+  permission assertions and pass. Narrowed once to SQLSTATE class 28,
+  then narrowed again in the second round (below) to the precise
+  question.
 - **The outcome format was stated in two places and only one was
   precise.** `schema.sql` and the error module now both say the same
   thing: the column records `failed: <kind>` using
@@ -89,6 +89,29 @@ FR 7 names both crates, and the verb-layer PRD makes `yeomna-verbs` the
 SQL author above the sink from Phase 2 on, so the line this lint draws
 is around the two crates that own the store. Removing it would also
 false-positive immediately on the contract test's `sql` verb example.
+
+## CodeRabbit round two (2026-08-14)
+
+One finding, and it was right about the fix from round one: SQLSTATE
+class 28 covers every authorization failure, not only the missing
+`pg_ident` mapping the guard was written for, so a broken `pg_hba`
+would still have skipped the append-only assertions silently.
+
+The suggested remedy was an environment opt-in. Declined in that form
+and replaced with a sharper one, because a variable nobody exports
+converts an occasional silent skip into a permanent one: the claim
+would stop being tested on every developer box at once.
+
+**The skip condition, as it now stands, in both the schema claims and
+the sink tests:** ask `pg_roles` whether `yeomna_app` exists. An
+unprovisioned cluster skips with that reason named. A cluster where
+the role exists must connect, and a failure there panics, because on a
+provisioned cluster it means misconfiguration rather than absence.
+The catalog answers the environmental question exactly, where an error
+code only approximates it.
+
+Verified live: 17 store tests green with the role present, clusterless
+runs still skip-pass.
 
 ## The M3 and phase notes
 

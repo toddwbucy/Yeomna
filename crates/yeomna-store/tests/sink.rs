@@ -33,10 +33,24 @@ async fn fixtures(graph: &str) -> Option<(Client, PgSink)> {
         .execute("DELETE FROM graphs WHERE name = $1", &[&graph])
         .await
         .unwrap();
-    let Ok(app) = connect(&dir, PORT, "yeomna_app", "yeomna").await else {
-        eprintln!("SKIP: no peer mapping for yeomna_app");
+    // Provisioning is the environmental question and pg_roles answers it
+    // exactly, where sniffing an auth error would also swallow a real
+    // misconfiguration and skip the whole suite silently.
+    let provisioned: bool = owner
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yeomna_app')",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    if !provisioned {
+        eprintln!("SKIP: yeomna_app is not provisioned on this cluster");
         return None;
-    };
+    }
+    let app = connect(&dir, PORT, "yeomna_app", "yeomna")
+        .await
+        .expect("yeomna_app exists, so connecting as it must succeed");
     let sink = PgSink::new(app, graph).await.expect("graph resolves");
     Some((owner, sink))
 }
