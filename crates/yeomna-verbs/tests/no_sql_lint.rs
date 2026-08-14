@@ -2,6 +2,16 @@
 //! may live in `yeomna-store` and `yeomna-verbs` and nowhere else. The
 //! verb layer is the only surface, and this test is the workspace-wide
 //! enforcement of the charter's line, run on every `cargo test`.
+//!
+//! Scope: every Rust file in every other crate, not only `src/`. A
+//! traversal hand-written into a test or a benchmark leaks the same
+//! knowledge as one in a module, so `tests/`, `benches/`, `examples/`,
+//! and `build.rs` are all in scope.
+//!
+//! `yeomna-verbs` stays allowed alongside `yeomna-store` because the
+//! verb-layer PRD makes it the SQL author above the sink from Phase 2
+//! on. The line this lint draws is around the two crates that own the
+//! store, not around the store crate alone.
 
 use std::path::{Path, PathBuf};
 
@@ -38,40 +48,52 @@ fn violations_in(src: &str, origin: &str) -> Vec<String> {
     out
 }
 
-fn scan() -> Vec<String> {
+/// Violations found, and how many Rust files were read to find them. The
+/// count is asserted below: a walk that silently visits nothing would
+/// otherwise report a clean workspace forever.
+fn scan() -> (Vec<String>, usize) {
     let mut found = Vec::new();
+    let mut visited = 0;
     for entry in std::fs::read_dir(crates_dir()).unwrap() {
         let dir = entry.unwrap().path();
+        if !dir.is_dir() {
+            continue;
+        }
         let name = dir.file_name().unwrap().to_string_lossy().to_string();
         if ALLOWED.contains(&name.as_str()) {
             continue;
         }
-        let src = dir.join("src");
-        if !src.is_dir() {
-            continue;
-        }
-        let mut stack = vec![src];
+        let mut stack = vec![dir];
         while let Some(d) = stack.pop() {
             for f in std::fs::read_dir(&d).unwrap() {
                 let p = f.unwrap().path();
                 if p.is_dir() {
+                    // Build output is not source.
+                    if p.file_name().is_some_and(|n| n == "target") {
+                        continue;
+                    }
                     stack.push(p);
                 } else if p.extension().is_some_and(|e| e == "rs") {
+                    visited += 1;
                     let text = std::fs::read_to_string(&p).unwrap();
                     found.extend(violations_in(&text, &p.display().to_string()));
                 }
             }
         }
     }
-    found
+    (found, visited)
 }
 
 #[test]
 fn no_sql_outside_the_line() {
-    let found = scan();
+    let (found, visited) = scan();
+    assert!(
+        visited > 0,
+        "the lint visited no Rust files, so its clean result means nothing"
+    );
     assert!(
         found.is_empty(),
-        "SQL outside yeomna-store and yeomna-verbs:\n{}",
+        "SQL outside yeomna-store and yeomna-verbs ({visited} files scanned):\n{}",
         found.join("\n")
     );
 }

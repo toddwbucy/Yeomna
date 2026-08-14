@@ -7,7 +7,7 @@
 //! so the workspace gate holds on boxes with no cluster (G2).
 
 use tokio_postgres::Client;
-use yeomna_store::{apply_schema, connect};
+use yeomna_store::{StoreError, apply_schema, connect};
 
 const PORT: u16 = 5433;
 
@@ -281,17 +281,30 @@ async fn claim_6_the_logs_are_append_only_for_the_app_role() {
 
     let dir = socket_dir().unwrap();
     // A missing pg_ident mapping for the second role is environmental, the
-    // same class as no cluster: skip, do not fail the workspace gate.
-    let Ok(app) = connect(&dir, PORT, "yeomna_app", "yeomna").await else {
-        eprintln!("SKIP: no peer mapping for yeomna_app");
-        return;
+    // same class as no cluster: skip, do not fail the workspace gate. Only
+    // that class skips. Any other failure (no such database, refused
+    // connection) fails loudly, because a blanket skip here would let the
+    // permission assertions below pass by never running.
+    let app = match connect(&dir, PORT, "yeomna_app", "yeomna").await {
+        Ok(c) => c,
+        Err(StoreError::Db(e))
+            if e.as_db_error()
+                .is_some_and(|d| d.code().code().starts_with("28")) =>
+        {
+            eprintln!("SKIP: no peer mapping for yeomna_app");
+            return;
+        }
+        Err(e) => panic!("app connection failed for a non-environmental reason: {e}"),
     };
-    app.execute(
-        "INSERT INTO audit_log (actor, verb) VALUES ('test', 'claim6')",
-        &[],
-    )
-    .await
-    .expect("app appends to audit_log");
+    let audit_id: i64 = app
+        .query_one(
+            "INSERT INTO audit_log (actor, verb) VALUES ('test', 'claim6')
+             RETURNING id",
+            &[],
+        )
+        .await
+        .expect("app appends to audit_log")
+        .get(0);
     for stmt in [
         "UPDATE node_log SET seq = 99 WHERE node_id = $1",
         "DELETE FROM node_log WHERE node_id = $1",
@@ -309,17 +322,20 @@ async fn claim_6_the_logs_are_append_only_for_the_app_role() {
         .expect_err("audit history is not rewritable");
     assert_eq!(err.as_db_error().unwrap().code().code(), "42501");
     // The one exception, column-scoped (spec 010): the completion mark is
-    // updatable while history stays immutable on the same row.
-    app.execute(
-        "UPDATE audit_log SET outcome = 'ok' WHERE verb = 'claim6'",
-        &[],
-    )
-    .await
-    .expect("outcome is column-granted to the app role");
+    // updatable while history stays immutable on the same row. Targeted by
+    // id, since audit_log is append-only and every run leaves its rows.
+    let marked = app
+        .execute(
+            "UPDATE audit_log SET outcome = 'ok' WHERE id = $1",
+            &[&audit_id],
+        )
+        .await
+        .expect("outcome is column-granted to the app role");
+    assert_eq!(marked, 1, "exactly this run's row");
     let err = app
         .execute(
-            "UPDATE audit_log SET actor = 'tampered' WHERE verb = 'claim6'",
-            &[],
+            "UPDATE audit_log SET actor = 'tampered' WHERE id = $1",
+            &[&audit_id],
         )
         .await
         .expect_err("actor stays immutable");

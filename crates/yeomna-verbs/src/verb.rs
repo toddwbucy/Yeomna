@@ -1,8 +1,13 @@
 //! The closed vocabulary: 40 verbs, wire names per the spec 010 R4 table.
 //!
-//! Wire form: `{"verb": "<wire name>", "args": {...}}`. Verbs whose
-//! requests carry nothing omit or send empty `args`. Every request struct
-//! denies unknown fields.
+//! Wire form: `{"verb": "<wire name>", "args": {...}}`. Every request
+//! carries `args`, including the ones that take nothing, which send an
+//! empty object. Unknown fields are denied at both levels: beside `args`
+//! by the enum's own attribute, and inside it by every request struct.
+//! The two together are what make a client-supplied `actor` unspeakable
+//! (PRD V3), and the enum-level half is not free: serde's adjacent
+//! tagging accepts unknown siblings unless told otherwise, measured
+//! 2026-08-14.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +15,7 @@ use serde::{Deserialize, Serialize};
 /// are written out. The `wire_name` method and the tests treat this enum
 /// as the R4 close made executable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "verb", content = "args")]
+#[serde(tag = "verb", content = "args", deny_unknown_fields)]
 pub enum Verb {
     // -- Orientation (Phase 2) --------------------------------------------
     /// Per-graph survey (V-Q3): what a KG is about and where it stands.

@@ -122,7 +122,12 @@ CREATE TABLE IF NOT EXISTS node_log (
 -- The verb layer writes it and defines actor semantics (peercred).
 -- outcome is V-Q1's attempt logging (spec 010): NULL is an attempt whose
 -- completion was never recorded, which is the crash story told by the
--- schema. Set to 'ok' or 'failed: <kind>' when the verb completes.
+-- schema. On completion the writer sets exactly one of 'ok' or
+-- 'failed: <kind>', where <kind> is yeomna_verbs::VerbError::kind(), one
+-- of not-found, invalid-args, unimplemented, denied, internal. The kind
+-- alone, never the error detail: the detail rides the response envelope,
+-- which carries 'kind: detail', and an audit column is a stable
+-- vocabulary rather than a message log.
 CREATE TABLE IF NOT EXISTS audit_log (
     id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     at      timestamptz NOT NULL DEFAULT now(),

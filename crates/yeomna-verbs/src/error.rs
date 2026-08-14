@@ -1,7 +1,12 @@
 //! The error taxonomy, five kinds, stable wire strings.
 //!
-//! The kind string doubles as the audit `outcome` failure name (V-Q1:
-//! attempt logging, a failed verb marks its row `failed: <kind>`).
+//! Two renderings, deliberately different. [`VerbError::kind`] is the
+//! stable vocabulary word, and the audit `outcome` column records
+//! `failed: <kind>` with no detail, because an audit column is a
+//! vocabulary rather than a message log. [`std::fmt::Display`] is
+//! `kind: detail` and rides the response envelope, where the caller
+//! wants to know which thing was not found. The Phase 4 audit writer
+//! uses `kind`, and `schema.sql` states the same contract.
 
 use serde::{Deserialize, Serialize};
 

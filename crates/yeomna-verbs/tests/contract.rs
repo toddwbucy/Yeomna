@@ -246,6 +246,16 @@ fn ec2_a_smuggled_actor_dies_at_the_boundary() {
         "verb": "status", "args": {"actor": "root"}
     }))
     .unwrap_err();
+    // Beside args, at the envelope level. Serde's adjacent tagging accepts
+    // unknown siblings unless the enum denies them, so this arm guards a
+    // real hole rather than a hypothetical one.
+    for smuggled in [
+        json!({"verb": "status", "args": {}, "actor": "root"}),
+        json!({"verb": "purge", "args": {"key": "docA"}, "actor": "root"}),
+    ] {
+        let err = serde_json::from_value::<Verb>(smuggled).unwrap_err();
+        assert!(err.to_string().contains("actor"), "err: {err}");
+    }
 }
 
 #[test]
