@@ -1,6 +1,6 @@
 # The Holes Ledger
 
-Status: v1.2, 2026-08-14. H1 retired, H2 building. The hole-mapping step of the severance sequence
+Status: v1.3, 2026-08-14. H1 retired, H2 building, R3 ruled. The hole-mapping step of the severance sequence
 (PRD-pipeline-libraries v0.2). This is the map of everything Yeomna needs and
 does not yet have, each hole named, owned, and sourced. The executable form
 is `yeomna-cli`: 56 commands, every one a self-reporting hole whose census is
@@ -140,8 +140,10 @@ under Yeomna names as interim.
 
 | | |
 |---|---|
-| Owner | a ruling first, then small work in each consumer |
-| Touches | extractor env surface, embedder endpoint default, CLI `--db` resolution semantics, daemon socket paths |
+| Owner | R3 ruled 2026-08-14, then small work in each consumer |
+| Product surface today | one variable, `YEOMNA_TOOLS_DIR` (`yeomna-code`, `managed_tools_dir`). The embedder endpoint, CLI `--db` resolution, and daemon socket paths were listed here before they existed and still do not |
+| Not in scope | test and development knobs, which stay environment variables: `YEOMNA_TEST_DB`, `YEOMNA_CUDA_FIXTURE`, `YEOMNA_RA_BIN`. `HOME` and `CARGO_MANIFEST_DIR` are facts of the OS and the build, not configuration |
+| Lands with | its first real consumer, the daemon (H2 Phase 5) or the CLI (PR #19). Building a config crate before one exists would be vocabulary ahead of its consumer |
 
 ## H11. Review follow-up ledgers
 
@@ -167,7 +169,7 @@ Recorded during lifts, riding in the review notes, none blocking:
 |---|---|---|
 | R1 | Q2 graph isolation | **Ruled 2026-08-12: graph_id column**, one table set, partition-by-graph as measured graduation. Recorded in the store PRD |
 | R2 | `full_page_writes` on ZFS | **Ruled 2026-08-12: off**, CoW invariant stated in the conf. H1 unblocked |
-| R3 | Config file versus env (H10) | Not ruled |
+| R3 | Config file versus env (H10) | **Ruled 2026-08-14: config file.** The appliance ships one, on the `postgresql.conf` precedent. Test and development knobs stay environment variables, since they configure a harness rather than a product. Measured the same day: the live product surface is one variable |
 | R4 | Q3 verb naming | **Closed 2026-08-14 (spec 010): renamed.** The 40 wire names are binding, `Db` prefixes and document-store vocabulary gone |
 | R5 | PR #17 extraction direction | Held in draft pending docling-rs shape |
 | R6 | Edge identity | **Ruled 2026-08-13 (spec 009): an edge is (graph_id, src_id, dst_id, relation, basis)**, analyzer and status and payload are attributes. `edges_identity` unique index, claim 8 |
