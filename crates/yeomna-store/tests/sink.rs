@@ -25,26 +25,50 @@ fn socket_dir() -> Option<String> {
 
 /// Owner connection for schema application and row inspection, plus a
 /// sink over the runtime role for the graph named. `None` skips the test.
+/// Each skip names its own cause here, so a missing role never reports
+/// itself as a missing socket. The caller does not add a message.
 async fn fixtures(graph: &str) -> Option<(Client, PgSink)> {
-    let dir = socket_dir()?;
-    let owner = connect(&dir, PORT, "yeomna_owner", "yeomna").await.ok()?;
+    let Some(dir) = socket_dir() else {
+        eprintln!("SKIP: no cluster socket (set YEOMNA_TEST_DB)");
+        return None;
+    };
+    let Ok(owner) = connect(&dir, PORT, "yeomna_owner", "yeomna").await else {
+        eprintln!("SKIP: cannot connect as yeomna_owner");
+        return None;
+    };
+    // Provisioning is the environmental question and pg_roles answers it
+    // exactly, where sniffing an auth error would also swallow a real
+    // misconfiguration. Asked before the schema is applied, so an
+    // unprovisioned cluster is not written to on its way to being
+    // skipped.
+    let provisioned: bool = owner
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'yeomna_app')",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    if !provisioned {
+        eprintln!("SKIP: yeomna_app is not provisioned on this cluster");
+        return None;
+    }
     apply_schema(&owner).await.expect("schema applies");
     owner
         .execute("DELETE FROM graphs WHERE name = $1", &[&graph])
         .await
         .unwrap();
-    let Ok(app) = connect(&dir, PORT, "yeomna_app", "yeomna").await else {
-        eprintln!("SKIP: no peer mapping for yeomna_app");
-        return None;
-    };
+    let app = connect(&dir, PORT, "yeomna_app", "yeomna")
+        .await
+        .expect("yeomna_app exists, so connecting as it must succeed");
     let sink = PgSink::new(app, graph).await.expect("graph resolves");
     Some((owner, sink))
 }
 
 macro_rules! require_sink {
     ($owner:ident, $sink:ident, $graph:literal) => {
+        // fixtures() printed the reason.
         let Some(($owner, $sink)) = fixtures($graph).await else {
-            eprintln!("SKIP: no cluster socket (set YEOMNA_TEST_DB)");
             return;
         };
     };

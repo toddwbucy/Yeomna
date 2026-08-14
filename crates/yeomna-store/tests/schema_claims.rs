@@ -36,6 +36,41 @@ macro_rules! require_cluster {
     };
 }
 
+/// Is a role provisioned on this cluster. The precise environmental
+/// question, asked of the catalog rather than inferred from an error.
+async fn role_exists(c: &Client, role: &str) -> bool {
+    c.query_one(
+        "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)",
+        &[&role],
+    )
+    .await
+    .unwrap()
+    .get(0)
+}
+
+/// Owner connection for the claim that also needs the runtime role.
+///
+/// The provisioning question is asked before the schema is applied and
+/// before any row exists, so an unprovisioned cluster is never written to
+/// on its way to being skipped, and no scratch graph outlives the early
+/// return. Prints its own skip reason, which the caller does not repeat.
+async fn owner_needing_app() -> Option<Client> {
+    let Some(dir) = socket_dir() else {
+        eprintln!("SKIP: no cluster socket (set YEOMNA_TEST_DB)");
+        return None;
+    };
+    let Ok(client) = connect(&dir, PORT, "yeomna_owner", "yeomna").await else {
+        eprintln!("SKIP: cannot connect as yeomna_owner");
+        return None;
+    };
+    if !role_exists(&client, "yeomna_app").await {
+        eprintln!("SKIP: yeomna_app is not provisioned on this cluster");
+        return None;
+    }
+    apply_schema(&client).await.expect("schema applies");
+    Some(client)
+}
+
 /// A scratch graph whose teardown is claim 4's subject matter.
 async fn scratch_graph(c: &Client, name: &str) -> i64 {
     c.execute("DELETE FROM graphs WHERE name = $1", &[&name])
@@ -268,7 +303,11 @@ async fn claim_5_idempotent_upsert_on_golden_keys() {
 
 #[tokio::test]
 async fn claim_6_the_logs_are_append_only_for_the_app_role() {
-    require_cluster!(owner_c);
+    // Gated on the runtime role before anything is written, since this is
+    // the one claim that needs it.
+    let Some(owner_c) = owner_needing_app().await else {
+        return;
+    };
     let g = scratch_graph(&owner_c, "claim6").await;
     let n = node(&owner_c, g, "doc", "document").await;
     owner_c
@@ -280,18 +319,21 @@ async fn claim_6_the_logs_are_append_only_for_the_app_role() {
         .unwrap();
 
     let dir = socket_dir().unwrap();
-    // A missing pg_ident mapping for the second role is environmental, the
-    // same class as no cluster: skip, do not fail the workspace gate.
-    let Ok(app) = connect(&dir, PORT, "yeomna_app", "yeomna").await else {
-        eprintln!("SKIP: no peer mapping for yeomna_app");
-        return;
-    };
-    app.execute(
-        "INSERT INTO audit_log (actor, verb) VALUES ('test', 'claim6')",
-        &[],
-    )
-    .await
-    .expect("app appends to audit_log");
+    // The role exists (checked before any write, above), so connecting as
+    // it must succeed. A failure here is misconfiguration rather than
+    // absence, and says so instead of skipping the assertions below.
+    let app = connect(&dir, PORT, "yeomna_app", "yeomna")
+        .await
+        .expect("yeomna_app exists, so connecting as it must succeed");
+    let audit_id: i64 = app
+        .query_one(
+            "INSERT INTO audit_log (actor, verb) VALUES ('test', 'claim6')
+             RETURNING id",
+            &[],
+        )
+        .await
+        .expect("app appends to audit_log")
+        .get(0);
     for stmt in [
         "UPDATE node_log SET seq = 99 WHERE node_id = $1",
         "DELETE FROM node_log WHERE node_id = $1",
@@ -307,6 +349,25 @@ async fn claim_6_the_logs_are_append_only_for_the_app_role() {
         .execute("UPDATE audit_log SET verb = 'tampered'", &[])
         .await
         .expect_err("audit history is not rewritable");
+    assert_eq!(err.as_db_error().unwrap().code().code(), "42501");
+    // The one exception, column-scoped (spec 010): the completion mark is
+    // updatable while history stays immutable on the same row. Targeted by
+    // id, since audit_log is append-only and every run leaves its rows.
+    let marked = app
+        .execute(
+            "UPDATE audit_log SET outcome = 'ok' WHERE id = $1",
+            &[&audit_id],
+        )
+        .await
+        .expect("outcome is column-granted to the app role");
+    assert_eq!(marked, 1, "exactly this run's row");
+    let err = app
+        .execute(
+            "UPDATE audit_log SET actor = 'tampered' WHERE id = $1",
+            &[&audit_id],
+        )
+        .await
+        .expect_err("actor stays immutable");
     assert_eq!(err.as_db_error().unwrap().code().code(), "42501");
     owner_c
         .execute("DELETE FROM graphs WHERE id = $1", &[&g])
