@@ -159,7 +159,11 @@ Recorded during lifts, riding in the review notes, none blocking:
   (spec 009), store side.
 - **006 (extraction):** everything riding H5.
 - **003 follow-up:** the embed client integration tests (type and config
-  portions) belong in `yeomna-embed`.
+  portions) belong in `yeomna-embed`. **Done 2026-08-14**
+  (`tests/config_and_types.rs`): the shipped defaults for both clients,
+  `ExtractOptions::all()` keeping OCR opt-in, and a guard that neither
+  client consults the environment. Pinned deliberately as the values
+  H10's config file has to reproduce when R3's ruling is implemented.
 - **002 (`yeomna-batch`):** per-item checkpointing O(N squared), revisit
   when a measured ingest shows the cost.
 
