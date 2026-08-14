@@ -1,6 +1,6 @@
 # The Holes Ledger
 
-Status: v1.1, 2026-08-13. H1 retired. The hole-mapping step of the severance sequence
+Status: v1.2, 2026-08-14. H1 retired, H2 building. The hole-mapping step of the severance sequence
 (PRD-pipeline-libraries v0.2). This is the map of everything Yeomna needs and
 does not yet have, each hole named, owned, and sourced. The executable form
 is `yeomna-cli`: 56 commands, every one a self-reporting hole whose census is
@@ -44,10 +44,11 @@ ported: the excluded reference code is not consulted.
 
 | | |
 |---|---|
-| Owner | `docs/PRD-verb-layer.md`, drafted v0.1 2026-08-13 |
+| Owner | `docs/PRD-verb-layer.md`, settled v0.4 2026-08-13 |
 | Contract in hand | the 32-verb inventory (store PRD), the captured CLI surface and envelope conventions (`yeomna-cli`), charter section 6 (audit log as shipped default, one audited entry point) |
 | CLI holes it fills | the same 28, jointly with H1, plus `daemon` (H7) |
 | Includes | Q3 renames of ArangoDB-vocabulary command names, the audit table wiring, peercred policy |
+| Progress | **Phase 1 of 7 done** (spec 010, merged 2026-08-14): `yeomna-verbs` carries the closed 40-verb contract, R4 is closed, the audit outcome column landed |
 
 ## H3. The ingest orchestrator
 
@@ -167,7 +168,7 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R1 | Q2 graph isolation | **Ruled 2026-08-12: graph_id column**, one table set, partition-by-graph as measured graduation. Recorded in the store PRD |
 | R2 | `full_page_writes` on ZFS | **Ruled 2026-08-12: off**, CoW invariant stated in the conf. H1 unblocked |
 | R3 | Config file versus env (H10) | Not ruled |
-| R4 | Q3 verb naming | One option left standing (rename), lands with the verb spec |
+| R4 | Q3 verb naming | **Closed 2026-08-14 (spec 010): renamed.** The 40 wire names are binding, `Db` prefixes and document-store vocabulary gone |
 | R5 | PR #17 extraction direction | Held in draft pending docling-rs shape |
 | R6 | Edge identity | **Ruled 2026-08-13 (spec 009): an edge is (graph_id, src_id, dst_id, relation, basis)**, analyzer and status and payload are attributes. `edges_identity` unique index, claim 8 |
 | R7 | `edge_basis` Rust mapping | Deferred to H3, where edge writes exist |

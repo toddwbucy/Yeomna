@@ -9,7 +9,7 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and specs at `docs/specs/NNN-slug/spec.md` with review notes alongside.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, eight crates, 257 tests. **The Rust side of the
+`rust-toolchain.toml`, nine crates, 267 tests. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
 and merged. **The store exists and holes-ledger H1 is filled** (specs 008
@@ -18,8 +18,17 @@ applied to the dev cluster with eight claims as integration tests, and
 `PgSink` implements the `IngestSink` trait
 (`crates/yeomna-pipeline/src/sink.rs`), its only implementor, with the
 five-call sequence as integration tests. All cluster-gated tests skip
-without a cluster. Edge identity is ruled (R6, spec 009). Next per the fill
-order is H3, the ingest orchestrator. Phase 6 (the
+without a cluster. Edge identity is ruled (R6, spec 009).
+
+**H2, the verb layer, is under construction.** `docs/PRD-verb-layer.md` is
+settled at v0.4 (all five review questions ruled) and Phase 1 of 7 is merged
+(spec 010): `crates/yeomna-verbs` carries the closed 40-verb contract, the
+envelope, and the error taxonomy, with R4 closed so the wire names are
+binding. The `audit_log.outcome` column landed with it under a column-scoped
+grant, which is how attempt logging coexists with an append-only table. A
+workspace lint keeps SQL inside `yeomna-store` and `yeomna-verbs`. Next are
+Phase 2 (read verbs) and H3 (the ingest orchestrator), which are parallel-safe
+now that the contract pins the shapes both need. Phase 6 (the
 Python services) waits on the SPU and config rulings. Commands are
 `cargo build`, `cargo test`, `cargo clippy --all-targets`,
 `cargo fmt --check`, all from the repository root. Per charter section 13,
