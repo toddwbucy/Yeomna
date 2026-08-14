@@ -81,28 +81,61 @@ fn extract_options_default_extracts_nothing_extra() {
     assert!(o.source_type.is_none());
 }
 
+/// Does a line reach for the ambient environment.
+fn reads_environment(line: &str) -> bool {
+    ["env::var", "env::vars", "env!("]
+        .iter()
+        .any(|p| line.contains(p))
+}
+
 #[test]
-fn the_crate_consults_no_environment_for_its_endpoints() {
+fn the_crate_consults_no_environment() {
     // R3's ruling in test form: configuration arrives through the config
-    // type, never through the ambient environment. If a future change
-    // reaches for an env var, the defaults stop being the defaults and
-    // this test is where that shows up.
-    unsafe {
-        std::env::set_var("YEOMNA_EMBED_ENDPOINT", "http://evil:1/v1");
-        std::env::set_var("YEOMNA_EXTRACTOR_SOCKET", "/tmp/evil.sock");
+    // type, never through the ambient environment. Asserted over the
+    // source rather than by setting variables at runtime, for two
+    // reasons. It covers every variable name instead of the two a test
+    // author happened to imagine, and `set_var` is unsafe in this edition
+    // because it races any concurrent `getenv`, which a threaded test
+    // harness supplies for free.
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    let mut visited = 0;
+    let mut stack = vec![src];
+    while let Some(d) = stack.pop() {
+        for f in std::fs::read_dir(&d).unwrap() {
+            let p = f.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|e| e == "rs") {
+                visited += 1;
+                for (n, line) in std::fs::read_to_string(&p).unwrap().lines().enumerate() {
+                    if reads_environment(line) {
+                        offenders.push(format!("{}:{}: {}", p.display(), n + 1, line.trim()));
+                    }
+                }
+            }
+        }
     }
-    let e = EmbeddingClientConfig::default();
-    let x = ExtractionClientConfig::default();
-    unsafe {
-        std::env::remove_var("YEOMNA_EMBED_ENDPOINT");
-        std::env::remove_var("YEOMNA_EXTRACTOR_SOCKET");
-    }
-    let EmbeddingEndpoint::Tcp(url) = e.endpoint else {
-        panic!("unchanged by the environment");
-    };
-    assert_eq!(url, "http://localhost:8087/v1");
-    let ExtractionEndpoint::Unix(path) = x.endpoint else {
-        panic!("unchanged by the environment");
-    };
-    assert_eq!(path, PathBuf::from("/run/yeomna/extractor.sock"));
+    assert!(
+        visited > 0,
+        "scanned nothing, so a clean result means nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "yeomna-embed must take its configuration from its config types:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The scan's negative test: a planted read is caught, so a clean result
+/// means detection worked rather than detection broke.
+#[test]
+fn the_environment_scan_catches_a_planted_read() {
+    assert!(reads_environment(
+        r#"let x = std::env::var("YEOMNA_EMBED_ENDPOINT");"#
+    ));
+    assert!(reads_environment(r#"let x = env!("SOMETHING");"#));
+    assert!(!reads_environment(
+        "let endpoint = config.endpoint.clone();"
+    ));
 }
