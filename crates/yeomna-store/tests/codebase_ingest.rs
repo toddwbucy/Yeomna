@@ -239,6 +239,10 @@ async fn a_second_ingest_skips_everything_and_writes_no_history() {
     let second = ingest(&sink, tree.path()).await;
     assert_eq!(second.files_skipped, 2, "FR 1: both files were unchanged");
     assert_eq!(second.files_written, 0);
+    assert_eq!(
+        second.edges_written, 0,
+        "a warm run does not re-resolve edges either"
+    );
 
     let nodes_after_second = count(
         &owner,

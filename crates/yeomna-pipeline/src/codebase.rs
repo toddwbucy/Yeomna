@@ -23,7 +23,7 @@ use tracing::{debug, info, warn};
 use yeomna_chunking::ChunkingStrategy;
 use yeomna_code::{
     AnalysisOptions, AnalyzerOutcome, FileAnalysis, Language, Symbol, analyze_with_fallback,
-    tree_sitter_edges,
+    python_calls, rust_imports, tree_sitter_edges,
 };
 use yeomna_embed::embedding::EmbeddingClient;
 use yeomna_keys as keys;
@@ -363,6 +363,43 @@ fn covers(start: usize, end: usize, s: &Symbol, source: &str) -> bool {
     s.start_line <= last && s.end_line >= first
 }
 
+/// Translate one resolver's edge document into the sink's edge shape.
+///
+/// Every resolver emits `_from` and `_to` as collection-qualified ids and
+/// keeps its own detail alongside, so the detail rides into `payload`
+/// whole and the sink strips the prefixes when it resolves endpoints.
+fn push_resolved(
+    docs: &mut Vec<Value>,
+    e: &Value,
+    relation: &str,
+    basis: &str,
+    analyzer_of: &HashMap<String, String>,
+) {
+    let (Some(from), Some(to)) = (
+        e.get("_from").and_then(Value::as_str),
+        e.get("_to").and_then(Value::as_str),
+    ) else {
+        return;
+    };
+    // Attribute to whatever ran on the source file, falling back to what
+    // the resolver claimed. Never to nothing: the schema forbids it and Q1
+    // is the reason.
+    let source_key = from.rsplit('/').next().unwrap_or(from);
+    let analyzer = analyzer_of
+        .get(source_key)
+        .map(String::as_str)
+        .or_else(|| e.get("analyzer").and_then(Value::as_str))
+        .unwrap_or("unattributed");
+    docs.push(json!({
+        "from": from,
+        "to": to,
+        "relation": relation,
+        "basis": basis,
+        "analyzer": analyzer,
+        "payload": e,
+    }));
+}
+
 /// Every edge, in one pass, after every node exists.
 async fn write_edges<S: IngestSink>(
     sink: &S,
@@ -370,6 +407,13 @@ async fn write_edges<S: IngestSink>(
     config: &CodebaseConfig,
     summary: &mut CodebaseSummary,
 ) -> Result<(), PipelineError> {
+    // Nothing changed anywhere, so re-resolution cannot discover an edge
+    // that is not already stored. Any change at all reopens the whole
+    // corpus, because a new symbol in one file can be the target of an
+    // import in a file that did not change.
+    if !analyzed.iter().any(|f| f.changed) {
+        return Ok(());
+    }
     let mut docs: Vec<Value> = Vec::new();
 
     // `defines`, straight off the analysis. The file literally declares the
@@ -390,34 +434,78 @@ async fn write_edges<S: IngestSink>(
         }
     }
 
-    // `calls` and `imports`, resolved across the whole corpus. An analyzer
-    // resolved these rather than the page stating them, so they are
-    // `structural` (Phase 4). Nothing here is ever `asserted`: inference
-    // belongs to H9.
-    let symbol_map: HashMap<String, Vec<Symbol>> = analyzed
+    // Cross-file edges, each language through the best resolver it has.
+    // tree-sitter is the fallback for languages with nothing better, not
+    // the default: running it over Rust when syn produced the symbols
+    // throws away fidelity that was already paid for, and it reads a
+    // `calls` metadata field that syn does not write at all.
+    let by_lang = |want: Language| -> HashMap<String, Vec<Symbol>> {
+        analyzed
+            .iter()
+            .filter(|f| f.analysis.language == want)
+            .map(|f| (f.rel_path.clone(), f.analysis.symbols.clone()))
+            .collect()
+    };
+    // Which analyzer actually produced a file, so an edge is attributed to
+    // the tool that ran rather than to a category.
+    let analyzer_of: HashMap<String, String> = analyzed
         .iter()
+        .map(|f| (f.file_key.clone(), f.analysis.analyzer.clone()))
+        .collect();
+
+    // Rust: syn extracted the use statements, so the import is readable
+    // off the page, which is Phase 4's definition of `declared`.
+    let rust = by_lang(Language::Rust);
+    if !rust.is_empty() {
+        let use_paths: HashMap<String, Vec<String>> = rust
+            .iter()
+            .map(|(p, syms)| (p.clone(), rust_imports::collect_use_paths(syms)))
+            .collect();
+        let index = rust_imports::build_symbol_index(&rust);
+        for e in rust_imports::resolve_rust_imports(&use_paths, &index) {
+            push_resolved(&mut docs, &e, "imports", "declared", &analyzer_of);
+        }
+    }
+
+    // Python: the AST analyzer records call sites in symbol metadata and
+    // this resolver reads them. An analyzer resolved the target rather
+    // than the page stating it, so `structural`.
+    let python = by_lang(Language::Python);
+    if !python.is_empty() {
+        let qualified = python_calls::build_qualified_index(&python);
+        // The bare-name index the resolver's third stage wants. Only
+        // `build_qualified_index` ships, so the caller builds this one.
+        let mut bare: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        for (path, syms) in &python {
+            let fkey = keys::file_key(path);
+            for s in syms.iter().filter(|s| s.kind.universal_kind().is_some()) {
+                bare.entry(s.name.clone()).or_default().push((
+                    path.clone(),
+                    keys::symbol_key(&fkey, &s.qualified_name(), s.start_line),
+                ));
+            }
+        }
+        for e in python_calls::resolve_python_calls(&python, &qualified, &bare) {
+            push_resolved(&mut docs, &e, "calls", "structural", &analyzer_of);
+        }
+    }
+
+    // Everything else falls back to name matching over tree-sitter's
+    // shape, which is the one place that resolver belongs.
+    let others: HashMap<String, Vec<Symbol>> = analyzed
+        .iter()
+        .filter(|f| !matches!(f.analysis.language, Language::Rust | Language::Python))
         .map(|f| (f.rel_path.clone(), f.analysis.symbols.clone()))
         .collect();
-    let structural = tree_sitter_edges::resolve(&symbol_map);
-    for (relation, edges) in [
-        ("calls", &structural.calls),
-        ("imports", &structural.imports),
-    ] {
-        for e in edges {
-            let (Some(from), Some(to)) = (
-                e.get("_from").and_then(Value::as_str),
-                e.get("_to").and_then(Value::as_str),
-            ) else {
-                continue;
-            };
-            docs.push(json!({
-                "from": from,
-                "to": to,
-                "relation": relation,
-                "basis": "structural",
-                "analyzer": e.get("analyzer").and_then(Value::as_str).unwrap_or("tree-sitter"),
-                "payload": e,
-            }));
+    if !others.is_empty() {
+        let structural = tree_sitter_edges::resolve(&others);
+        for (relation, edges) in [
+            ("calls", &structural.calls),
+            ("imports", &structural.imports),
+        ] {
+            for e in edges {
+                push_resolved(&mut docs, e, relation, "structural", &analyzer_of);
+            }
         }
     }
 
