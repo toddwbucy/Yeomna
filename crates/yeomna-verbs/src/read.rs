@@ -23,6 +23,10 @@ use crate::verb::{
 /// where a refusal is the truth.
 const KINDS: [&str; 6] = ["file", "module", "type", "callable", "value", "document"];
 
+/// The most rows any paged read returns, whatever was asked for. Reported
+/// back as the applied limit rather than the requested one.
+const MAX_PAGE: u32 = 1000;
+
 fn check_kind(kind: &str) -> Result<(), VerbError> {
     if KINDS.contains(&kind) {
         return Ok(());
@@ -223,6 +227,19 @@ pub async fn check(s: &Session, r: &CheckRequest) -> Result<Value, VerbError> {
 /// `stats`: row counts, scoped to a graph when one is named.
 pub async fn stats(s: &Session, r: &StatsRequest) -> Result<Value, VerbError> {
     let scope = r.graph.as_deref().or_else(|| s.graph());
+    // A misspelled name would otherwise answer with zeros, which reads as
+    // an empty graph rather than no graph. `orient` and `codebase.stats`
+    // already refuse it and this was the odd one out.
+    if let Some(g) = scope {
+        let exists = s
+            .client()
+            .query_opt("SELECT 1 FROM graphs WHERE name = $1", &[&g])
+            .await
+            .map_err(db)?;
+        if exists.is_none() {
+            return Err(VerbError::NotFound(format!("no graph named {g:?}")));
+        }
+    }
     let row = s
         .client()
         .query_one(
@@ -351,7 +368,11 @@ pub async fn list(s: &Session, r: &ListRequest) -> Result<Value, VerbError> {
     if let Some(k) = r.kind.as_deref() {
         check_kind(k)?;
     }
-    let limit = i64::from(r.limit.min(1000));
+    // The applied limit, which is what the response reports: a client
+    // paging until it sees a short page would stop early if told 5000 and
+    // given 1000.
+    let applied = r.limit.min(MAX_PAGE);
+    let limit = i64::from(applied);
     let offset = i64::from(r.offset);
     let rows = s
         .client()
@@ -370,7 +391,7 @@ pub async fn list(s: &Session, r: &ListRequest) -> Result<Value, VerbError> {
         .map_err(db)?;
     Ok(json!({
         "nodes": rows.iter().map(node_json).collect::<Vec<_>>(),
-        "limit": r.limit,
+        "limit": applied,
         "offset": r.offset,
     }))
 }
@@ -396,7 +417,7 @@ pub async fn count(s: &Session, r: &CountRequest) -> Result<Value, VerbError> {
 
 /// `recent`: what landed last, which R9's `ingested_at` made answerable.
 pub async fn recent(s: &Session, r: &RecentRequest) -> Result<Value, VerbError> {
-    let limit = i64::from(r.limit.min(1000));
+    let limit = i64::from(r.limit.min(MAX_PAGE));
     let rows = s
         .client()
         .query(
@@ -434,7 +455,7 @@ pub async fn query(s: &Session, r: &QueryRequest) -> Result<Value, VerbError> {
     if r.search_text.trim().is_empty() {
         return Err(VerbError::InvalidArgs("search_text is empty".into()));
     }
-    let limit = i64::from(r.limit.min(1000));
+    let limit = i64::from(r.limit.min(MAX_PAGE));
     let rows = s
         .client()
         .query(

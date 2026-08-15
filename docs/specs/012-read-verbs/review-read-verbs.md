@@ -105,11 +105,43 @@ still has no benchmark.
 H9. The graph verbs, the write verbs, and the daemon are Phases 3, 4,
 and 5.
 
+## CodeRabbit round (2026-08-15)
+
+Six findings, all real, all fixed. Two changed behavior and gained
+tests, four were defects in the tests themselves.
+
+**Behavior.** `stats` answered zeros for a graph that does not exist,
+which reads as an empty graph rather than a missing one, and `orient`
+and `codebase.stats` were already refusing that case: it was the odd
+one out. And `list` reported the requested limit while applying a cap
+of 1000, so a client paging until it saw a short page would stop after
+one. It reports the applied limit now, named `MAX_PAGE` in one place
+rather than repeated as a literal in three.
+
+**Tests.** One assertion could not fail: `last_ingest` is always
+present in the response, holding null when nothing has been ingested,
+so `is_some()` was true whatever happened. It parses the timestamp as
+RFC 3339 now. One test cleaned up only on success, so a failed
+assertion left `verbs_empty` behind and the next run died on the unique
+constraint instead of on the behavior under test. And the dogfood gate
+checked that the graph existed while the assertion below it needed
+chunks with a populated tsv, so an ingest that wrote nodes and no
+chunks would have failed for a fixture reason.
+
+One correction to a finding rather than a fix to the code. The audit
+assertion's message was said to underflow on the common failure, and it
+does not: when no row is written `after.len()` equals `before` and the
+subtraction is zero, which is what the earlier real failure printed.
+The message could underflow only if rows vanished mid-test. Printing
+both counts is still better than printing their difference, and that is
+what it does now, so the fix landed and the reasoning is corrected
+here.
+
 ## Verification
 
-- 11 read-verb tests and 3 audit tests green against the cluster, over
+- 12 read-verb tests and 3 audit tests green against the cluster, over
   both a seeded scratch graph and the live `yeomna_self`.
-- Workspace gate 296 tests, run three times because the bug found here
-  was a race.
+- Workspace gate 297 tests, run three times because the bugs found
+  here were races.
 - Clippy clean, fmt clean, and the no-SQL lint still passes now that
   `yeomna-verbs` holds SQL, which is the allowance working as intended.

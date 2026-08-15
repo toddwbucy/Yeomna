@@ -135,11 +135,14 @@ async fn every_verb_call_leaves_exactly_one_terminal_row() {
         let env = s.call(&verb).await;
         let after = rows_for(&owner, name, ACTOR).await;
 
+        // Both counts, not their difference: a subtraction in the
+        // message can underflow and panic in place of the diagnostic it
+        // was meant to print.
         assert_eq!(
             after.len(),
             before + 1,
-            "{name} must leave exactly one row, not {}",
-            after.len() - before
+            "{name} must leave exactly one row, had {before} and now has {}",
+            after.len()
         );
         let (actor, outcome, args) = after.last().unwrap();
         assert_eq!(actor, ACTOR, "{name} recorded the wrong actor");

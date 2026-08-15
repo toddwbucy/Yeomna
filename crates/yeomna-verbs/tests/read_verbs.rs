@@ -129,7 +129,12 @@ async fn orient_surveys_a_graph_as_v_q3_ruled() {
     assert_eq!(g["nodes_by_kind"]["callable"], 1);
     assert_eq!(g["chunks"], 2);
     assert_eq!(g["embeddings"], 0, "nothing embeds until H4");
-    assert!(g.get("last_ingest").is_some(), "R9 made this answerable");
+    // `is_some()` here would always hold, since the key is written even
+    // when the value is null. The timestamp itself is the claim.
+    let last = g["last_ingest"]
+        .as_str()
+        .expect("R9 made this answerable, and the seed just wrote nodes");
+    chrono::DateTime::parse_from_rfc3339(last).expect("an RFC 3339 instant");
 }
 
 #[tokio::test]
@@ -144,9 +149,19 @@ async fn orient_distinguishes_a_missing_graph_from_an_empty_one() {
     assert!(!env.success);
     assert!(env.error.as_ref().unwrap().starts_with("not-found"));
 
-    // Present but empty is a survey of zeros, not an error.
+    // Present but empty is a survey of zeros, not an error. Cleared
+    // first and inserted idempotently, because a panic below would
+    // otherwise leave the row and the next run would fail on the unique
+    // constraint rather than on the behavior under test.
     owner
-        .execute("INSERT INTO graphs (name) VALUES ('verbs_empty')", &[])
+        .execute("DELETE FROM graphs WHERE name = 'verbs_empty'", &[])
+        .await
+        .unwrap();
+    owner
+        .execute(
+            "INSERT INTO graphs (name) VALUES ('verbs_empty') ON CONFLICT (name) DO NOTHING",
+            &[],
+        )
         .await
         .unwrap();
     let env = s
@@ -160,6 +175,34 @@ async fn orient_distinguishes_a_missing_graph_from_an_empty_one() {
         .execute("DELETE FROM graphs WHERE name = 'verbs_empty'", &[])
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn stats_refuses_a_missing_graph_and_list_reports_the_applied_limit() {
+    require!(_o, s, "verbs_limits");
+    // A misspelled graph is not an empty one, the same rule orient and
+    // codebase.stats already hold to.
+    let env = s
+        .call(&Verb::Stats(StatsRequest {
+            graph: Some("no_such_graph".into()),
+        }))
+        .await;
+    assert!(!env.success, "zeros would read as an empty graph");
+    assert!(env.error.unwrap().starts_with("not-found"));
+
+    // The reported limit is the applied one, so a client paging until it
+    // sees a short page is not told to expect more than it can get.
+    let d = data(
+        &s.call(&Verb::List(ListRequest {
+            kind: None,
+            limit: 50_000,
+            offset: 0,
+            parent: None,
+        }))
+        .await,
+    )
+    .clone();
+    assert_eq!(d["limit"], 1000, "the cap is reported, not the request");
 }
 
 #[tokio::test]
@@ -429,16 +472,24 @@ async fn the_verbs_answer_over_the_dogfood_graph() {
     let Ok(owner) = yeomna_store::connect(&dir, PORT, "yeomna_owner", "yeomna").await else {
         return;
     };
-    let present: bool = owner
+    // The gate covers what the assertions below need, which is chunks
+    // with a populated tsv, not merely a graph row. An ingest that wrote
+    // nodes and no chunks would otherwise fail the FTS assertion for a
+    // fixture reason rather than a verb defect.
+    let usable: bool = owner
         .query_one(
-            "SELECT EXISTS (SELECT 1 FROM graphs WHERE name = 'yeomna_self')",
+            "SELECT EXISTS (
+               SELECT 1 FROM chunks c
+                 JOIN nodes n ON n.id = c.node_id
+                 JOIN graphs g ON g.id = n.graph_id
+               WHERE g.name = 'yeomna_self')",
             &[],
         )
         .await
         .map(|r| r.get(0))
         .unwrap_or(false);
-    if !present {
-        eprintln!("SKIP: no yeomna_self graph, run the H3 dogfood operation");
+    if !usable {
+        eprintln!("SKIP: no chunked yeomna_self graph, run the H3 dogfood operation");
         return;
     }
     let app = yeomna_store::connect(&dir, PORT, "yeomna_app", "yeomna")
