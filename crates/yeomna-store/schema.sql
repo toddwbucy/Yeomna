@@ -1,5 +1,12 @@
 -- Yeomna store schema, per docs/specs/008-store-schema/spec.md.
 -- Idempotent: every statement tolerates re-application.
+--
+-- There is no in-place migration here and there will not be. A column
+-- added to a CREATE TABLE below does not reach a database that already
+-- exists, and the answer to that is to drop the database and re-ingest,
+-- because the graph is a rebuildable index derived from source (T4). An
+-- ALTER that upgrades an existing database in place is migration tooling,
+-- which the charter declines to own.
 -- Rulings cited inline: Q1 (typed provenance), Q2/R1 (graph_id column),
 -- D1..D7 (store PRD resolved decisions), charter section 6 (audit defaults).
 
@@ -29,6 +36,10 @@ CREATE TABLE IF NOT EXISTS nodes (
     kind        text   NOT NULL CHECK (kind IN
                   ('file', 'module', 'type', 'callable', 'value', 'document')),
     payload     jsonb  NOT NULL DEFAULT '{}',
+    -- R9 (spec 011): when this node's content last landed, not when it was
+    -- last seen. An unchanged re-ingest does not move it, which is what
+    -- makes `recent` mean recently changed.
+    ingested_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (graph_id, natural_key)
 );
 CREATE INDEX IF NOT EXISTS nodes_payload_gin ON nodes USING gin (payload);
@@ -136,7 +147,6 @@ CREATE TABLE IF NOT EXISTS audit_log (
     args    jsonb NOT NULL DEFAULT '{}',
     outcome text
 );
-ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS outcome text;
 
 -- Grants. yeomna_app reads and writes data, appends to the logs, and can
 -- never rewrite history. yeomna_audit owns the audit table.
