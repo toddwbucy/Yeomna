@@ -1,6 +1,6 @@
 # The Holes Ledger
 
-Status: v1.5, 2026-08-15. H1 and H3 retired, H2 building, R3 and R5 ruled. The hole-mapping step of the severance sequence
+Status: v1.6, 2026-08-15. H1 and H3 retired, H2 building, R3 and R5 ruled, H5 scope narrowed. The hole-mapping step of the severance sequence
 (PRD-pipeline-libraries v0.2). This is the map of everything Yeomna needs and
 does not yet have, each hole named, owned, and sourced. The executable form
 is `yeomna-cli`: 56 commands, every one a self-reporting hole with a census
@@ -130,6 +130,50 @@ than rediscovered.
 | The surface a replacement must cover | six things, measured 2026-08-15 from `docling_backend.py`: `do_table_structure`, `do_ocr`, and `do_cell_matching` on the PDF pipeline, `export_to_markdown`, tables with captions, equations, figures with captions, and page count. LaTeX has its own native backend and the PyMuPDF fallback is not docling, so neither is at risk |
 | Unverified, and what a spike would settle | whether table and figure captions survive, whether formula extraction behaves (ours carries a fallback because `doc.equations` was unreliable, and the Rust side puts formulas behind enrichment that is off by default), and whether the engine's own byte-for-byte parity claim holds on our documents |
 | Riding this hole | the skipped server-architecture findings from the PR #17 review, service-level tests |
+
+### The scope this hole actually has, ruled 2026-08-15
+
+Two things were tangled together here and are now separated.
+
+**Repository connectors are not Yeomna.** The original shape of the idea
+was a service that reaches arXiv, and later PubMed, JSTOR, Wikipedia, or
+the licensed sources a law firm already pays for, fetches on an
+authorized account, and feeds a knowledge graph. That is a **separate
+application**: a network port on one side, Yeomna's Unix socket on the
+other. Charter 5.2 already assigns it there, since anything needing the
+wire lives on the far side of the socket and owns that concern itself.
+Its outbound search queries and its stored credentials are its
+compliance story to tell, not this appliance's, and neither appears in
+this ledger.
+
+**What Yeomna owes that world is one general PDF path.** Every one of
+those repositories hands over a PDF, either generated from LaTeX or
+scanned at high quality and OCRed. A source parser answers that for
+exactly one repository, and only because arXiv is unusual in publishing
+source at all.
+
+So the LaTeX and arXiv backend is a **drop candidate**, not inherited
+scope to be ported. It handles `.tex` and `.tar.gz` source packages to
+recover exact equation markup, citations, and sections, which is a real
+capability and the wrong generalization: it serves one source instead of
+all of them.
+
+**Before it goes, one thing needs proving.** The Python backend hedges
+its PDF equation extraction, trying `doc.equations` and then scanning
+`doc.texts` for formula entries when that comes back empty. Somebody
+wrote that fallback because the first path failed on real documents. So
+"the PDF is enough" is the right bet and an untested one, and it is the
+same spike R5 already names, on the same documents.
+
+**The formats to cover** are the buyer's, per charter section 4: a law
+office, a medical practice, an accounting firm. That means DOCX, XLSX,
+PPTX, email, HTML, RTF, legacy Office, and scanned images needing OCR,
+alongside PDF. Two notes make this cheaper than it sounds. Docling's
+declarative formats skip the model download entirely, so the office
+half needs no GPU and no staged models, unlike PDF. And the router's
+final branch already sends unknown extensions to docling, so a DOCX may
+land today undeclared rather than unsupported, which a test would
+settle in an afternoon.
 
 ## H6. The daemon and transports
 
