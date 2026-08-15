@@ -1,6 +1,6 @@
 # The Holes Ledger
 
-Status: v1.3, 2026-08-14. H1 retired, H2 building, R3 ruled. The hole-mapping step of the severance sequence
+Status: v1.4, 2026-08-15. H1 and H3 retired, H2 building, R3 ruled. The hole-mapping step of the severance sequence
 (PRD-pipeline-libraries v0.2). This is the map of everything Yeomna needs and
 does not yet have, each hole named, owned, and sourced. The executable form
 is `yeomna-cli`: 56 commands, every one a self-reporting hole with a census
@@ -55,18 +55,30 @@ ported: the excluded reference code is not consulted.
 | Progress | **Phase 1 of 7 done** (spec 010, merged 2026-08-14): `yeomna-verbs` carries the closed 40-verb contract, R4 is closed, the audit outcome column landed |
 | Waiting in Phase 7 | Draft PR #19, deliberately held 2026-08-15 rather than merged and fixed twice, since Phase 7 rewrites these commands into daemon clients anyway. It carries, and Phase 7 inherits: (1) the daemon `--mcp-*` flags, which the capture declares while its own record says they were dropped, plus a reference to a `--mcp-token-file` that does not exist, (2) `output.rs` printing table headers to stderr while rows go to stdout, so redirecting stdout loses the header, (3) awaits-distribution counts in the review notes that reach 56 by double-counting six commands, and (4) the R4 reconciliation: nine captured commands (`Create`, `Collections`, `Databases`, `CreateDatabase`, `Truncate`, `DropCollection`, `Export`, `CreateIndex`, `IndexStatus`) that spec 010 has since removed or absorbed, so the census counts 56 holes where roughly 40 become verbs. Trial-merged 2026-08-15 against main: conflicts are `Cargo.toml` and `Cargo.lock` only, and the crate builds, passes its census, and clears the no-SQL lint |
 
-## H3. The ingest orchestrator
+## H3. The ingest orchestrator. FILLED 2026-08-15
 
-New construction wiring the seven crates to the sink: walk, analyze,
-two-pass enrichment, hash-skip, chunk, embed, write. Replaces the excluded
-`codebase_ingest.rs` and the document ingest flow. A few hundred lines
-against tested parts, not a port.
+New construction wiring the crates to the sink: walk, analyze, two-pass
+enrichment, hash-skip, chunk, embed, write. Merged as spec 011 (PR #30),
+living in `yeomna-pipeline` beside the document flow. It replaced the
+excluded `codebase_ingest.rs` without consulting it.
+
+Every language reaches the resolver built for it, chosen by the analyzer
+that actually ran rather than by file extension: syn plus rust-analyzer
+for Rust, the rustpython AST for Python, libclang for C++, gopls for Go,
+and tree-sitter for anything that fell back. The language-server pass is
+opt-in, gated per crate or module, and degrades to the structural graph
+rather than failing an ingest.
+
+**This repository is now a graph**: 1620 nodes, 2650 edges including 861
+`calls`, with call chains reaching the depth cap. That is the corpus M2
+has always needed, and M2 stays open until the benchmark is run.
 
 | | |
 |---|---|
-| Owner | store PRD Phase 7 era, possibly its own spec |
-| Contract in hand | `yeomna-code` (enrichment and `symbol_hash` live there), `yeomna-batch` (resume semantics), `yeomna-pipeline` (the flow), `IngestSink` |
-| CLI holes it fills | 9 (`codebase` tree, `ingest`, `extract` jointly with H6) |
+| Owner | store PRD Phases 4 and 7, spec 011 |
+| Filled | R7 as R12 (`edge_basis` stays text), FR 2's enrichment protocol, the first dogfood ingest |
+| CLI holes it fills | 9 (`codebase` tree, `ingest`), still waiting on H2 Phases 6 and 7 for their verbs |
+| Still open | M2's benchmark, M3's concurrency window, Python call edges wired but unexercised |
 
 ## H4. The embedder backend
 
@@ -182,14 +194,14 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R4 | Q3 verb naming | **Closed 2026-08-14 (spec 010): renamed.** The 40 wire names are binding, `Db` prefixes and document-store vocabulary gone |
 | R5 | PR #17 extraction direction | Held in draft pending docling-rs shape |
 | R6 | Edge identity | **Ruled 2026-08-13 (spec 009): an edge is (graph_id, src_id, dst_id, relation, basis)**, analyzer and status and payload are attributes. `edges_identity` unique index, claim 8 |
-| R7 | `edge_basis` Rust mapping | Deferred to H3, where edge writes exist |
+| R7 | `edge_basis` Rust mapping | **Ruled 2026-08-15 as R12 (spec 011): text at the boundary**, cast in SQL, no second enum to drift from the DDL |
 
 ## The fill order, as the dependencies read
 
 1. R1 and R2 rule, then the store schema spec (H1 begins). Done, spec 008.
-2. The sink implementation (done, spec 009, H1 retired), the ingest
-   orchestrator (H3, next), first end-to-end code ingest, dogfooding this
-   repo.
+2. The sink implementation (done, spec 009), the ingest orchestrator
+   (done, spec 011), first end-to-end code ingest and the dogfood of this
+   repo (done 2026-08-15). H1 and H3 both retired.
 3. The verb-layer PRD (H2, with H6 and H7), turning CLI holes into behavior.
 4. The embedder contract and SPU (H4) with late chunking wired.
 5. The extraction backend (H5) when document corpora arrive.

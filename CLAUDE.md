@@ -9,7 +9,7 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and specs at `docs/specs/NNN-slug/spec.md` with review notes alongside.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, nine crates, 267 tests. **The Rust side of the
+`rust-toolchain.toml`, nine crates, 282 tests. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
 and merged. **The store exists and holes-ledger H1 is filled** (specs 008
@@ -26,9 +26,18 @@ settled at v0.4 (all five review questions ruled) and Phase 1 of 7 is merged
 envelope, and the error taxonomy, with R4 closed so the wire names are
 binding. The `audit_log.outcome` column landed with it under a column-scoped
 grant, which is how attempt logging coexists with an append-only table. A
-workspace lint keeps SQL inside `yeomna-store` and `yeomna-verbs`. Next are
-Phase 2 (read verbs) and H3 (the ingest orchestrator), which are parallel-safe
-now that the contract pins the shapes both need.
+workspace lint keeps SQL inside `yeomna-store` and `yeomna-verbs`. Next is
+Phase 2 (read verbs).
+
+**H3 is filled and this repository is a graph** (spec 011, merged
+2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the
+document one: walk, analyze, hash-skip, chunk, embed, write, with every
+language reaching the edge resolver built for it, chosen by the analyzer
+that ran rather than by extension. The language-server pass (rust-analyzer,
+gopls) is opt-in, gated per crate or module, and degrades to the structural
+graph rather than failing. The dogfood graph `yeomna_self` holds 1620 nodes
+and 2650 edges including 861 `calls`, which is the corpus M2 wanted. M2
+stays open until the benchmark is run and reported.
 
 The pipeline-libraries PRD's own Phase 6, the Python services, waits on the
 SPU and config rulings. Note that phase numbers are per PRD and do not
