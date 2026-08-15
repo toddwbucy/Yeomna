@@ -1,6 +1,6 @@
 # The Holes Ledger
 
-Status: v1.6, 2026-08-15. H1 and H3 retired, H2 building, R3 and R5 ruled, H5 scope narrowed. The hole-mapping step of the severance sequence
+Status: v1.7, 2026-08-15. H1 and H3 retired, H2 two phases in, R3 and R5 ruled, H5 scope narrowed. The hole-mapping step of the severance sequence
 (PRD-pipeline-libraries v0.2). This is the map of everything Yeomna needs and
 does not yet have, each hole named, owned, and sourced. The executable form
 is `yeomna-cli`: 56 commands, every one a self-reporting hole with a census
@@ -52,7 +52,8 @@ ported: the excluded reference code is not consulted.
 | Contract in hand | the 32-verb inventory (store PRD), the captured CLI surface and envelope conventions (`yeomna-cli`), charter section 6 (audit log as shipped default, one audited entry point) |
 | CLI holes it fills | the same 28, jointly with H1, plus `daemon` (H7) |
 | Includes | Q3 renames of ArangoDB-vocabulary command names, the audit table wiring, peercred policy |
-| Progress | **Phase 1 of 7 done** (spec 010, merged 2026-08-14): `yeomna-verbs` carries the closed 40-verb contract, R4 is closed, the audit outcome column landed |
+| Progress | **Phase 2 of 7 done.** Phase 1 (spec 010, PR #27): the closed 40-verb contract, R4 closed, the audit outcome column. Phase 2 (spec 012, PR #32): eleven read verbs, the session, the exhaustive dispatch, and the audit write, with G1 as a permanent test over every implemented verb. The schema version is a compiled-in constant, ruled rather than stored |
+| Still false | **T3.** The destructive paths are Phase 4 and Phase 6, so the charter's thesis stays false until they land and the CLI is repointed at Phase 7 |
 | Waiting in Phase 7 | Draft PR #19, deliberately held 2026-08-15 rather than merged and fixed twice, since Phase 7 rewrites these commands into daemon clients anyway. It carries, and Phase 7 inherits: (1) the daemon `--mcp-*` flags, which the capture declares while its own record says they were dropped, plus a reference to a `--mcp-token-file` that does not exist, (2) `output.rs` printing table headers to stderr while rows go to stdout, so redirecting stdout loses the header, (3) awaits-distribution counts in the review notes that reach 56 by double-counting six commands, and (4) the R4 reconciliation: nine captured commands (`Create`, `Collections`, `Databases`, `CreateDatabase`, `Truncate`, `DropCollection`, `Export`, `CreateIndex`, `IndexStatus`) that spec 010 has since removed or absorbed, so the census counts 56 holes where roughly 40 become verbs. Trial-merged 2026-08-15 against main: conflicts are `Cargo.toml` and `Cargo.lock` only, and the crate builds, passes its census, and clears the no-SQL lint |
 
 ## H3. The ingest orchestrator. FILLED 2026-08-15

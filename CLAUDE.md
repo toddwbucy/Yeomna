@@ -9,7 +9,7 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and specs at `docs/specs/NNN-slug/spec.md` with review notes alongside.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, nine crates, 282 tests. **The Rust side of the
+`rust-toolchain.toml`, nine crates, 297 tests. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
 and merged. **The store exists and holes-ledger H1 is filled** (specs 008
@@ -26,8 +26,17 @@ settled at v0.4 (all five review questions ruled) and Phase 1 of 7 is merged
 envelope, and the error taxonomy, with R4 closed so the wire names are
 binding. The `audit_log.outcome` column landed with it under a column-scoped
 grant, which is how attempt logging coexists with an append-only table. A
-workspace lint keeps SQL inside `yeomna-store` and `yeomna-verbs`. Next is
-Phase 2 (read verbs).
+workspace lint keeps SQL inside `yeomna-store` and `yeomna-verbs`.
+
+**Phase 2 is merged too** (spec 012, 2026-08-15) and the verb layer executes.
+`yeomna-verbs` now carries the session, the exhaustive dispatch, the audit
+write, and eleven verbs that read, which is why it is the second crate the
+no-SQL lint admits. Every call leaves one audit row, reads included, and the
+row commits before the verb runs, so an attempt that dies leaves a NULL
+outcome rather than no trace. The schema version is a compiled-in constant
+with no stored marker, because a marker exists to detect drift and drift is
+not a state this appliance allows. Next is Phase 3, the graph and database
+lifecycle verbs.
 
 **H3 is filled and this repository is a graph** (spec 011, merged
 2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the
