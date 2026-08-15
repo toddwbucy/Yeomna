@@ -42,7 +42,7 @@ structure is `kind`, checked against the schema's own CHECK set.
 
 **A2. The audit write lands here, not in Phase 4.** G1 and V2 require
 every verb call to be audited, reads included, and this is the first
-phase with calls to audit. What genuinely belongs to Phase 4 is the
+phase with calls to audit. What belongs to Phase 4 is the
 transactional coupling of an audit row with a mutation and its diff-log
 entry. The row itself, and V-Q1's outcome mark, are built here.
 
@@ -62,7 +62,7 @@ allows: spec 011 removed the in-place ALTERs because the graph is a
 rebuildable index and a schema change costs a drop and a re-ingest. A
 marker would invite the comparison that invites the migration. The
 constant answers what the running binary's schema is, which is the
-question `schema.version` is actually asked.
+question `schema.version` is asked.
 
 ## Files to Modify
 
