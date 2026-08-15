@@ -29,8 +29,25 @@ CREATE TABLE IF NOT EXISTS nodes (
     kind        text   NOT NULL CHECK (kind IN
                   ('file', 'module', 'type', 'callable', 'value', 'document')),
     payload     jsonb  NOT NULL DEFAULT '{}',
+    -- R9 (spec 011): when this node's content last landed, not when it was
+    -- last seen. An unchanged re-ingest does not move it, which is what
+    -- makes `recent` mean recently changed.
+    ingested_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (graph_id, natural_key)
 );
+-- Guarded rather than ALTER ... ADD COLUMN IF NOT EXISTS, which takes an
+-- ACCESS EXCLUSIVE lock before it evaluates the IF NOT EXISTS and therefore
+-- deadlocks against concurrent readers on every re-apply. The catalog check
+-- is a cheap read, and the lock is taken only when the column is missing.
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'nodes' AND column_name = 'ingested_at'
+    ) THEN
+        ALTER TABLE nodes ADD COLUMN ingested_at timestamptz NOT NULL DEFAULT now();
+    END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS nodes_payload_gin ON nodes USING gin (payload);
 CREATE INDEX IF NOT EXISTS nodes_graph_kind ON nodes (graph_id, kind);
 
@@ -136,7 +153,19 @@ CREATE TABLE IF NOT EXISTS audit_log (
     args    jsonb NOT NULL DEFAULT '{}',
     outcome text
 );
-ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS outcome text;
+-- Guarded rather than ALTER ... ADD COLUMN IF NOT EXISTS, which takes an
+-- ACCESS EXCLUSIVE lock before it evaluates the IF NOT EXISTS and therefore
+-- deadlocks against concurrent readers on every re-apply. The catalog check
+-- is a cheap read, and the lock is taken only when the column is missing.
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'audit_log' AND column_name = 'outcome'
+    ) THEN
+        ALTER TABLE audit_log ADD COLUMN outcome text;
+    END IF;
+END $$;
 
 -- Grants. yeomna_app reads and writes data, appends to the logs, and can
 -- never rewrite history. yeomna_audit owns the audit table.

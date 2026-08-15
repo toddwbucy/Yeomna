@@ -3,8 +3,9 @@
 Parent PRD: `docs/PRD-postgres-store.md`, Phase 4 (basis derivation), Phase 7
 (idempotent writes, the enrichment protocol, D1 endpoint resolution). Fills
 holes-ledger H3.
-Status: draft, 2026-08-15. **Carries five rulings, listed below, that are
-wanted before the build starts.**
+Status: built and merged-pending, 2026-08-15. **All five rulings agreed by
+Todd 2026-08-15 as recommended.** See `review-orchestrator.md` for what
+execution changed.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the words
 genuinely, honestly, or actually. These govern prose. Rust and SQL keep
@@ -50,9 +51,9 @@ text-to-id resolution and assigns the strategy to "the Phase 7 spec," and
 spec 009 declined to build an edge API because the sink's caller wrote no
 edges. H3 is the caller that does.
 
-## Rulings wanted before the build
+## Rulings, all agreed 2026-08-15
 
-**R8. Does ingest write history.** `node_log` is empty and stays empty: the
+**RULED. R8. Does ingest write history.** `node_log` is empty and stays empty: the
 sink never writes it. The charter says the diff log is the source of truth
 for history and that the head row is materialized convenience, so today half
 the graph has heads with no history behind them, and the head-versus-log
@@ -68,19 +69,19 @@ difference. Recommended: it makes the log mean what the charter says it
 means, the hash-skip pass already knows what changed, and an unchanged
 re-ingest costs nothing.
 
-**R9. The ingest timestamp.** `nodes` and `chunks` carry no time column, so
+**RULED. R9. The ingest timestamp.** `nodes` and `chunks` carry no time column, so
 `recent` and `orient`'s last-activity field have no source (found while
 scoping H2 Phase 2). Recommended: add `ingested_at timestamptz NOT NULL
 DEFAULT now()` to `nodes`, updated on upsert. One column, and it is the
 column two ruled verb contracts already assume.
 
-**R10. Where the orchestrator lives.** Recommended: `yeomna-pipeline`,
+**RULED. R10. Where the orchestrator lives.** Recommended: `yeomna-pipeline`,
 beside the document orchestrator, adding `yeomna-code` as a dependency. They
 share the sink, the chunker, the embedder, and the crate is named for the
 flow. A new crate for a few hundred lines buys nothing, and `yeomna-code`
 stays independently useful either way.
 
-**R11. The edge write path.** Recommended: **a fifth container route on the
+**RULED. R11. The edge write path.** Recommended: **a fifth container route on the
 sink**, not a new trait method. Edges arrive as JSON documents carrying
 `from`, `to`, `relation`, `basis`, `analyzer`, and metadata, and the sink
 resolves endpoints to `bigint` on the way in. This honors D1 (the sink owns
@@ -88,7 +89,7 @@ resolution) and leaves `IngestSink` untouched, which spec 005 asked for in
 writing. The alternative, growing the trait, breaks a rule stated in the
 trait's own documentation.
 
-**R12. `edge_basis` on the Rust side** (this is R7, carried from spec 009).
+**RULED. R12. `edge_basis` on the Rust side** (this is R7, carried from spec 009).
 Recommended: keep text at the boundary and cast in SQL, as the claim tests
 do. A `postgres-types` derive buys type safety at the cost of a second
 definition of the enum that must stay in step with the DDL, and the sink

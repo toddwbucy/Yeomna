@@ -14,3 +14,7 @@ tokio-postgres.workspace = true
 tracing.workspace = true
 yeomna-keys = { path = "../yeomna-keys" }
 yeomna-pipeline = { path = "../yeomna-pipeline" }
+
+[dev-dependencies]
+tempfile.workspace = true
+yeomna-chunking = { path = "../yeomna-chunking" }

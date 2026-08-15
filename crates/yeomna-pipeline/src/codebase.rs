@@ -1,0 +1,434 @@
+//! The codebase ingest orchestrator, per `docs/specs/011-ingest-orchestrator`.
+//!
+//! Walk a tree, analyze each file, skip what has not changed, chunk, embed,
+//! and write nodes and edges through the sink. New construction against
+//! lifted parts: it replaces `codebase_ingest.rs`, which was excluded from
+//! the port as store-coupled, and no line of it was consulted.
+//!
+//! **Two passes, and the reason is D1.** Cross-file edges name symbols in
+//! files the walk has not reached yet, so every node is written before any
+//! edge is. That makes endpoint resolution total rather than best-effort,
+//! at the cost of holding the symbol map until the walk finishes.
+//!
+//! **Unchanged files still contribute their symbols.** A skipped file is
+//! skipped for writing, not for resolution: an edge pointing into it must
+//! still resolve, so its symbols enter the map either way.
+
+use std::collections::HashMap;
+use std::path::Path;
+
+use serde_json::{Value, json};
+use tracing::{debug, info, warn};
+
+use yeomna_chunking::ChunkingStrategy;
+use yeomna_code::{
+    AnalysisOptions, AnalyzerOutcome, FileAnalysis, Language, Symbol, analyze_with_fallback,
+    tree_sitter_edges,
+};
+use yeomna_embed::embedding::EmbeddingClient;
+use yeomna_keys as keys;
+
+use crate::orchestrator::PipelineError;
+use crate::probe::IngestProbe;
+use crate::sink::IngestSink;
+
+/// Containers this orchestrator writes. The document flow uses
+/// `profile::CODEBASE` for three of them, and symbols and edges have no
+/// profile entry because the document flow never writes them.
+const FILES: &str = "codebase_files";
+const SYMBOLS: &str = "codebase_symbols";
+const CHUNKS: &str = "codebase_chunks";
+const EMBEDDINGS: &str = "codebase_embeddings";
+const EDGES: &str = "codebase_edges";
+
+/// How a codebase ingest runs.
+#[derive(Debug, Clone)]
+pub struct CodebaseConfig {
+    /// Replace existing rows. Deterministic keys are what make this safe.
+    pub overwrite: bool,
+    /// Embed chunks. Off by default: no embedder ships yet (H4), and a
+    /// graph without vectors is still a graph. When on, an unreachable
+    /// embedder fails the run rather than leaving a half-ingest that looks
+    /// complete (spec 011 EC-4).
+    pub embed: bool,
+    /// Skip files larger than this. Generated and vendored blobs are not
+    /// worth an analyzer pass.
+    pub max_file_bytes: u64,
+    /// The embedding task name passed to the embedder.
+    pub embed_task: String,
+}
+
+impl Default for CodebaseConfig {
+    fn default() -> Self {
+        Self {
+            overwrite: true,
+            embed: false,
+            max_file_bytes: 1024 * 1024,
+            embed_task: "retrieval.passage".to_string(),
+        }
+    }
+}
+
+/// What a run did. Every field is a count the caller can report.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CodebaseSummary {
+    /// Files the walk offered.
+    pub files_seen: usize,
+    /// Files analyzed and written.
+    pub files_written: usize,
+    /// Files whose `symbol_hash` matched the stored head.
+    pub files_skipped: usize,
+    /// Files that could not be read or analyzed.
+    pub files_failed: usize,
+    /// Symbol nodes written.
+    pub symbols_written: usize,
+    /// Edges written, across every basis.
+    pub edges_written: usize,
+    /// Edges whose endpoints did not resolve to nodes. Counted, never
+    /// silently dropped (spec 011 FR 6).
+    pub edges_unresolved: usize,
+    /// Chunks written.
+    pub chunks_written: usize,
+    /// Embeddings written.
+    pub embeddings_written: usize,
+}
+
+/// One analyzed file, held until the node pass completes.
+struct Analyzed {
+    rel_path: String,
+    file_key: String,
+    analysis: FileAnalysis,
+    source: String,
+    /// False when the stored hash matched, meaning this file contributes
+    /// symbols for resolution but no writes.
+    changed: bool,
+}
+
+/// Ingest a source tree into the graph the sink is scoped to.
+pub async fn ingest_codebase<S>(
+    root: &Path,
+    sink: &S,
+    chunker: &(dyn ChunkingStrategy + Send + Sync),
+    embedder: Option<&EmbeddingClient>,
+    config: &CodebaseConfig,
+) -> Result<CodebaseSummary, PipelineError>
+where
+    S: IngestSink + IngestProbe,
+{
+    if config.embed && embedder.is_none() {
+        return Err(PipelineError::Other(
+            "embedding requested with no embedder supplied".into(),
+        ));
+    }
+    let mut summary = CodebaseSummary::default();
+    let analyzed = walk_and_analyze(root, sink, config, &mut summary).await?;
+
+    // Pass 1: nodes. Everything the edge pass will point at must exist.
+    for file in analyzed.iter().filter(|f| f.changed) {
+        write_file_nodes(sink, file, config, &mut summary).await?;
+        write_chunks_and_embeddings(sink, file, chunker, embedder, config, &mut summary).await?;
+    }
+
+    // Pass 2: edges, now that every endpoint is resolvable.
+    write_edges(sink, &analyzed, config, &mut summary).await?;
+
+    info!(
+        seen = summary.files_seen,
+        written = summary.files_written,
+        skipped = summary.files_skipped,
+        failed = summary.files_failed,
+        symbols = summary.symbols_written,
+        edges = summary.edges_written,
+        unresolved = summary.edges_unresolved,
+        "codebase ingest complete"
+    );
+    Ok(summary)
+}
+
+/// Walk the tree and analyze what it offers, honoring `.gitignore`.
+async fn walk_and_analyze<S>(
+    root: &Path,
+    sink: &S,
+    config: &CodebaseConfig,
+    summary: &mut CodebaseSummary,
+) -> Result<Vec<Analyzed>, PipelineError>
+where
+    S: IngestProbe,
+{
+    let mut out = Vec::new();
+    for entry in ignore::WalkBuilder::new(root).hidden(false).build() {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(%e, "walk error");
+                continue;
+            }
+        };
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        let rel_path = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+        let Some(lang) = Language::from_path(&rel_path) else {
+            continue;
+        };
+        summary.files_seen += 1;
+        if entry.metadata().map(|m| m.len()).unwrap_or(0) > config.max_file_bytes {
+            debug!(rel_path, "skipped, over the size limit");
+            continue;
+        }
+        // Not valid UTF-8 means not source, whatever the extension says.
+        let Ok(source) = std::fs::read_to_string(path) else {
+            summary.files_failed += 1;
+            continue;
+        };
+        let analysis =
+            match analyze_with_fallback(&source, lang, &rel_path, &AnalysisOptions::default()) {
+                AnalyzerOutcome::Success(a) => a,
+                AnalyzerOutcome::Failed { analyzer, reason } => {
+                    // EC-1: one unparseable file does not fail the repository.
+                    warn!(rel_path, analyzer, reason, "analysis failed");
+                    summary.files_failed += 1;
+                    continue;
+                }
+            };
+        let file_key = keys::file_key(&rel_path);
+        let stored = sink
+            .stored_symbol_hash(&file_key)
+            .await
+            .map_err(|e| PipelineError::Sink(Box::new(e)))?;
+        let changed = stored.as_deref() != Some(analysis.symbol_hash.as_str());
+        if !changed {
+            summary.files_skipped += 1;
+        }
+        out.push(Analyzed {
+            rel_path,
+            file_key,
+            analysis,
+            source,
+            changed,
+        });
+    }
+    Ok(out)
+}
+
+/// The file node and its symbol nodes.
+async fn write_file_nodes<S: IngestSink>(
+    sink: &S,
+    file: &Analyzed,
+    config: &CodebaseConfig,
+    summary: &mut CodebaseSummary,
+) -> Result<(), PipelineError> {
+    let a = &file.analysis;
+    let file_doc = json!({
+        "_key": file.file_key,
+        "path": file.rel_path,
+        "language": format!("{:?}", a.language),
+        "symbol_hash": a.symbol_hash,
+        "analyzer": a.analyzer,
+        "analysis_tier": format!("{:?}", a.analysis_tier),
+        "fallback_reason": a.fallback_reason,
+        "metrics": serde_json::to_value(&a.metrics).unwrap_or(Value::Null),
+        "symbol_count": a.symbols.len(),
+    });
+    let out = sink
+        .insert_documents(FILES, &[file_doc], config.overwrite)
+        .await
+        .map_err(|e| PipelineError::Sink(Box::new(e)))?;
+    summary.files_written += out.created;
+
+    let symbol_docs: Vec<Value> = a
+        .symbols
+        .iter()
+        .filter_map(|s| symbol_doc(&file.file_key, s))
+        .collect();
+    if !symbol_docs.is_empty() {
+        let out = sink
+            .insert_documents(SYMBOLS, &symbol_docs, config.overwrite)
+            .await
+            .map_err(|e| PipelineError::Sink(Box::new(e)))?;
+        summary.symbols_written += out.created;
+    }
+    Ok(())
+}
+
+/// A symbol node, or `None` for symbols that are not graph primitives
+/// (imports and impl blocks, which `universal_kind` declines).
+fn symbol_doc(file_key: &str, s: &Symbol) -> Option<Value> {
+    let kind = s.kind.universal_kind()?;
+    Some(json!({
+        "_key": keys::symbol_key(file_key, &s.qualified_name(), s.start_line),
+        "kind": kind,
+        "name": s.name,
+        "qualified_name": s.qualified_name(),
+        "file_key": file_key,
+        "start_line": s.start_line,
+        "end_line": s.end_line,
+        "metadata": s.metadata,
+    }))
+}
+
+/// Chunks, their symbol linkage, and optionally their embeddings.
+async fn write_chunks_and_embeddings<S: IngestSink>(
+    sink: &S,
+    file: &Analyzed,
+    chunker: &(dyn ChunkingStrategy + Send + Sync),
+    embedder: Option<&EmbeddingClient>,
+    config: &CodebaseConfig,
+    summary: &mut CodebaseSummary,
+) -> Result<(), PipelineError> {
+    let chunks = chunker.chunk(&file.source);
+    if chunks.is_empty() {
+        return Ok(());
+    }
+    let docs: Vec<Value> = chunks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            // FR 4: the symbols this chunk covers, by key. The sink
+            // resolves them to ids, since only it knows them.
+            let symbol_keys: Vec<String> = file
+                .analysis
+                .symbols
+                .iter()
+                .filter(|s| covers(c.start_char, c.end_char, s, &file.source))
+                .filter(|s| s.kind.universal_kind().is_some())
+                .map(|s| keys::symbol_key(&file.file_key, &s.qualified_name(), s.start_line))
+                .collect();
+            json!({
+                "_key": keys::chunk_key(&file.file_key, i),
+                "doc_key": file.file_key,
+                "file_key": file.file_key,
+                "text": c.text,
+                "chunk_index": c.chunk_index,
+                "total_chunks": c.total_chunks,
+                "start_char": c.start_char,
+                "end_char": c.end_char,
+                "symbol_keys": symbol_keys,
+            })
+        })
+        .collect();
+    let out = sink
+        .insert_documents(CHUNKS, &docs, config.overwrite)
+        .await
+        .map_err(|e| PipelineError::Sink(Box::new(e)))?;
+    summary.chunks_written += out.created;
+
+    if !config.embed {
+        return Ok(());
+    }
+    let embedder = embedder.expect("checked at entry");
+    let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+    let result = embedder.embed(&texts, &config.embed_task, None).await?;
+    if result.embeddings.len() != chunks.len() {
+        return Err(PipelineError::Other(format!(
+            "embedding count mismatch: expected {}, got {}",
+            chunks.len(),
+            result.embeddings.len()
+        )));
+    }
+    let docs: Vec<Value> = result
+        .embeddings
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let ck = keys::chunk_key(&file.file_key, i);
+            json!({
+                "_key": keys::embedding_key(&ck),
+                "chunk_key": ck,
+                "doc_key": file.file_key,
+                "embedding": e,
+            })
+        })
+        .collect();
+    let out = sink
+        .insert_documents(EMBEDDINGS, &docs, config.overwrite)
+        .await
+        .map_err(|e| PipelineError::Sink(Box::new(e)))?;
+    summary.embeddings_written += out.created;
+    Ok(())
+}
+
+/// Does a chunk's byte range cover a symbol's lines.
+///
+/// Chunk offsets are bytes and symbol positions are lines, so the line
+/// numbers are converted rather than compared across units.
+fn covers(start: usize, end: usize, s: &Symbol, source: &str) -> bool {
+    let line_of = |offset: usize| source[..offset.min(source.len())].lines().count().max(1);
+    let (first, last) = (line_of(start), line_of(end));
+    s.start_line <= last && s.end_line >= first
+}
+
+/// Every edge, in one pass, after every node exists.
+async fn write_edges<S: IngestSink>(
+    sink: &S,
+    analyzed: &[Analyzed],
+    config: &CodebaseConfig,
+    summary: &mut CodebaseSummary,
+) -> Result<(), PipelineError> {
+    let mut docs: Vec<Value> = Vec::new();
+
+    // `defines`, straight off the analysis. The file literally declares the
+    // symbol, which is the parent PRD's Phase 4 definition of `declared`.
+    for file in analyzed.iter().filter(|f| f.changed) {
+        for s in &file.analysis.symbols {
+            let Some(_) = s.kind.universal_kind() else {
+                continue;
+            };
+            docs.push(json!({
+                "from": file.file_key,
+                "to": keys::symbol_key(&file.file_key, &s.qualified_name(), s.start_line),
+                "relation": "defines",
+                "basis": "declared",
+                "analyzer": file.analysis.analyzer,
+                "payload": {"analysis_tier": format!("{:?}", file.analysis.analysis_tier)},
+            }));
+        }
+    }
+
+    // `calls` and `imports`, resolved across the whole corpus. An analyzer
+    // resolved these rather than the page stating them, so they are
+    // `structural` (Phase 4). Nothing here is ever `asserted`: inference
+    // belongs to H9.
+    let symbol_map: HashMap<String, Vec<Symbol>> = analyzed
+        .iter()
+        .map(|f| (f.rel_path.clone(), f.analysis.symbols.clone()))
+        .collect();
+    let structural = tree_sitter_edges::resolve(&symbol_map);
+    for (relation, edges) in [
+        ("calls", &structural.calls),
+        ("imports", &structural.imports),
+    ] {
+        for e in edges {
+            let (Some(from), Some(to)) = (
+                e.get("_from").and_then(Value::as_str),
+                e.get("_to").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            docs.push(json!({
+                "from": from,
+                "to": to,
+                "relation": relation,
+                "basis": "structural",
+                "analyzer": e.get("analyzer").and_then(Value::as_str).unwrap_or("tree-sitter"),
+                "payload": e,
+            }));
+        }
+    }
+
+    if docs.is_empty() {
+        return Ok(());
+    }
+    let out = sink
+        .insert_documents(EDGES, &docs, config.overwrite)
+        .await
+        .map_err(|e| PipelineError::Sink(Box::new(e)))?;
+    summary.edges_written += out.created;
+    summary.edges_unresolved += out.errors;
+    Ok(())
+}

@@ -12,9 +12,13 @@
 //! until then the missing store is a typed hole rather than a design
 //! discussion.
 
+pub mod codebase;
 mod orchestrator;
+pub mod probe;
 pub mod profile;
 pub mod sink;
 
+pub use codebase::{CodebaseConfig, CodebaseSummary, ingest_codebase};
 pub use orchestrator::{DocumentResult, Pipeline, PipelineConfig, PipelineError, PipelineSummary};
+pub use probe::IngestProbe;
 pub use sink::{IngestSink, InsertOutcome};

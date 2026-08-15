@@ -16,21 +16,27 @@
 
 use std::collections::HashMap;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio_postgres::Client;
 use yeomna_pipeline::sink::{IngestSink, InsertOutcome};
 
 use crate::StoreError;
 
-/// Where a container name routes (spec 009, closed vocabulary).
+/// Where a container name routes (spec 009, extended by spec 011).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route {
-    /// A metadata container: rows become `nodes` of this kind.
+    /// A metadata container: rows become `nodes` of this fixed kind.
     Metadata(&'static str),
+    /// A symbol container: rows become `nodes` whose kind the document
+    /// carries, since one container holds all four code primitives.
+    Symbol,
     /// A chunk container: rows become `chunks`.
     Chunks,
     /// An embedding container: rows become `embeddings`.
     Embeddings,
+    /// An edge container: rows become `edges`, endpoints resolved here
+    /// (D1: the sink owns text to id resolution).
+    Edges,
 }
 
 /// Map a transitional container name to its table. `None` is a caller bug.
@@ -38,9 +44,21 @@ fn route(container: &str) -> Option<Route> {
     match container {
         "documents" => Some(Route::Metadata("document")),
         "codebase_files" => Some(Route::Metadata("file")),
+        "codebase_symbols" => Some(Route::Symbol),
         "chunks" | "codebase_chunks" => Some(Route::Chunks),
         "embeddings" | "codebase_embeddings" => Some(Route::Embeddings),
+        "edges" | "codebase_edges" => Some(Route::Edges),
         _ => None,
+    }
+}
+
+/// Strip a collection-qualified prefix from an endpoint id (D1). Only
+/// recognized container names are stripped, so a natural key that happens
+/// to contain a slash survives intact.
+fn strip_container(id: &str) -> &str {
+    match id.split_once('/') {
+        Some((prefix, rest)) if route(prefix).is_some() => rest,
+        _ => id,
     }
 }
 
@@ -164,15 +182,32 @@ impl PgSink {
         cache: &mut HashMap<String, Option<i64>>,
     ) -> Result<bool, tokio_postgres::Error> {
         match route {
-            Route::Metadata(kind) => self.insert_metadata(kind, doc, overwrite).await,
+            Route::Metadata(kind) => self.insert_node(kind, doc, overwrite).await,
+            Route::Symbol => {
+                // One container, four primitives, so the kind rides the
+                // document. An unknown kind dies on the table's CHECK and
+                // counts like any other rejection.
+                let Some(kind) = doc.get("kind").and_then(Value::as_str) else {
+                    return Ok(false);
+                };
+                let kind = kind.to_string();
+                self.insert_node(&kind, doc, overwrite).await
+            }
             Route::Chunks => self.insert_chunk(doc, overwrite, cache).await,
             Route::Embeddings => self.insert_embedding(doc, overwrite, cache).await,
+            Route::Edges => self.insert_edge(doc, overwrite, cache).await,
         }
     }
 
-    /// Metadata document: `_key` becomes `natural_key`, the container picks
-    /// `kind`, everything else lands in `payload` verbatim.
-    async fn insert_metadata(
+    /// Node document: `_key` becomes `natural_key`, everything else lands
+    /// in `payload` verbatim.
+    ///
+    /// R8 (spec 011): the diff log is appended only when the payload
+    /// actually differs from the head, so an unchanged re-ingest leaves the
+    /// history alone. Postgres does the comparison, since a jsonb round
+    /// trip through serde would report differences that are only
+    /// formatting.
+    async fn insert_node(
         &self,
         kind: &str,
         doc: &Value,
@@ -185,19 +220,137 @@ impl PgSink {
         if let Some(obj) = payload.as_object_mut() {
             obj.remove("_key");
         }
+        let payload_text = payload.to_string();
+
+        // The head as it stands, read before the write so the log entry can
+        // say what changed.
+        let head = self
+            .client
+            .query_opt(
+                "SELECT id, payload::text, (payload IS DISTINCT FROM $3::text::jsonb)
+                 FROM nodes WHERE graph_id = $1 AND natural_key = $2",
+                &[&self.graph_id, &key, &payload_text],
+            )
+            .await?;
+
         let sql = if overwrite {
             "INSERT INTO nodes (graph_id, natural_key, kind, payload)
              VALUES ($1, $2, $3, $4::text::jsonb)
              ON CONFLICT (graph_id, natural_key)
-             DO UPDATE SET kind = EXCLUDED.kind, payload = EXCLUDED.payload"
+             DO UPDATE SET kind = EXCLUDED.kind,
+                           payload = EXCLUDED.payload,
+                           ingested_at = now()
+             RETURNING id"
         } else {
             "INSERT INTO nodes (graph_id, natural_key, kind, payload)
              VALUES ($1, $2, $3, $4::text::jsonb)
-             ON CONFLICT (graph_id, natural_key) DO NOTHING"
+             ON CONFLICT (graph_id, natural_key) DO NOTHING
+             RETURNING id"
+        };
+        let Some(row) = self
+            .client
+            .query_opt(sql, &[&self.graph_id, &key, &kind, &payload_text])
+            .await?
+        else {
+            // DO NOTHING against an existing key: the duplicate the
+            // reference's import semantics count.
+            return Ok(false);
+        };
+        let node_id: i64 = row.get(0);
+
+        match head {
+            None => {
+                self.append_log(node_id, &json!({"op": "insert", "to": payload}))
+                    .await?;
+            }
+            Some(h) if h.get::<_, bool>(2) => {
+                let old: Value =
+                    serde_json::from_str(&h.get::<_, String>(1)).unwrap_or(Value::Null);
+                self.append_log(
+                    node_id,
+                    &json!({"op": "update", "from": old, "to": payload}),
+                )
+                .await?;
+            }
+            // Unchanged: the write still happened, so ingested_at moved,
+            // and the history stays quiet. That is R8.
+            Some(_) => {}
+        }
+        Ok(true)
+    }
+
+    /// Append one entry to a node's history. Sequence is per node and
+    /// derived here, which is safe under the one-sequential-caller rule
+    /// this sink already documents and which M3 owns.
+    async fn append_log(&self, node_id: i64, diff: &Value) -> Result<(), tokio_postgres::Error> {
+        self.client
+            .execute(
+                "INSERT INTO node_log (node_id, seq, diff)
+                 VALUES ($1,
+                         (SELECT COALESCE(MAX(seq), 0) + 1 FROM node_log WHERE node_id = $1),
+                         $2::text::jsonb)",
+                &[&node_id, &diff.to_string()],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Edge document: endpoints arrive as natural keys, optionally
+    /// collection-qualified, and resolve to `bigint` here (D1). An endpoint
+    /// naming a node that does not exist is a counted rejection rather than
+    /// a silent drop (spec 011 FR 6).
+    async fn insert_edge(
+        &self,
+        doc: &Value,
+        overwrite: bool,
+        cache: &mut HashMap<String, Option<i64>>,
+    ) -> Result<bool, tokio_postgres::Error> {
+        let (Some(from), Some(to), Some(relation), Some(basis), Some(analyzer)) = (
+            doc.get("from").and_then(Value::as_str),
+            doc.get("to").and_then(Value::as_str),
+            doc.get("relation").and_then(Value::as_str),
+            doc.get("basis").and_then(Value::as_str),
+            doc.get("analyzer").and_then(Value::as_str),
+        ) else {
+            return Ok(false);
+        };
+        let Some(src) = self.parent_node(cache, strip_container(from)).await? else {
+            return Ok(false);
+        };
+        let Some(dst) = self.parent_node(cache, strip_container(to)).await? else {
+            return Ok(false);
+        };
+        let payload = doc
+            .get("payload")
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+            .to_string();
+        let sql = if overwrite {
+            // The identity index from spec 009 is the conflict target, and
+            // attributes are what a second writer updates.
+            "INSERT INTO edges (graph_id, src_id, dst_id, relation, basis, analyzer, payload)
+             VALUES ($1, $2, $3, $4, $5::text::edge_basis, $6, $7::text::jsonb)
+             ON CONFLICT (graph_id, src_id, dst_id, relation, basis)
+             DO UPDATE SET analyzer = EXCLUDED.analyzer, payload = EXCLUDED.payload"
+        } else {
+            "INSERT INTO edges (graph_id, src_id, dst_id, relation, basis, analyzer, payload)
+             VALUES ($1, $2, $3, $4, $5::text::edge_basis, $6, $7::text::jsonb)
+             ON CONFLICT (graph_id, src_id, dst_id, relation, basis) DO NOTHING"
         };
         let affected = self
             .client
-            .execute(sql, &[&self.graph_id, &key, &kind, &payload.to_string()])
+            .execute(
+                sql,
+                &[
+                    &self.graph_id,
+                    &src,
+                    &dst,
+                    &relation,
+                    &basis,
+                    &analyzer,
+                    &payload,
+                ],
+            )
             .await?;
         Ok(affected == 1)
     }
@@ -232,21 +385,34 @@ impl PgSink {
         ) else {
             return Ok(false);
         };
+        // Spec 011 FR 4: the chunk names the symbols it covers by key, and
+        // only the sink knows their ids. An unresolvable key is dropped
+        // from the array rather than failing the chunk, since a chunk with
+        // incomplete linkage is still a correct chunk.
+        let mut symbol_ids: Vec<i64> = Vec::new();
+        if let Some(keys) = doc.get("symbol_keys").and_then(Value::as_array) {
+            for k in keys.iter().filter_map(Value::as_str) {
+                if let Some(id) = self.parent_node(cache, k).await? {
+                    symbol_ids.push(id);
+                }
+            }
+        }
         let sql = if overwrite {
-            "INSERT INTO chunks (node_id, chunk_index, text, start_char, end_char)
-             VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO chunks (node_id, chunk_index, text, start_char, end_char, symbol_ids)
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (node_id, chunk_index)
              DO UPDATE SET text = EXCLUDED.text,
                            start_char = EXCLUDED.start_char,
-                           end_char = EXCLUDED.end_char"
+                           end_char = EXCLUDED.end_char,
+                           symbol_ids = EXCLUDED.symbol_ids"
         } else {
-            "INSERT INTO chunks (node_id, chunk_index, text, start_char, end_char)
-             VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO chunks (node_id, chunk_index, text, start_char, end_char, symbol_ids)
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (node_id, chunk_index) DO NOTHING"
         };
         let affected = self
             .client
-            .execute(sql, &[&node_id, &index, &text, &start, &end])
+            .execute(sql, &[&node_id, &index, &text, &start, &end, &symbol_ids])
             .await?;
         Ok(affected == 1)
     }
@@ -413,6 +579,26 @@ impl IngestSink for PgSink {
         };
         self.client.execute(sql, &[&self.graph_id, &key]).await?;
         Ok(())
+    }
+}
+
+impl yeomna_pipeline::probe::IngestProbe for PgSink {
+    type Error = StoreError;
+
+    /// The hash lives in the file node's payload, which is where the
+    /// orchestrator put it. `None` covers both "never ingested" and
+    /// "ingested before the field existed", and both mean the same thing
+    /// to a caller deciding whether to skip: do the work.
+    async fn stored_symbol_hash(&self, natural_key: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .client
+            .query_opt(
+                "SELECT payload->>'symbol_hash' FROM nodes
+                 WHERE graph_id = $1 AND natural_key = $2",
+                &[&self.graph_id, &natural_key],
+            )
+            .await?
+            .and_then(|r| r.get(0)))
     }
 }
 
