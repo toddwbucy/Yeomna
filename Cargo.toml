@@ -21,7 +21,9 @@ thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-tokio-postgres = "0.7"
+# with-chrono-0_4 so timestamptz round-trips as a real type rather
+# than being formatted into a string in SQL (spec 012).
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
 anyhow = "1"
 tempfile = "3"
 tonic = "0.13"

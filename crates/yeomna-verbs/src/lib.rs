@@ -18,10 +18,14 @@
 //! - **Presentation stays out.** The captured CLI's `format` and `verbose`
 //!   flags are rendering concerns and do not exist here.
 
+mod audit;
 mod envelope;
 mod error;
+mod execute;
+mod read;
 mod verb;
 
 pub use envelope::{Envelope, envelope, error_envelope};
 pub use error::VerbError;
+pub use execute::Session;
 pub use verb::*;

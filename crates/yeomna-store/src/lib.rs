@@ -15,6 +15,18 @@ pub use sink::PgSink;
 /// The schema, embedded. Every statement tolerates re-application.
 pub const SCHEMA_SQL: &str = include_str!("../schema.sql");
 
+/// The schema this binary ships (spec 012).
+///
+/// Compiled in, with no marker stored in the database. A stored marker
+/// exists to detect drift between a database and the binary, and drift is
+/// not a state this appliance allows: a schema change costs a drop and a
+/// re-ingest, because the graph is a rebuildable index. Recording a
+/// version in the database would invite the comparison that invites the
+/// migration this project declines to own.
+///
+/// Bump it when `schema.sql` changes shape.
+pub const SCHEMA_VERSION: &str = "1.0.0";
+
 /// Error type for store operations.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
