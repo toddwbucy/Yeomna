@@ -3,8 +3,12 @@
 Status: v1.3, 2026-08-14. H1 retired, H2 building, R3 ruled. The hole-mapping step of the severance sequence
 (PRD-pipeline-libraries v0.2). This is the map of everything Yeomna needs and
 does not yet have, each hole named, owned, and sourced. The executable form
-is `yeomna-cli`: 56 commands, every one a self-reporting hole whose census is
-machine-checked on every test run. As verbs land, holes become behavior, and
+is `yeomna-cli`: 56 commands, every one a self-reporting hole with a census
+test over them. That crate is **not on main**. It sits in draft PR #19 and
+lands at H2 Phase 7, which rewrites its commands into daemon clients and
+inverts the census, so the check runs nowhere until then. The authoritative
+surface list in the meantime is spec 010's disposition table, which is on
+main and which R4 made binding. As verbs land, holes become behavior, and
 this document retires entry by entry.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the words
@@ -49,6 +53,7 @@ ported: the excluded reference code is not consulted.
 | CLI holes it fills | the same 28, jointly with H1, plus `daemon` (H7) |
 | Includes | Q3 renames of ArangoDB-vocabulary command names, the audit table wiring, peercred policy |
 | Progress | **Phase 1 of 7 done** (spec 010, merged 2026-08-14): `yeomna-verbs` carries the closed 40-verb contract, R4 is closed, the audit outcome column landed |
+| Waiting in Phase 7 | Draft PR #19, deliberately held 2026-08-15 rather than merged and fixed twice, since Phase 7 rewrites these commands into daemon clients anyway. It carries, and Phase 7 inherits: (1) the daemon `--mcp-*` flags, which the capture declares while its own record says they were dropped, plus a reference to a `--mcp-token-file` that does not exist, (2) `output.rs` printing table headers to stderr while rows go to stdout, so redirecting stdout loses the header, (3) awaits-distribution counts in the review notes that reach 56 by double-counting six commands, and (4) the R4 reconciliation: nine captured commands (`Create`, `Collections`, `Databases`, `CreateDatabase`, `Truncate`, `DropCollection`, `Export`, `CreateIndex`, `IndexStatus`) that spec 010 has since removed or absorbed, so the census counts 56 holes where roughly 40 become verbs. Trial-merged 2026-08-15 against main: conflicts are `Cargo.toml` and `Cargo.lock` only, and the crate builds, passes its census, and clears the no-SQL lint |
 
 ## H3. The ingest orchestrator
 
