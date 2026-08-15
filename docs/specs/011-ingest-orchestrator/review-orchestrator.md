@@ -6,27 +6,59 @@ Yeomna has read itself.
 ## The dogfood run
 
 This repository, ingested into the `yeomna_self` graph on the sealed
-cluster:
+cluster. Three calls, each measured on a schema rebuilt from scratch:
 
-| | Cold | Warm |
-|---|---|---|
-| Wall clock | 2.50s | 0.95s |
-| Files seen | 63 | 63 |
-| Files written | 63 | 0 |
-| Files skipped | 0 | 63 |
-| Files failed | 0 | 0 |
-| Symbols | 956 structural, 1422 after enrichment | 0 |
-| Edges | 2629 with the semantic pass | 0 |
-| Chunks | 205 | 0 |
+| | Cold, structural | Semantic pass | Warm |
+|---|---|---|---|
+| Wall clock | 2.53s | 24.13s | 0.96s |
+| Files written | 63 | 0 | 0 |
+| Files skipped | 0 | 63 | 63 |
+| Symbols written | 961 | 0 | 0 |
+| Symbols enriched | 0 | 1428 | 0 |
+| Edges written | 1176 | 2521 | 0 |
+| Chunks written | 212 | 0 | 0 |
+| Crates indexed | 0 | 2 | 0 |
 
-Nodes by kind after the semantic pass: 776 callable, 560 value, 130
-type, 84 module, 63 file. Edges: 1550 `defines / declared`, 848
-`calls / structural`, 214 `imports / declared`, 17 `implements /
-structural`. Analyzers: rust-analyzer 2287, syn 313, rustpython 29.
-Zero unresolved endpoints, zero failures.
+Zero failures, zero rejected edges, zero oversized files throughout.
 
-The warm run is the ruling working: every file's `symbol_hash` matched,
-nothing was rewritten, and the history stayed quiet.
+The warm run writes nothing and skips the language server, because
+nothing changed and the graph is already enriched. The semantic pass
+ran despite nothing having changed, because the graph had never been
+enriched, which is the case a plain changed-files gate would have made
+unreachable.
+
+### The graph, and what each count covers
+
+| Nodes | |
+|---|---|
+| `file` | 63 |
+| `callable` | 782 |
+| `value` | 561 |
+| `type` | 130 |
+| `module` | 84 |
+| **total** | **1620** |
+
+The 1557 non-file nodes account for exactly: 832 written by syn and
+then enriched by rust-analyzer, carrying an `update` entry in
+`node_log`, 596 found only by rust-analyzer, and 129 written by syn and
+never enriched. Those three are disjoint and sum to 1557, and 1557 plus
+the 63 file nodes is the 1620 total. An earlier draft of these notes
+quoted 829 and 593 against a kind table from a different run and left
+the syn-only remainder out entirely, so the figures did not add up.
+
+| Edges | |
+|---|---|
+| `defines / declared` | 1557 |
+| `calls / structural` | 861 |
+| `imports / declared` | 215 |
+| `implements / structural` | 17 |
+
+One `defines` per symbol node, which is the arithmetic those two tables
+share. Analyzers: rust-analyzer 2306, syn 315, rustpython 29.
+
+**A recursive walk over `calls` reaches the depth-10 cap**, which is the
+first corpus M2 has ever had. M2 stays open: having a corpus is not
+running the benchmark and reporting it.
 
 ## Corrected twice: the resolvers were wrong, then absent
 
@@ -93,7 +125,7 @@ benchmark and reporting it.
 
 ### Why it is opt-in
 
-`semantic_rust` defaults false. The pass puts an external process in
+`semantic_lsp` defaults false. The pass puts an external process in
 the ingest path, waits on a workspace index, and costs a minute-scale
 run instead of a second-scale one. It degrades rather than failing: a
 language server that will not start, will not index inside
@@ -117,8 +149,8 @@ its three `defines`.
 **Go joins the language-server pass.** `GoplsSession` and
 `GoSymbolExtractor` mirror the Rust pieces exactly and feed the same
 `LspEdgeResolver`, so the pass now groups Rust by crate and Go by
-module and merges both extractions. The flag generalized from
-`semantic_rust` to `semantic_lsp` accordingly, and edges are
+module and merges both extractions. The flag is `semantic_lsp`, generalized from the Rust-only name it
+carried for one commit, and edges are
 attributed per source file rather than by one label over the batch.
 
 **gopls is not installed on this box**, which turned the Go fixture
@@ -191,7 +223,34 @@ definition of the enum exists to drift from the DDL.
 
 ## Findings from execution
 
-1. **A warm run re-resolved every edge.** The `defines` pass filters on
+1. **The counters did not balance, and one of them overpromised.**
+   Oversized files were dropped without landing in any outcome field, so
+   `files_seen` exceeded the sum of the rest with no way to see why:
+   `files_oversized` now carries them, kept apart from `files_skipped`,
+   which means the hash matched. And `edges_unresolved` counted every
+   sink rejection, including a malformed document and, under
+   `overwrite: false`, an edge that was already stored. It is
+   `edges_rejected` now, since the name should not claim more precision
+   than the number has.
+2. **A shrinking file left orphaned chunks and embeddings.** Chunks
+   upsert on `(node_id, chunk_index)` and upsert never removes, so a file
+   edited down to fewer chunks kept its old high-index rows, and their
+   embeddings with them, describing text the file no longer contained.
+   The document flow had solved this and this one had not: the removal
+   calls now run before the writes, the same two-then-three sequence.
+3. **`ingested_at` moved on an unchanged overwrite**, which is the
+   opposite of what R9 says it means. The orchestrator's hash-skip hid
+   it, because an unchanged file never reaches the sink, but the document
+   flow has no hash-skip and would have moved it on every rerun. The
+   column now advances only when the payload is distinct, decided in SQL
+   beside the comparison the log already makes.
+4. **The semantic pass ignored the warm-run early return**, so a no-op
+   ingest with the flag on still started a language server per crate and
+   waited out the index. Gating it on changed files alone was the obvious
+   fix and the wrong one: it would have made enabling the flag over an
+   already-ingested graph do nothing forever, since nothing changed. The
+   gate asks both questions, and `IngestProbe` grew the second one.
+5. **A warm run re-resolved every edge.** The `defines` pass filters on
    changed files and the cross-file resolvers do not, so a run where all
    63 files were skipped still upserted 213 import edges and reported
    them as written. They were upserts rather than new rows, but the
@@ -199,27 +258,44 @@ definition of the enum exists to drift from the DDL.
    when nothing changed at all, and a test asserts it. Any change
    anywhere still reopens the whole corpus, because a new symbol in one
    file can be the target of an import in a file that did not change.
-2. **`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` deadlocks a concurrent
-   test suite.** It takes an ACCESS EXCLUSIVE lock *before* evaluating
-   the IF NOT EXISTS, so every `apply_schema` fought readers, and three
-   claims failed with SQLSTATE 40P01 the first time the new column
-   landed. Both that ALTER and the `audit_log.outcome` one from spec
-   010, which had the same latent hazard and had only been lucky, are
-   now guarded by a catalog check inside a DO block. The lock is taken
-   only when the column is actually missing.
-3. **Skipped files still feed resolution.** A file whose hash matched
+6. **The new column arrived by ALTER, and then did not.** The first
+   attempt used `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, which
+   deadlocked the concurrent suite with SQLSTATE 40P01: it takes an
+   ACCESS EXCLUSIVE lock *before* evaluating the condition, so every
+   `apply_schema` fought the readers. Guarding it behind a catalog check
+   fixed the deadlock and was still the wrong answer, because an ALTER
+   that upgrades an existing database in place is migration tooling and
+   the charter declines to own any. Both guards are gone, including the
+   one spec 010 had introduced for `audit_log.outcome`, and the columns
+   live only in their `CREATE TABLE`. The cost of a schema change is a
+   drop and a re-ingest, which is what T4 says it should be. Verified by
+   dropping every object on the dev cluster and rebuilding from the
+   crate alone: zero tables, then a green suite with both columns
+   present.
+7. **Skipped files still feed resolution.** A file whose hash matched
    contributes no writes but does contribute its symbols to the map,
    because an edge pointing into an unchanged file must still resolve.
    Getting this wrong would have made warm runs silently lose edges.
-4. **Chunk-to-symbol linkage crosses a unit boundary.** Chunk offsets
+8. **Chunk-to-symbol linkage crosses a unit boundary.** Chunk offsets
    are bytes and symbol positions are lines, so the orchestrator
    converts rather than comparing across units.
-5. **Embedding is opt-in, and the spec said the opposite.** EC-4 asked
-   for a loud failure when the embedder is unreachable, which is right
-   when embeddings were requested and wrong as a default, because no
-   embedder ships until H4 and the graph is worth building without
-   vectors. `CodebaseConfig::embed` defaults to false, and EC-4 applies
-   when it is true. The dogfood run wrote zero embeddings by design.
+9. **Embedding is opt-in, and the spec said the opposite.** EC-4 asked
+   for a loud failure whenever the embedder is unreachable, which is
+   right when embeddings were requested and wrong as a default, because
+   no embedder ships until H4 and the graph is worth building without
+   vectors. `CodebaseConfig::embed` defaults to false, EC-4 now states
+   the conditional, and the dogfood run wrote zero embeddings by design.
+10. **`analyzer_for` could not find a file key.** It took the tail after
+   the last slash of a collection-qualified endpoint, which for a symbol
+   is `{file_key}__{name}__{hash}` and not a file key at all, so every
+   semantic edge fell to the default label. It strips the collection
+   prefix and matches known file keys by prefix now, longest first, so
+   `src_a_rs` cannot claim `src_a_rs_backup`, and a miss is labelled
+   rather than guessed.
+11. **A path outside the ingest root became a silent key mismatch.** The
+   relativizer fell back to the absolute path, whose derived keys match
+   nothing the structural pass wrote, and the enrichment would land
+   nowhere without a word. It warns now.
 
 ## Verification
 

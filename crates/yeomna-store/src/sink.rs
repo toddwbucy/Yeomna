@@ -239,7 +239,13 @@ impl PgSink {
              ON CONFLICT (graph_id, natural_key)
              DO UPDATE SET kind = EXCLUDED.kind,
                            payload = EXCLUDED.payload,
-                           ingested_at = now()
+                           -- R9 means when the content last landed, so an
+                           -- unchanged overwrite must not move it. The
+                           -- orchestrator's hash-skip hides this, but the
+                           -- document flow has no hash-skip and would.
+                           ingested_at = CASE
+                               WHEN nodes.payload IS DISTINCT FROM EXCLUDED.payload
+                               THEN now() ELSE nodes.ingested_at END
              RETURNING id"
         } else {
             "INSERT INTO nodes (graph_id, natural_key, kind, payload)
@@ -599,6 +605,18 @@ impl yeomna_pipeline::probe::IngestProbe for PgSink {
             )
             .await?
             .and_then(|r| r.get(0)))
+    }
+
+    async fn enrichment_present(&self) -> Result<bool, StoreError> {
+        Ok(self
+            .client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM nodes
+                 WHERE graph_id = $1 AND payload->>'enriched' = 'true')",
+                &[&self.graph_id],
+            )
+            .await?
+            .get(0))
     }
 }
 

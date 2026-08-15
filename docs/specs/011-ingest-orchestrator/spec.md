@@ -53,21 +53,13 @@ edges. H3 is the caller that does.
 
 ## Rulings, all agreed 2026-08-15
 
-**RULED. R8. Does ingest write history.** `node_log` is empty and stays empty: the
-sink never writes it. The charter says the diff log is the source of truth
-for history and that the head row is materialized convenience, so today half
-the graph has heads with no history behind them, and the head-versus-log
-rule cannot be exercised because the log is absent.
-
-Three options. **(a) Ingest writes no log**, and history begins when a verb
-mutates a node. Cheapest, and it means a re-ingest that changes a symbol
-leaves no record of the change. **(b) Ingest logs every write**, one entry
-per node per run. Truthful, and it grows the log by the node count on every
-ingest even when nothing changed. **(c) Ingest logs only changes**,
-comparing the incoming payload against the head row and appending only on
-difference. Recommended: it makes the log mean what the charter says it
-means, the hash-skip pass already knows what changed, and an unchanged
-re-ingest costs nothing.
+**RULED. R8. Ingest logs only changes.** The sink compares the incoming
+payload against the head and appends to `node_log` only on a difference,
+so the log means what the charter says it means and an unchanged
+re-ingest costs the history nothing. Considered and declined: writing no
+log at all, which leaves a changed symbol with no record, and logging
+every write, which grows the log by the node count on every run even
+when nothing moved.
 
 **RULED. R9. The ingest timestamp.** `nodes` and `chunks` carry no time column, so
 `recent` and `orient`'s last-activity field have no source (found while
@@ -94,6 +86,41 @@ Recommended: keep text at the boundary and cast in SQL, as the claim tests
 do. A `postgres-types` derive buys type safety at the cost of a second
 definition of the enum that must stay in step with the DDL, and the sink
 already speaks JSON at that seam.
+
+## Files to Modify
+
+- `crates/yeomna-pipeline/src/codebase.rs` (new): the orchestrator.
+- `crates/yeomna-pipeline/src/probe.rs` (new): the reads the write
+  boundary does not carry.
+- `crates/yeomna-pipeline/src/lib.rs`, `Cargo.toml`: module wiring, the
+  `yeomna-code` and `ignore` dependencies.
+- `crates/yeomna-store/src/sink.rs`: the symbol and edge containers,
+  endpoint resolution, log-on-change, `IngestProbe`.
+- `crates/yeomna-store/schema.sql`: `nodes.ingested_at`.
+- `crates/yeomna-store/tests/codebase_ingest.rs` (new): the integration
+  tests and the dogfood operation.
+
+## Files to Reference
+
+- `crates/yeomna-pipeline/src/orchestrator.rs`: the document flow, whose
+  five-call store sequence and stale-delete this one mirrors.
+- `crates/yeomna-code/src/lib.rs`: `analyze_with_fallback`, `FileAnalysis`.
+- `crates/yeomna-code/src/{rust_imports,python_calls,cpp_edges,tree_sitter_edges}.rs`
+  and `src/lsp/`: one edge resolver per language.
+- `crates/yeomna-keys/src/lib.rs`: the golden keys both passes derive.
+- `docs/PRD-postgres-store.md`: Phase 4's basis table, Phase 7's
+  idempotency and enrichment protocol, D1.
+
+## Patterns to Follow
+
+- The document orchestrator's shape: config in, summary of counts out,
+  per-item failures counted rather than fatal.
+- The cluster-gated test pattern from specs 008 and 009: skip without a
+  socket, skip without the runtime role, never fail the workspace gate.
+- Deterministic keys from `yeomna-keys` for every node and edge, which is
+  what lets the structural and semantic passes converge on one row.
+- Sink containers as the only write path, per R11, so `IngestSink` stays
+  the two methods spec 005 designed.
 
 ## Task Scope
 
@@ -163,8 +190,12 @@ enforces and Q1 required.
 - **EC-3.** A file deleted since the last ingest: out of scope here, since
   that is `codebase.retire`'s job (verb layer Phase 6). Named so it is not
   mistaken for an oversight.
-- **EC-4.** Embedder unavailable: the run fails loudly before writing, since
-  a graph with nodes and no embeddings is a half-ingest that looks complete.
+- **EC-4.** Embedder unavailable **when embedding was requested**: the run
+  fails loudly before writing, since a graph with nodes and no embeddings
+  is a half-ingest that looks complete. Embedding is opt-in
+  (`CodebaseConfig::embed`, default false) because no embedder ships until
+  H4, so a run that never asked for vectors is not a half-ingest and does
+  not fail.
 
 ## Implementation Notes
 

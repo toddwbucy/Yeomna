@@ -1,5 +1,12 @@
 -- Yeomna store schema, per docs/specs/008-store-schema/spec.md.
 -- Idempotent: every statement tolerates re-application.
+--
+-- There is no in-place migration here and there will not be. A column
+-- added to a CREATE TABLE below does not reach a database that already
+-- exists, and the answer to that is to drop the database and re-ingest,
+-- because the graph is a rebuildable index derived from source (T4). An
+-- ALTER that upgrades an existing database in place is migration tooling,
+-- which the charter declines to own.
 -- Rulings cited inline: Q1 (typed provenance), Q2/R1 (graph_id column),
 -- D1..D7 (store PRD resolved decisions), charter section 6 (audit defaults).
 
@@ -35,19 +42,6 @@ CREATE TABLE IF NOT EXISTS nodes (
     ingested_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (graph_id, natural_key)
 );
--- Guarded rather than ALTER ... ADD COLUMN IF NOT EXISTS, which takes an
--- ACCESS EXCLUSIVE lock before it evaluates the IF NOT EXISTS and therefore
--- deadlocks against concurrent readers on every re-apply. The catalog check
--- is a cheap read, and the lock is taken only when the column is missing.
-DO $$ BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND table_name = 'nodes' AND column_name = 'ingested_at'
-    ) THEN
-        ALTER TABLE nodes ADD COLUMN ingested_at timestamptz NOT NULL DEFAULT now();
-    END IF;
-END $$;
 CREATE INDEX IF NOT EXISTS nodes_payload_gin ON nodes USING gin (payload);
 CREATE INDEX IF NOT EXISTS nodes_graph_kind ON nodes (graph_id, kind);
 
@@ -153,19 +147,6 @@ CREATE TABLE IF NOT EXISTS audit_log (
     args    jsonb NOT NULL DEFAULT '{}',
     outcome text
 );
--- Guarded rather than ALTER ... ADD COLUMN IF NOT EXISTS, which takes an
--- ACCESS EXCLUSIVE lock before it evaluates the IF NOT EXISTS and therefore
--- deadlocks against concurrent readers on every re-apply. The catalog check
--- is a cheap read, and the lock is taken only when the column is missing.
-DO $$ BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND table_name = 'audit_log' AND column_name = 'outcome'
-    ) THEN
-        ALTER TABLE audit_log ADD COLUMN outcome text;
-    END IF;
-END $$;
 
 -- Grants. yeomna_app reads and writes data, appends to the logs, and can
 -- never rewrite history. yeomna_audit owns the audit table.

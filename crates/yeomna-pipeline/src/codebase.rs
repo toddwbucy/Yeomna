@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde_json::{Value, json};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use yeomna_chunking::ChunkingStrategy;
 use yeomna_code::{
@@ -101,13 +101,19 @@ pub struct CodebaseSummary {
     pub files_skipped: usize,
     /// Files that could not be read or analyzed.
     pub files_failed: usize,
+    /// Files dropped for exceeding `max_file_bytes`, never analyzed.
+    /// Separate from `files_skipped`, which means the hash matched.
+    pub files_oversized: usize,
     /// Symbol nodes written.
     pub symbols_written: usize,
     /// Edges written, across every basis.
     pub edges_written: usize,
-    /// Edges whose endpoints did not resolve to nodes. Counted, never
-    /// silently dropped (spec 011 FR 6).
-    pub edges_unresolved: usize,
+    /// Edges the sink rejected: an endpoint that resolved to no node, a
+    /// malformed document, or, under `overwrite: false`, an edge that was
+    /// already stored. Unresolved endpoints are the interesting case and
+    /// FR 6 is why nothing is dropped silently, but the count is wider
+    /// than that one cause and the name should not overpromise.
+    pub edges_rejected: usize,
     /// Chunks written.
     pub chunks_written: usize,
     /// Embeddings written.
@@ -115,6 +121,11 @@ pub struct CodebaseSummary {
     /// Crates and modules the semantic pass indexed, zero when it did
     /// not run or found no server.
     pub semantic_units: usize,
+    /// Symbol rows the semantic pass wrote. Counted apart from
+    /// `symbols_written` because most of these land on rows the
+    /// structural pass already created, which is the enrichment protocol
+    /// rather than new symbols.
+    pub symbols_enriched: usize,
 }
 
 /// One analyzed file, held until the node pass completes.
@@ -157,8 +168,23 @@ where
     // second time by a language server converge onto the same rows through
     // the same keys, which is the Phase 7 enrichment protocol, and the
     // endpoints the semantic edges need must exist before pass 2.
+    // A run where nothing changed cannot discover a new edge, and a
+    // language server costs a minute to say so. The exception is a graph
+    // that has never been enriched, which is the case when the flag is
+    // switched on over an existing ingest, and where skipping would mean
+    // the pass could never run at all.
     let semantic = if config.semantic_lsp {
-        semantic_lsp_pass(root, sink, &analyzed, config, &mut summary).await
+        let changed = analyzed.iter().any(|f| f.changed);
+        let enriched = sink
+            .enrichment_present()
+            .await
+            .map_err(|e| PipelineError::Sink(Box::new(e)))?;
+        if changed || !enriched {
+            semantic_lsp_pass(root, sink, &analyzed, config, &mut summary).await
+        } else {
+            info!("nothing changed and the graph is already enriched, skipping the semantic pass");
+            Vec::new()
+        }
     } else {
         Vec::new()
     };
@@ -173,7 +199,7 @@ where
         failed = summary.files_failed,
         symbols = summary.symbols_written,
         edges = summary.edges_written,
-        unresolved = summary.edges_unresolved,
+        rejected = summary.edges_rejected,
         "codebase ingest complete"
     );
     Ok(summary)
@@ -212,7 +238,10 @@ where
         };
         summary.files_seen += 1;
         if entry.metadata().map(|m| m.len()).unwrap_or(0) > config.max_file_bytes {
-            debug!(rel_path, "skipped, over the size limit");
+            // Counted, so files_seen balances against the outcome fields.
+            // Not files_skipped, which means the hash matched.
+            info!(rel_path, "dropped, over the size limit");
+            summary.files_oversized += 1;
             continue;
         }
         // Not valid UTF-8 means not source, whatever the extension says.
@@ -315,6 +344,17 @@ async fn write_chunks_and_embeddings<S: IngestSink>(
     config: &CodebaseConfig,
     summary: &mut CodebaseSummary,
 ) -> Result<(), PipelineError> {
+    // A file that shrinks would leave chunk rows at the higher indices,
+    // and their embeddings with them, describing text the file no longer
+    // contains. Upsert cannot remove them, so they go first, exactly as
+    // the document flow's five-call sequence does it.
+    if config.overwrite {
+        for container in [CHUNKS, EMBEDDINGS] {
+            sink.remove_documents_by_fields(container, &["doc_key", "file_key"], &file.file_key)
+                .await
+                .map_err(|e| PipelineError::Sink(Box::new(e)))?;
+        }
+    }
     let chunks = chunker.chunk(&file.source);
     if chunks.is_empty() {
         return Ok(());
@@ -551,12 +591,15 @@ async fn write_edges<S: IngestSink>(
         .collect();
     if !others.is_empty() {
         let structural = tree_sitter_edges::resolve(&others);
-        for (relation, edges) in [
-            ("calls", &structural.calls),
-            ("imports", &structural.imports),
+        // A call is resolved by matching names, which only an analyzer
+        // could do. An import is written in the file, the same as the Rust
+        // ones above, so Phase 4 makes it `declared`.
+        for (relation, basis, edges) in [
+            ("calls", "structural", &structural.calls),
+            ("imports", "declared", &structural.imports),
         ] {
             for e in edges {
-                push_resolved(&mut docs, e, relation, "structural", &analyzer_of);
+                push_resolved(&mut docs, e, relation, basis, &analyzer_of);
             }
         }
     }
@@ -569,7 +612,7 @@ async fn write_edges<S: IngestSink>(
         .await
         .map_err(|e| PipelineError::Sink(Box::new(e)))?;
     summary.edges_written += out.created;
-    summary.edges_unresolved += out.errors;
+    summary.edges_rejected += out.errors;
     Ok(())
 }
 
@@ -611,10 +654,19 @@ async fn semantic_lsp_pass<S: IngestSink>(
     // A document must land under the path relative to the ingest root, so
     // its key matches what the structural pass already wrote.
     let relativize = |path: String| -> String {
-        std::path::Path::new(&path)
-            .strip_prefix(root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or(path)
+        match std::path::Path::new(&path).strip_prefix(root) {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => {
+                // The key then matches nothing the structural pass wrote,
+                // and the enrichment silently lands nowhere. Say so.
+                warn!(
+                    path,
+                    root = %root.display(),
+                    "extractor returned a path outside the ingest root, so its                      symbol keys will not match the structural pass"
+                );
+                path
+            }
+        }
     };
 
     if !rust_files.is_empty() {
@@ -733,7 +785,7 @@ async fn semantic_lsp_pass<S: IngestSink>(
             "to": e.to,
             "relation": relation,
             "basis": basis,
-            "analyzer": analyzer_for(&e.from, analyzed, root),
+            "analyzer": analyzer_for(&e.from, analyzed),
             "payload": e.metadata,
         }));
     }
@@ -744,16 +796,22 @@ async fn semantic_lsp_pass<S: IngestSink>(
 
 /// Which server produced an edge, from the language of its source file.
 ///
-/// The resolver is language agnostic, so attribution comes from the file
-/// the edge starts at rather than from a single label over the batch.
-fn analyzer_for(from: &str, analyzed: &[Analyzed], _root: &Path) -> &'static str {
-    let key = from.rsplit('/').next().unwrap_or(from);
-    match analyzed
+/// The endpoint is a collection-qualified id whose tail is either a file
+/// key or a symbol key, and a symbol key is `{file_key}__{name}__{hash}`.
+/// So the collection prefix comes off and the remainder is matched against
+/// known file keys by prefix, longest first, or `src_a_rs` would claim
+/// `src_a_rs_backup__...`. A miss is labelled for what it is rather than
+/// guessed at, since the schema requires an analyzer and Q1 is the reason.
+fn analyzer_for(from: &str, analyzed: &[Analyzed]) -> &'static str {
+    let tail = from.split_once('/').map(|(_, rest)| rest).unwrap_or(from);
+    let best = analyzed
         .iter()
-        .find(|f| f.file_key == key || from.contains(&f.file_key))
-        .map(|f| f.analysis.language)
-    {
+        .filter(|f| tail == f.file_key || tail.starts_with(&format!("{}__", f.file_key)))
+        .max_by_key(|f| f.file_key.len());
+    match best.map(|f| f.analysis.language) {
         Some(Language::Go) => "gopls",
-        _ => "rust-analyzer",
+        Some(Language::Rust) => "rust-analyzer",
+        Some(_) => "language-server",
+        None => "language-server",
     }
 }
