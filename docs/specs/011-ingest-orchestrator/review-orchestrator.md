@@ -101,11 +101,59 @@ language server that will not start, will not index inside
 standing and logs what happened. An environment problem should not
 cost a usable graph.
 
-Still missing: Python call edges are wired but unexercised here, since
-only 29 rustpython symbols exist in this corpus and none resolved. Go
-has `gopls` and `group_files_by_go_module` sitting unused exactly as
-rust-analyzer was, and C++ has `cpp_edges` behind libclang. Both are
-the same shape of work as this pass and neither is wired.
+### Round three: Go and C++, wired the same day
+
+Todd asked for both. They turned out to be different shapes of work.
+
+**C++ needs no server at all.** libclang runs in process during
+analysis, at Semantic tier, and records call sites with USRs and
+`resolution: "semantic"` in symbol metadata. `cpp_edges::
+resolve_cpp_calls` reads them off the symbols the structural pass
+already produced, so it sits beside `rust_imports` and `python_calls`
+on the free path with no flag and no timeout. Verified on a two-file
+fixture: one `calls / structural` edge attributed to libclang, plus
+its three `defines`.
+
+**Go joins the language-server pass.** `GoplsSession` and
+`GoSymbolExtractor` mirror the Rust pieces exactly and feed the same
+`LspEdgeResolver`, so the pass now groups Rust by crate and Go by
+module and merges both extractions. The flag generalized from
+`semantic_rust` to `semantic_lsp` accordingly, and edges are
+attributed per source file rather than by one label over the batch.
+
+**gopls is not installed on this box**, which turned the Go fixture
+into a test of the degradation contract instead. It degraded exactly
+as designed, and the whole fallback chain proved itself in one run:
+gopls absent, so `analyze_with_fallback` dropped Go analysis to
+tree-sitter, which *does* populate `calls` metadata, so
+`tree_sitter_edges` resolved the cross-file call that rust-analyzer
+would have resolved semantically. One `calls / structural` edge,
+attributed to tree-sitter, with the ingest never failing. That is the
+fallback resolver doing the one job it exists for.
+
+The test asserts both worlds: where gopls is present it requires the
+pass to index, and where it is absent it requires zero units indexed
+and a standing structural graph.
+
+### The resolver map as it now stands
+
+| Language | Symbols | Cross-file edges | Server |
+|---|---|---|---|
+| Rust | syn | `rust_imports`, plus `LspEdgeResolver` under the flag | rust-analyzer, optional |
+| Python | rustpython AST | `python_calls` | none |
+| C++ | libclang | `cpp_edges` | none |
+| Go | gopls, else tree-sitter | `LspEdgeResolver` under the flag, else `tree_sitter_edges` | gopls, optional |
+| anything else | tree-sitter | `tree_sitter_edges` | none |
+
+One limitation left standing and named: the fallback resolver is
+selected by *language* rather than by which analyzer actually ran, so
+a Rust file that fell back to tree-sitter would have its edges missed.
+`fallback_reason` records when that happens, and syn failing on valid
+Rust is rare enough that selecting on the analyzer is a refinement
+rather than a defect to fix here.
+
+Python call edges remain wired and unexercised: only 29 rustpython
+symbols exist in this corpus and none resolved.
 
 ## Decisions as built
 

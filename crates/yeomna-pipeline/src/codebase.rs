@@ -22,8 +22,8 @@ use tracing::{debug, info, warn};
 
 use yeomna_chunking::ChunkingStrategy;
 use yeomna_code::{
-    AnalysisOptions, AnalyzerOutcome, FileAnalysis, Language, Symbol, analyze_with_fallback, lsp,
-    python_calls, rust_imports, tree_sitter_edges,
+    AnalysisOptions, AnalyzerOutcome, FileAnalysis, Language, Symbol, analyze_with_fallback,
+    cpp_edges, lsp, python_calls, rust_imports, tree_sitter_edges,
 };
 use yeomna_embed::embedding::EmbeddingClient;
 use yeomna_keys as keys;
@@ -56,9 +56,14 @@ pub struct CodebaseConfig {
     pub max_file_bytes: u64,
     /// The embedding task name passed to the embedder.
     pub embed_task: String,
-    /// Run rust-analyzer over the Rust crates for semantically resolved
-    /// `calls` and `implements` edges, and for the semantic half of the
-    /// enrichment protocol.
+    /// Run the language servers (rust-analyzer over Rust crates, gopls
+    /// over Go modules) for semantically resolved `calls` and
+    /// `implements` edges, and for the semantic half of the enrichment
+    /// protocol.
+    ///
+    /// C++ needs no flag: libclang runs in process during analysis and
+    /// records its call sites in symbol metadata, so `cpp_edges` resolves
+    /// them for free on the structural path.
     ///
     /// Off by default, and deliberately so. It puts an external process in
     /// the ingest path, it waits for a workspace index, and it turns a
@@ -66,7 +71,7 @@ pub struct CodebaseConfig {
     /// to the syn-only graph rather than failing the ingest, because a
     /// language server that will not start is an environment problem and
     /// the structural graph is still worth having.
-    pub semantic_rust: bool,
+    pub semantic_lsp: bool,
     /// How long to wait for the language server to finish indexing before
     /// giving up on the semantic pass.
     pub semantic_timeout: std::time::Duration,
@@ -79,7 +84,7 @@ impl Default for CodebaseConfig {
             embed: false,
             max_file_bytes: 1024 * 1024,
             embed_task: "retrieval.passage".to_string(),
-            semantic_rust: false,
+            semantic_lsp: false,
             semantic_timeout: std::time::Duration::from_secs(180),
         }
     }
@@ -107,8 +112,9 @@ pub struct CodebaseSummary {
     pub chunks_written: usize,
     /// Embeddings written.
     pub embeddings_written: usize,
-    /// Crates the semantic pass indexed, zero when it did not run.
-    pub semantic_crates: usize,
+    /// Crates and modules the semantic pass indexed, zero when it did
+    /// not run or found no server.
+    pub semantic_units: usize,
 }
 
 /// One analyzed file, held until the node pass completes.
@@ -151,14 +157,14 @@ where
     // second time by a language server converge onto the same rows through
     // the same keys, which is the Phase 7 enrichment protocol, and the
     // endpoints the semantic edges need must exist before pass 2.
-    let semantic = if config.semantic_rust {
-        semantic_rust_pass(root, sink, &analyzed, config, &mut summary).await
+    let semantic = if config.semantic_lsp {
+        semantic_lsp_pass(root, sink, &analyzed, config, &mut summary).await
     } else {
         Vec::new()
     };
 
     // Pass 2: edges, now that every endpoint is resolvable.
-    write_edges(sink, &analyzed, semantic, config, &mut summary).await?;
+    write_edges(sink, root, &analyzed, semantic, config, &mut summary).await?;
 
     info!(
         seen = summary.files_seen,
@@ -431,6 +437,7 @@ fn push_resolved(
 /// Every edge, in one pass, after every node exists.
 async fn write_edges<S: IngestSink>(
     sink: &S,
+    root: &Path,
     analyzed: &[Analyzed],
     semantic: Vec<Value>,
     config: &CodebaseConfig,
@@ -519,11 +526,27 @@ async fn write_edges<S: IngestSink>(
         }
     }
 
+    // C++: libclang runs in process during analysis and records call
+    // sites with USRs and semantic resolution, so this needs no server and
+    // no flag. A compiler front end resolved the target, which Phase 4
+    // calls `structural`.
+    let cpp = by_lang(Language::Cpp);
+    if !cpp.is_empty() {
+        for e in cpp_edges::resolve_cpp_calls(root, &cpp) {
+            push_resolved(&mut docs, &e, "calls", "structural", &analyzer_of);
+        }
+    }
+
     // Everything else falls back to name matching over tree-sitter's
     // shape, which is the one place that resolver belongs.
     let others: HashMap<String, Vec<Symbol>> = analyzed
         .iter()
-        .filter(|f| !matches!(f.analysis.language, Language::Rust | Language::Python))
+        .filter(|f| {
+            !matches!(
+                f.analysis.language,
+                Language::Rust | Language::Python | Language::Cpp
+            )
+        })
         .map(|f| (f.rel_path.clone(), f.analysis.symbols.clone()))
         .collect();
     if !others.is_empty() {
@@ -550,8 +573,8 @@ async fn write_edges<S: IngestSink>(
     Ok(())
 }
 
-/// The semantic Rust pass: rust-analyzer over each crate, for the symbols
-/// and edges only a compiler front end can resolve.
+/// The semantic pass: a language server per crate or module, for the
+/// symbols and edges only a compiler front end can resolve.
 ///
 /// Returns edge documents for the caller to write with the rest, and
 /// writes the enriched symbol nodes itself, because the edges it returns
@@ -560,63 +583,108 @@ async fn write_edges<S: IngestSink>(
 /// Never fails the ingest. A language server that will not start, will not
 /// index in time, or dies mid-crate leaves the structural graph standing
 /// and says what happened.
-async fn semantic_rust_pass<S: IngestSink>(
+async fn semantic_lsp_pass<S: IngestSink>(
     root: &Path,
     sink: &S,
     analyzed: &[Analyzed],
     config: &CodebaseConfig,
     summary: &mut CodebaseSummary,
 ) -> Vec<Value> {
-    let rust_files: Vec<std::path::PathBuf> = analyzed
-        .iter()
-        .filter(|f| f.analysis.language == Language::Rust)
-        .map(|f| root.join(&f.rel_path))
-        .collect();
-    if rust_files.is_empty() {
+    let files_for = |want: Language| -> Vec<std::path::PathBuf> {
+        analyzed
+            .iter()
+            .filter(|f| f.analysis.language == want)
+            .map(|f| root.join(&f.rel_path))
+            .collect()
+    };
+    let rust_files = files_for(Language::Rust);
+    let go_files = files_for(Language::Go);
+    if rust_files.is_empty() && go_files.is_empty() {
         return Vec::new();
     }
 
-    // rust-analyzer indexes a crate, not a file, so the files are grouped
-    // by the manifest that owns them.
-    let by_crate = lsp::group_files_by_crate(&rust_files);
-    info!(crates = by_crate.len(), "starting the semantic Rust pass");
-
+    // Both servers index a unit larger than a file, so files are grouped
+    // by the manifest that owns them: a crate for Rust, a module for Go.
     let mut extraction: HashMap<String, lsp::symbols::FileExtraction> = HashMap::new();
-    for (crate_root, files) in &by_crate {
-        let session = match lsp::RustAnalyzerSession::start(crate_root).await {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(crate_root = %crate_root.display(), %e,
-                      "no language server, keeping the structural graph");
+    let mut units = 0usize;
+
+    // A document must land under the path relative to the ingest root, so
+    // its key matches what the structural pass already wrote.
+    let relativize = |path: String| -> String {
+        std::path::Path::new(&path)
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or(path)
+    };
+
+    if !rust_files.is_empty() {
+        let by_crate = lsp::group_files_by_crate(&rust_files);
+        info!(crates = by_crate.len(), "rust-analyzer pass");
+        for (crate_root, files) in &by_crate {
+            let session = match lsp::RustAnalyzerSession::start(crate_root).await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(unit = %crate_root.display(), %e,
+                          "no rust-analyzer, keeping the structural graph");
+                    continue;
+                }
+            };
+            if !session
+                .wait_for_workspace_ready(config.semantic_timeout)
+                .await
+            {
+                warn!(unit = %crate_root.display(),
+                      "rust-analyzer did not index in time, skipping this crate");
                 continue;
             }
-        };
-        if !session
-            .wait_for_workspace_ready(config.semantic_timeout)
-            .await
-        {
-            warn!(crate_root = %crate_root.display(),
-                  "language server did not finish indexing in time, skipping this crate");
-            continue;
-        }
-        let refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
-        let extractor = lsp::RustSymbolExtractor::new(&session, true).with_path_root(root);
-        for (path, data) in extractor.extract_crate(&refs).await {
-            // Key on the path relative to the ingest root, so the keys
-            // match the ones the structural pass already wrote.
-            let rel = std::path::Path::new(&path)
-                .strip_prefix(root)
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or(path);
-            extraction.insert(rel, data);
+            let refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
+            let extractor = lsp::RustSymbolExtractor::new(&session, true).with_path_root(root);
+            units += 1;
+            for (path, data) in extractor.extract_crate(&refs).await {
+                extraction.insert(relativize(path), data);
+            }
         }
     }
+
+    if !go_files.is_empty() {
+        let by_module = lsp::group_files_by_go_module(&go_files);
+        info!(modules = by_module.len(), "gopls pass");
+        for (module_root, files) in &by_module {
+            let session = match lsp::GoplsSession::start(module_root).await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(unit = %module_root.display(), %e,
+                          "no gopls, keeping the structural graph");
+                    continue;
+                }
+            };
+            if !session
+                .wait_for_workspace_ready(config.semantic_timeout)
+                .await
+            {
+                warn!(unit = %module_root.display(),
+                      "gopls did not index in time, skipping this module");
+                continue;
+            }
+            let refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
+            let extractor =
+                lsp::go_symbols::GoSymbolExtractor::new(&session, true).with_path_root(root);
+            units += 1;
+            for (path, data) in extractor.extract_module(&refs).await {
+                extraction.insert(relativize(path), data);
+            }
+        }
+    }
+
     if extraction.is_empty() {
         warn!("the semantic pass produced nothing, keeping the structural graph");
         return Vec::new();
     }
 
-    let resolver = lsp::LspEdgeResolver::new(extraction, "rust-analyzer");
+    // One resolver over both servers' output. The analyzer name is the
+    // resolver's default label, and per-edge attribution below is what
+    // actually reaches the store.
+    let resolver = lsp::LspEdgeResolver::new(extraction, "language-server");
 
     // The semantic half of the enrichment protocol (Phase 7): the same
     // keys, richer payloads, landing on the rows syn already wrote.
@@ -665,11 +733,27 @@ async fn semantic_rust_pass<S: IngestSink>(
             "to": e.to,
             "relation": relation,
             "basis": basis,
-            "analyzer": "rust-analyzer",
+            "analyzer": analyzer_for(&e.from, analyzed, root),
             "payload": e.metadata,
         }));
     }
-    info!(edges = docs.len(), "semantic Rust edges resolved");
-    summary.semantic_crates = by_crate.len();
+    info!(edges = docs.len(), units, "semantic edges resolved");
+    summary.semantic_units = units;
     docs
+}
+
+/// Which server produced an edge, from the language of its source file.
+///
+/// The resolver is language agnostic, so attribution comes from the file
+/// the edge starts at rather than from a single label over the batch.
+fn analyzer_for(from: &str, analyzed: &[Analyzed], _root: &Path) -> &'static str {
+    let key = from.rsplit('/').next().unwrap_or(from);
+    match analyzed
+        .iter()
+        .find(|f| f.file_key == key || from.contains(&f.file_key))
+        .map(|f| f.analysis.language)
+    {
+        Some(Language::Go) => "gopls",
+        _ => "rust-analyzer",
+    }
 }

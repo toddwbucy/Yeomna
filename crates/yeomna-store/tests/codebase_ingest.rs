@@ -412,7 +412,7 @@ async fn dogfood_ingest_this_repository() {
         &TokenChunking::default(),
         None,
         &CodebaseConfig {
-            semantic_rust: true,
+            semantic_lsp: true,
             ..CodebaseConfig::default()
         },
     )
@@ -448,5 +448,116 @@ async fn dogfood_ingest_this_repository() {
         for row in owner.query(sql, &[]).await.unwrap() {
             println!("  {:<40} {}", row.get::<_, String>(0), row.get::<_, i64>(1));
         }
+    }
+}
+
+/// C++ resolves calls without a language server: libclang runs in process
+/// during analysis and records call sites with USRs, so `cpp_edges` reads
+/// them off the symbols the structural pass already produced.
+#[tokio::test]
+async fn cpp_calls_resolve_on_the_structural_path() {
+    let Some((owner, sink)) = fixtures("ingest_cpp").await else {
+        return;
+    };
+    let tree = TempDir::new().unwrap();
+    std::fs::write(
+        tree.path().join("helper.cpp"),
+        "int compute(int x) { return x * 2; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tree.path().join("main.cpp"),
+        "int compute(int x);\nint run() { return compute(21); }\n",
+    )
+    .unwrap();
+    let s = ingest(&sink, tree.path()).await;
+    assert_eq!(s.files_failed, 0, "libclang parsed both files: {s:?}");
+
+    let rows = owner
+        .query(
+            "SELECT e.relation, e.basis::text, e.analyzer
+             FROM edges e JOIN graphs g ON g.id = e.graph_id
+             WHERE g.name = 'ingest_cpp' AND e.relation = 'calls'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        !rows.is_empty(),
+        "a C++ call across files resolves without any server: {s:?}"
+    );
+    for r in &rows {
+        assert_eq!(
+            r.get::<_, String>(1),
+            "structural",
+            "a front end resolved it"
+        );
+        assert_eq!(r.get::<_, String>(2), "libclang");
+    }
+}
+
+/// Go degrades rather than failing when gopls is absent, which is the
+/// contract every language-server pass carries. On a box with gopls this
+/// asserts the pass runs and resolves instead.
+#[tokio::test]
+async fn go_semantic_pass_degrades_without_gopls() {
+    let Some((owner, sink)) = fixtures("ingest_go").await else {
+        return;
+    };
+    let tree = TempDir::new().unwrap();
+    std::fs::write(
+        tree.path().join("go.mod"),
+        "module example.com/probe\n\ngo 1.21\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tree.path().join("helper.go"),
+        "package main\n\nfunc Compute(x int) int { return x * 2 }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tree.path().join("main.go"),
+        "package main\n\nfunc Run() int { return Compute(21) }\n",
+    )
+    .unwrap();
+
+    let s = ingest_codebase(
+        tree.path(),
+        &sink,
+        &TokenChunking::default(),
+        None,
+        &CodebaseConfig {
+            semantic_lsp: true,
+            semantic_timeout: std::time::Duration::from_secs(20),
+            ..CodebaseConfig::default()
+        },
+    )
+    .await
+    .expect("a missing language server never fails the ingest");
+
+    // The structural graph stands either way, which is the whole point of
+    // degrading rather than failing.
+    assert!(s.files_written >= 2, "the Go files still landed: {s:?}");
+    let defines = count(
+        &owner,
+        "SELECT count(*) FROM edges e JOIN graphs g ON g.id = e.graph_id
+         WHERE g.name = $1 AND e.relation = 'defines'",
+        "ingest_go",
+    )
+    .await;
+    assert!(defines > 0, "structural edges survive a missing server");
+
+    let has_gopls = std::process::Command::new("gopls")
+        .arg("version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if has_gopls {
+        assert!(s.semantic_units > 0, "gopls is present, so it should index");
+    } else {
+        assert_eq!(
+            s.semantic_units, 0,
+            "no gopls on this box, so no unit was indexed and nothing failed"
+        );
+        eprintln!("NOTE: gopls absent, exercised the degradation path only");
     }
 }
