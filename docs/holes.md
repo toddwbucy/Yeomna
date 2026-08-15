@@ -1,6 +1,6 @@
 # The Holes Ledger
 
-Status: v1.4, 2026-08-15. H1 and H3 retired, H2 building, R3 ruled. The hole-mapping step of the severance sequence
+Status: v1.5, 2026-08-15. H1 and H3 retired, H2 building, R3 and R5 ruled. The hole-mapping step of the severance sequence
 (PRD-pipeline-libraries v0.2). This is the map of everything Yeomna needs and
 does not yet have, each hole named, owned, and sourced. The executable form
 is `yeomna-cli`: 56 commands, every one a self-reporting hole with a census
@@ -95,15 +95,41 @@ SPU replaces). The weaver-spu embedder operation is the primary path.
 
 ## H5. The extraction backend
 
-Ruled 2026-08-12: moves to docling-rs for real multithreading and memory
-management. The ported Python service (PR #17, held in draft) is behavioral
-reference and interim option only.
+**R5 ruled 2026-08-15: stay where we are and watch.** The 2026-08-12
+direction toward a Rust engine is not reversed, it is not acted on. The
+Python service stays the behavioral reference and the interim path, and
+PR #17 stays in draft.
+
+The reasoning, and the correction that came with it:
+
+- **The ledger named the wrong crate.** `docling-rs` on crates.io
+  (0.1.2, February 2026, 174 downloads) is a third-party HTTP client for
+  Docling Serve, so building against it would have kept the Python
+  service in the loop rather than removing it. The engine is `docling`
+  and `docling-core` (1.12.0, released 2026-08-15, from the official
+  `docling-project/docling.rs`). Any future work names those.
+- **The engine is young and moving fast.** A dependency releasing on the
+  day we look at it is churn we would carry, and low adoption means we
+  find the bugs rather than inherit the fixes.
+- **Nothing needs extraction yet.** The dogfood corpus is code. No
+  document ingest is blocked, so the switch buys no capability today
+  and costs a port plus a review.
+- **A first-run model download of roughly 700MB from a GitHub release**
+  is an appliance-packaging problem under charter section 5, and it is
+  the same problem on either side of this choice.
+
+**Revisit when** a document corpus actually needs ingesting, which is
+when H5 starts blocking something, or when the engine's release cadence
+settles. At that point the measurement to run is named below rather
+than rediscovered.
 
 | | |
 |---|---|
-| Owner | its own spec when the direction call settles |
-| Contract in hand | the `yeomna.extraction` wire protocol (proto plus Rust client on main), the Python service's behavior (backend routing, OCR flags, idle unload, metadata shape) |
-| Riding this hole | the skipped server-architecture findings from the PR #17 review, service-level tests, the one-line `convert` stopgap if the Python path must run interim |
+| Owner | its own spec, when the revisit trigger fires |
+| Contract in hand | the `yeomna.extraction` wire protocol (proto plus Rust client on main), the Python service's behavior |
+| The surface a replacement must cover | six things, measured 2026-08-15 from `docling_backend.py`: `do_table_structure`, `do_ocr`, and `do_cell_matching` on the PDF pipeline, `export_to_markdown`, tables with captions, equations, figures with captions, and page count. LaTeX has its own native backend and the PyMuPDF fallback is not docling, so neither is at risk |
+| Unverified, and what a spike would settle | whether table and figure captions survive, whether formula extraction behaves (ours carries a fallback because `doc.equations` was unreliable, and the Rust side puts formulas behind enrichment that is off by default), and whether the engine's own byte-for-byte parity claim holds on our documents |
+| Riding this hole | the skipped server-architecture findings from the PR #17 review, service-level tests |
 
 ## H6. The daemon and transports
 
@@ -192,7 +218,7 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R2 | `full_page_writes` on ZFS | **Ruled 2026-08-12: off**, CoW invariant stated in the conf. H1 unblocked |
 | R3 | Config file versus env (H10) | **Ruled 2026-08-14: config file.** The appliance ships one, on the `postgresql.conf` precedent. Test and development knobs stay environment variables, since they configure a harness rather than a product. Measured the same day: the live product surface is one variable |
 | R4 | Q3 verb naming | **Closed 2026-08-14 (spec 010): renamed.** The 40 wire names are binding, `Db` prefixes and document-store vocabulary gone |
-| R5 | PR #17 extraction direction | Held in draft pending docling-rs shape |
+| R5 | Extraction direction | **Ruled 2026-08-15: not now.** The Rust engine is real and official but young and fast-moving, and no document ingest is blocked, so the Python service stays interim and PR #17 stays in draft. Revisit when a corpus needs ingesting. The ledger's old `docling-rs` name pointed at a third-party Docling Serve client, not the engine |
 | R6 | Edge identity | **Ruled 2026-08-13 (spec 009): an edge is (graph_id, src_id, dst_id, relation, basis)**, analyzer and status and payload are attributes. `edges_identity` unique index, claim 8 |
 | R7 | `edge_basis` Rust mapping | **Ruled 2026-08-15 as R12 (spec 011): text at the boundary**, cast in SQL, no second enum to drift from the DDL |
 
