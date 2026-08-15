@@ -11,9 +11,9 @@ emits. It is now the second crate the no-SQL lint admits, which is what
 that allowance was reserved for.
 
 Three things arrived that are not reads, and every later phase inherits
-them: `Session`, which holds one connection, one actor, and an optional
-graph scope; the exhaustive dispatch, where a verb added later fails to
-compile until it is handled or refused by name; and the audit write.
+them. `Session` holds one connection, one actor, and an optional graph
+scope. The dispatch is exhaustive, so a verb added later fails to compile
+until it is handled or refused by name. And the audit write, below.
 
 **The audit contract, as built.** The row commits before the verb runs,
 which is what makes V-Q1 attempt logging: a call that dies mid-flight
