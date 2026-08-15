@@ -11,3 +11,9 @@ chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio-postgres.workspace = true
+tracing.workspace = true
+yeomna-store = { path = "../yeomna-store" }
+
+[dev-dependencies]
+tokio.workspace = true
