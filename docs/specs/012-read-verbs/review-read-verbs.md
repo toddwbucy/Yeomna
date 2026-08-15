@@ -123,7 +123,7 @@ present in the response, holding null when nothing has been ingested,
 so `is_some()` was true whatever happened. It parses the timestamp as
 RFC 3339 now. One test cleaned up only on success, so a failed
 assertion left `verbs_empty` behind and the next run died on the unique
-constraint instead of on the behavior under test. And the dogfood gate
+constraint before it reached the behavior under test. And the dogfood gate
 checked that the graph existed while the assertion below it needed
 chunks with a populated tsv, so an ingest that wrote nodes and no
 chunks would have failed for a fixture reason.
