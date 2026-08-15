@@ -6,7 +6,10 @@ Yeomna has read itself.
 ## The dogfood run
 
 This repository, ingested into the `yeomna_self` graph on the sealed
-cluster. Three calls, each measured on a schema rebuilt from scratch:
+cluster. The schema was dropped and rebuilt once before the cold run, and
+the three calls then ran in sequence against it: the cold run populated
+the structural graph, the semantic pass enriched that same graph rather
+than starting from an empty one, and the warm run followed both.
 
 | | Cold, structural | Semantic pass | Warm |
 |---|---|---|---|
@@ -14,7 +17,7 @@ cluster. Three calls, each measured on a schema rebuilt from scratch:
 | Files written | 63 | 0 | 0 |
 | Files skipped | 0 | 63 | 63 |
 | Symbols written | 961 | 0 | 0 |
-| Symbols enriched | 0 | 1428 | 0 |
+| Symbols enriched | 0 | 1429 | 0 |
 | Edges written | 1176 | 2521 | 0 |
 | Chunks written | 212 | 0 | 0 |
 | Crates indexed | 0 | 2 | 0 |
@@ -236,8 +239,9 @@ definition of the enum exists to drift from the DDL.
    upsert on `(node_id, chunk_index)` and upsert never removes, so a file
    edited down to fewer chunks kept its old high-index rows, and their
    embeddings with them, describing text the file no longer contained.
-   The document flow had solved this and this one had not: the removal
-   calls now run before the writes, the same two-then-three sequence.
+   The orchestrator now issues both removal calls, for the chunk
+   container and the embedding container, before it writes any chunk for
+   that file, so a rerun producing fewer chunks leaves nothing behind.
 3. **`ingested_at` moved on an unchanged overwrite**, which is the
    opposite of what R9 says it means. The orchestrator's hash-skip hid
    it, because an unchanged file never reaches the sink, but the document
@@ -250,6 +254,13 @@ definition of the enum exists to drift from the DDL.
    fix and the wrong one: it would have made enabling the flag over an
    already-ingested graph do nothing forever, since nothing changed. The
    gate asks both questions, and `IngestProbe` grew the second one.
+   Then the second version was wrong too, in a quieter way: asking
+   whether *the graph* had any enrichment meant one successful crate
+   marked every crate done, so a crate whose language server had failed
+   would never be retried without someone editing its source. The
+   question is asked per unit now, against the file keys that unit owns,
+   and a unit is indexed when any of its files changed or when it has
+   never been enriched.
 5. **A warm run re-resolved every edge.** The `defines` pass filters on
    changed files and the cross-file resolvers do not, so a run where all
    63 files were skipped still upserted 213 import edges and reported

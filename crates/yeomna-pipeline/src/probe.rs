@@ -20,14 +20,16 @@ pub trait IngestProbe: Send + Sync {
         natural_key: &str,
     ) -> impl std::future::Future<Output = Result<Option<String>, Self::Error>> + Send;
 
-    /// Has any symbol in this graph been enriched by a language server.
+    /// Have any of these files' symbols been enriched by a language
+    /// server.
     ///
-    /// The semantic pass is expensive, so it is skipped when nothing
-    /// changed. That would make it impossible to enrich a graph that is
-    /// already ingested, which is exactly the case where a user turns the
-    /// flag on for the first time, so the skip needs this second question
-    /// as well as the first.
+    /// The semantic pass is expensive, so a unit whose files are all
+    /// unchanged is skipped. Asking this per unit rather than per graph
+    /// is what lets a crate whose server failed last run be retried
+    /// without anyone editing its source, and a graph-wide answer would
+    /// have called that crate done because some other crate succeeded.
     fn enrichment_present(
         &self,
+        file_keys: &[String],
     ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send;
 }

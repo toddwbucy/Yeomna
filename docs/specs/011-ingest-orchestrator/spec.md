@@ -90,7 +90,7 @@ already speaks JSON at that seam.
 ## Files to Modify
 
 - `crates/yeomna-pipeline/src/codebase.rs` (new): the orchestrator.
-- `crates/yeomna-pipeline/src/probe.rs` (new): the reads the write
+- `crates/yeomna-pipeline/src/probe.rs` (new): the reads that the write
   boundary does not carry.
 - `crates/yeomna-pipeline/src/lib.rs`, `Cargo.toml`: module wiring, the
   `yeomna-code` and `ignore` dependencies.
@@ -191,11 +191,14 @@ enforces and Q1 required.
   that is `codebase.retire`'s job (verb layer Phase 6). Named so it is not
   mistaken for an oversight.
 - **EC-4.** Embedder unavailable **when embedding was requested**: the run
-  fails loudly before writing, since a graph with nodes and no embeddings
-  is a half-ingest that looks complete. Embedding is opt-in
-  (`CodebaseConfig::embed`, default false) because no embedder ships until
-  H4, so a run that never asked for vectors is not a half-ingest and does
-  not fail.
+  fails before any chunk or embedding row is written for that file, since
+  chunk text stored with no vector beside it is the half-ingest this case
+  exists to prevent. Embedding therefore happens before the chunk write,
+  not after it. The file's node may already exist from the node pass, and
+  a node with no chunks is a visibly incomplete file rather than a
+  silently unsearchable one. Embedding is opt-in (`CodebaseConfig::embed`,
+  default false) because no embedder ships until H4, so a run that never
+  asked for vectors is not a half-ingest and does not fail.
 
 ## Implementation Notes
 

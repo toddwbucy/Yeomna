@@ -607,13 +607,20 @@ impl yeomna_pipeline::probe::IngestProbe for PgSink {
             .and_then(|r| r.get(0)))
     }
 
-    async fn enrichment_present(&self) -> Result<bool, StoreError> {
+    async fn enrichment_present(&self, file_keys: &[String]) -> Result<bool, StoreError> {
+        if file_keys.is_empty() {
+            return Ok(false);
+        }
+        // Symbol nodes carry the key of the file that declares them, so a
+        // unit's enrichment is a question about its files' symbols.
         Ok(self
             .client
             .query_one(
                 "SELECT EXISTS (SELECT 1 FROM nodes
-                 WHERE graph_id = $1 AND payload->>'enriched' = 'true')",
-                &[&self.graph_id],
+                 WHERE graph_id = $1
+                   AND payload->>'enriched' = 'true'
+                   AND payload->>'file_key' = ANY($2))",
+                &[&self.graph_id, &file_keys],
             )
             .await?
             .get(0))

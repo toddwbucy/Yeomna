@@ -168,23 +168,8 @@ where
     // second time by a language server converge onto the same rows through
     // the same keys, which is the Phase 7 enrichment protocol, and the
     // endpoints the semantic edges need must exist before pass 2.
-    // A run where nothing changed cannot discover a new edge, and a
-    // language server costs a minute to say so. The exception is a graph
-    // that has never been enriched, which is the case when the flag is
-    // switched on over an existing ingest, and where skipping would mean
-    // the pass could never run at all.
     let semantic = if config.semantic_lsp {
-        let changed = analyzed.iter().any(|f| f.changed);
-        let enriched = sink
-            .enrichment_present()
-            .await
-            .map_err(|e| PipelineError::Sink(Box::new(e)))?;
-        if changed || !enriched {
-            semantic_lsp_pass(root, sink, &analyzed, config, &mut summary).await
-        } else {
-            info!("nothing changed and the graph is already enriched, skipping the semantic pass");
-            Vec::new()
-        }
+        semantic_lsp_pass(root, sink, &analyzed, config, &mut summary).await?
     } else {
         Vec::new()
     };
@@ -386,25 +371,35 @@ async fn write_chunks_and_embeddings<S: IngestSink>(
             })
         })
         .collect();
+    // EC-4: embed first when embeddings were asked for, so an
+    // unreachable embedder fails before any chunk row exists. Writing
+    // chunks first would leave text in the store with no vectors beside
+    // it, which is the half-ingest EC-4 exists to prevent.
+    let embedded = if config.embed {
+        let embedder = embedder.expect("checked at entry");
+        let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
+        let result = embedder.embed(&texts, &config.embed_task, None).await?;
+        if result.embeddings.len() != chunks.len() {
+            return Err(PipelineError::Other(format!(
+                "embedding count mismatch: expected {}, got {}",
+                chunks.len(),
+                result.embeddings.len()
+            )));
+        }
+        Some(result)
+    } else {
+        None
+    };
+
     let out = sink
         .insert_documents(CHUNKS, &docs, config.overwrite)
         .await
         .map_err(|e| PipelineError::Sink(Box::new(e)))?;
     summary.chunks_written += out.created;
 
-    if !config.embed {
+    let Some(result) = embedded else {
         return Ok(());
-    }
-    let embedder = embedder.expect("checked at entry");
-    let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-    let result = embedder.embed(&texts, &config.embed_task, None).await?;
-    if result.embeddings.len() != chunks.len() {
-        return Err(PipelineError::Other(format!(
-            "embedding count mismatch: expected {}, got {}",
-            chunks.len(),
-            result.embeddings.len()
-        )));
-    }
+    };
     let docs: Vec<Value> = result
         .embeddings
         .iter()
@@ -515,10 +510,15 @@ async fn write_edges<S: IngestSink>(
     // the default: running it over Rust when syn produced the symbols
     // throws away fidelity that was already paid for, and it reads a
     // `calls` metadata field that syn does not write at all.
+    // Cohorts are selected by the analyzer that actually ran, not by the
+    // language. A Rust file that fell back to tree-sitter carries
+    // tree-sitter's metadata shape, so syn's resolver would find nothing
+    // in it and the fallback resolver would never see it.
+    let fell_back = |f: &Analyzed| f.analysis.analyzer.contains("tree-sitter");
     let by_lang = |want: Language| -> HashMap<String, Vec<Symbol>> {
         analyzed
             .iter()
-            .filter(|f| f.analysis.language == want)
+            .filter(|f| f.analysis.language == want && !fell_back(f))
             .map(|f| (f.rel_path.clone(), f.analysis.symbols.clone()))
             .collect()
     };
@@ -577,15 +577,18 @@ async fn write_edges<S: IngestSink>(
         }
     }
 
-    // Everything else falls back to name matching over tree-sitter's
-    // shape, which is the one place that resolver belongs.
+    // Everything tree-sitter produced, whatever its language, plus any
+    // language with no resolver of its own. This is the one place that
+    // resolver belongs, and it is reached by analyzer rather than by
+    // language so a fallback parse is never orphaned.
     let others: HashMap<String, Vec<Symbol>> = analyzed
         .iter()
         .filter(|f| {
-            !matches!(
-                f.analysis.language,
-                Language::Rust | Language::Python | Language::Cpp
-            )
+            fell_back(f)
+                || !matches!(
+                    f.analysis.language,
+                    Language::Rust | Language::Python | Language::Cpp
+                )
         })
         .map(|f| (f.rel_path.clone(), f.analysis.symbols.clone()))
         .collect();
@@ -626,13 +629,13 @@ async fn write_edges<S: IngestSink>(
 /// Never fails the ingest. A language server that will not start, will not
 /// index in time, or dies mid-crate leaves the structural graph standing
 /// and says what happened.
-async fn semantic_lsp_pass<S: IngestSink>(
+async fn semantic_lsp_pass<S: IngestSink + IngestProbe>(
     root: &Path,
     sink: &S,
     analyzed: &[Analyzed],
     config: &CodebaseConfig,
     summary: &mut CodebaseSummary,
-) -> Vec<Value> {
+) -> Result<Vec<Value>, PipelineError> {
     let files_for = |want: Language| -> Vec<std::path::PathBuf> {
         analyzed
             .iter()
@@ -643,8 +646,33 @@ async fn semantic_lsp_pass<S: IngestSink>(
     let rust_files = files_for(Language::Rust);
     let go_files = files_for(Language::Go);
     if rust_files.is_empty() && go_files.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
+
+    // Is this unit worth the cost of a language server. A unit with a
+    // changed file always is. A unit with no changed file is worth it
+    // only if it has never been enriched, which is both the first run
+    // with the flag on and the retry after a server failed here before.
+    let worth_indexing = |files: &[std::path::PathBuf]| {
+        let keys: Vec<String> = files
+            .iter()
+            .filter_map(|abs| abs.strip_prefix(root).ok())
+            .map(|rel| keys::file_key(&rel.to_string_lossy()))
+            .collect();
+        let changed = analyzed
+            .iter()
+            .any(|f| f.changed && keys.contains(&f.file_key));
+        async move {
+            if changed {
+                return Ok::<bool, PipelineError>(true);
+            }
+            let enriched = sink
+                .enrichment_present(&keys)
+                .await
+                .map_err(|e| PipelineError::Sink(Box::new(e)))?;
+            Ok(!enriched)
+        }
+    };
 
     // Both servers index a unit larger than a file, so files are grouped
     // by the manifest that owns them: a crate for Rust, a module for Go.
@@ -673,6 +701,11 @@ async fn semantic_lsp_pass<S: IngestSink>(
         let by_crate = lsp::group_files_by_crate(&rust_files);
         info!(crates = by_crate.len(), "rust-analyzer pass");
         for (crate_root, files) in &by_crate {
+            if !worth_indexing(files).await? {
+                info!(unit = %crate_root.display(),
+                      "unchanged and already enriched, skipping this crate");
+                continue;
+            }
             let session = match lsp::RustAnalyzerSession::start(crate_root).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -702,6 +735,11 @@ async fn semantic_lsp_pass<S: IngestSink>(
         let by_module = lsp::group_files_by_go_module(&go_files);
         info!(modules = by_module.len(), "gopls pass");
         for (module_root, files) in &by_module {
+            if !worth_indexing(files).await? {
+                info!(unit = %module_root.display(),
+                      "unchanged and already enriched, skipping this module");
+                continue;
+            }
             let session = match lsp::GoplsSession::start(module_root).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -729,8 +767,8 @@ async fn semantic_lsp_pass<S: IngestSink>(
     }
 
     if extraction.is_empty() {
-        warn!("the semantic pass produced nothing, keeping the structural graph");
-        return Vec::new();
+        info!("the semantic pass had nothing to do, keeping the structural graph");
+        return Ok(Vec::new());
     }
 
     // One resolver over both servers' output. The analyzer name is the
@@ -757,6 +795,7 @@ async fn semantic_lsp_pass<S: IngestSink>(
             .await
         {
             Ok(out) => {
+                summary.symbols_enriched += out.created;
                 info!(
                     enriched = out.created,
                     rejected = out.errors,
@@ -765,7 +804,7 @@ async fn semantic_lsp_pass<S: IngestSink>(
             }
             Err(e) => {
                 warn!(%e, "could not write enriched symbols, keeping the structural graph");
-                return Vec::new();
+                return Ok(Vec::new());
             }
         }
     }
@@ -791,7 +830,7 @@ async fn semantic_lsp_pass<S: IngestSink>(
     }
     info!(edges = docs.len(), units, "semantic edges resolved");
     summary.semantic_units = units;
-    docs
+    Ok(docs)
 }
 
 /// Which server produced an edge, from the language of its source file.
