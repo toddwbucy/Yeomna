@@ -15,58 +15,97 @@ cluster:
 | Files written | 63 | 0 |
 | Files skipped | 0 | 63 |
 | Files failed | 0 | 0 |
-| Symbols | 956 | 0 |
-| Edges | 1169 | 0 |
+| Symbols | 956 structural, 1422 after enrichment | 0 |
+| Edges | 2629 with the semantic pass | 0 |
 | Chunks | 205 | 0 |
 
-Nodes by kind: 677 callable, 124 type, 84 module, 71 value, 63 file.
-Edges: 956 `defines / declared` and 213 `imports / declared`.
-Analyzers: syn 1140, rustpython 29. Zero unresolved endpoints, zero
-failures.
+Nodes by kind after the semantic pass: 776 callable, 560 value, 130
+type, 84 module, 63 file. Edges: 1550 `defines / declared`, 848
+`calls / structural`, 214 `imports / declared`, 17 `implements /
+structural`. Analyzers: rust-analyzer 2287, syn 313, rustpython 29.
+Zero unresolved endpoints, zero failures.
 
 The warm run is the ruling working: every file's `symbol_hash` matched,
 nothing was rewritten, and the history stayed quiet.
 
-## Corrected: the wrong resolver was wired, twice over
+## Corrected twice: the resolvers were wrong, then absent
 
-The first run produced 955 edges, every one of them `defines`, and the
-first write-up of these notes blamed an upstream capability gap. Todd
-asked why tree-sitter was being used on Rust and Python at all. It was
-the right question and the diagnosis was wrong on both counts.
+The first run produced 955 edges, every one `defines`. The first draft
+of these notes blamed an upstream capability gap. Todd asked why
+tree-sitter was being used on Rust and Python, then, after the first
+correction, asked whether rust-analyzer was wired at all. Both
+questions found a real defect and both first answers were wrong.
 
-**On analysis, tree-sitter never ran.** `analyze_with_fallback` picked
-syn for Rust and rustpython for Python, which the analyzer counts show.
-
-**On edges, only tree-sitter ran, and that was this orchestrator's
-choice.** `yeomna-code` ships a resolver per language, and the one that
-was wired is the fallback for languages that have nothing better:
-`tree_sitter_edges::resolve` reads a `calls` metadata field that syn
+**Round one: the fallback resolver was doing all the work.**
+Tree-sitter never ran for *analysis*, and the analyzer counts always
+said so: syn for Rust, rustpython for Python. But tree-sitter's
+resolver was the only one wired for *edges*, and it is the fallback for
+languages with nothing better. It reads a `calls` metadata field syn
 does not write, so it correctly produced nothing on a Rust corpus.
-Sitting unused beside it were `rust_imports::resolve_rust_imports`,
-which reads the use statements syn already extracted, and
-`python_calls::resolve_python_calls`, which reads call sites the Python
-AST analyzer does record.
+`rust_imports::resolve_rust_imports` and
+`python_calls::resolve_python_calls` sat unused beside it. The claim
+that nothing populates `metadata["calls"]` for either language was
+false for Python, and came from a grep piped through `head -8` that
+truncated before reaching `python.rs:284`. Wiring each language to its
+own resolver took the graph to 213 cross-file `imports` edges.
 
-The claim in the first draft of these notes, that nothing populates
-`metadata["calls"]` for Rust or Python, was false for Python and came
-from a grep piped through `head -8` that truncated before reaching
-`python.rs`, where line 284 writes exactly that field. The conclusion
-was drawn from a cut-off list.
+**Round two: rust-analyzer was never wired at all**, and the claim
+that H8 blocked it was also wrong. `grep -rln "LspSession::" crates/`
+returned nothing: no code in this workspace had ever started a language
+server. The binary was installed the whole time at
+`/usr/lib/rustup/bin/rust-analyzer`, `resolve_and_probe` falls back to
+PATH, and `LspSession`, `RustAnalyzerSession`, `RustSymbolExtractor`,
+and `LspEdgeResolver` were all sitting on main, complete and unused.
+H8 is the `tools status` and `tools install` CLI commands, which is a
+different thing from the library being usable.
 
-**After wiring each language to its own resolver**, the same repository
-produces **213 cross-file `imports / declared` edges** alongside the
-956 `defines`, attributed to syn. tree-sitter is now reached only for
-languages that are neither Rust nor Python, which is where it belongs.
+Worth stating plainly, because it recurred: `analyze_with_fallback`'s
+semantic tier for Rust *is* syn, by definition in `semantic_analyzer`.
+rust-analyzer is not a higher tier of that path. It is a separate
+whole-crate pass, and nothing was calling it.
 
-`imports` is `declared` rather than `structural` on the Phase 4 table's
-own terms: a use statement is readable off the page, and syn read it.
+### What the semantic pass changed
 
-Two follow-ups this leaves, both named rather than assumed away.
-Python call edges resolve but this corpus has only 29 rustpython
-symbols and produced none, so that path is wired and unexercised.
-Rust *call* edges still need rust-analyzer through `lsp/edges.rs`,
-which wants a live language server, and that is H8's managed toolchain.
-Until then the Rust graph has import depth and no call depth.
+| Edges | Fallback only | Per-language | With rust-analyzer |
+|---|---|---|---|
+| `defines / declared` | 955 | 956 | 1550 |
+| `imports / declared` | 0 | 213 | 214 |
+| `calls / structural` | 0 | 0 | **848** |
+| `implements / structural` | 0 | 0 | **17** |
+
+2629 edges, 2287 of them attributed to rust-analyzer, across two
+crates, in 26 seconds against 2.5 for the syn-only path. Zero
+unresolved endpoints throughout.
+
+**The enrichment protocol is now exercised for the first time.** Phase
+7 says symbols are written twice in one run, structurally and then
+semantically, converging through the same derived key. Measured on
+this graph: 829 symbols carry an `update` entry in `node_log` from
+being written by syn and then enriched by rust-analyzer, 593 more were
+found only by rust-analyzer, and **zero natural keys are duplicated**.
+The keys converge, which is what FR 2 asserted and nothing had yet
+tested.
+
+**The graph has depth.** A recursive walk over `calls` reaches the
+depth-10 cap this query set, which is the first corpus M2 has ever
+had. M2 stays open: having the corpus is not the same as running the
+benchmark and reporting it.
+
+### Why it is opt-in
+
+`semantic_rust` defaults false. The pass puts an external process in
+the ingest path, waits on a workspace index, and costs a minute-scale
+run instead of a second-scale one. It degrades rather than failing: a
+language server that will not start, will not index inside
+`semantic_timeout`, or dies mid-crate leaves the structural graph
+standing and logs what happened. An environment problem should not
+cost a usable graph.
+
+Still missing: Python call edges are wired but unexercised here, since
+only 29 rustpython symbols exist in this corpus and none resolved. Go
+has `gopls` and `group_files_by_go_module` sitting unused exactly as
+rust-analyzer was, and C++ has `cpp_edges` behind libclang. Both are
+the same shape of work as this pass and neither is wired.
 
 ## Decisions as built
 

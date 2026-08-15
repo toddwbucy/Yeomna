@@ -404,6 +404,22 @@ async fn dogfood_ingest_this_repository() {
     let cold = started.elapsed();
     println!("cold run in {cold:?}: {first:#?}");
 
+    // The semantic pass, when the environment has a language server.
+    let started = std::time::Instant::now();
+    let semantic = ingest_codebase(
+        &root,
+        &sink,
+        &TokenChunking::default(),
+        None,
+        &CodebaseConfig {
+            semantic_rust: true,
+            ..CodebaseConfig::default()
+        },
+    )
+    .await
+    .expect("the semantic pass degrades rather than failing");
+    println!("semantic pass in {:?}: {semantic:#?}", started.elapsed());
+
     let started = std::time::Instant::now();
     let second = ingest(&sink, &root).await;
     let warm = started.elapsed();

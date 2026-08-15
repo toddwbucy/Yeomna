@@ -22,7 +22,7 @@ use tracing::{debug, info, warn};
 
 use yeomna_chunking::ChunkingStrategy;
 use yeomna_code::{
-    AnalysisOptions, AnalyzerOutcome, FileAnalysis, Language, Symbol, analyze_with_fallback,
+    AnalysisOptions, AnalyzerOutcome, FileAnalysis, Language, Symbol, analyze_with_fallback, lsp,
     python_calls, rust_imports, tree_sitter_edges,
 };
 use yeomna_embed::embedding::EmbeddingClient;
@@ -56,6 +56,20 @@ pub struct CodebaseConfig {
     pub max_file_bytes: u64,
     /// The embedding task name passed to the embedder.
     pub embed_task: String,
+    /// Run rust-analyzer over the Rust crates for semantically resolved
+    /// `calls` and `implements` edges, and for the semantic half of the
+    /// enrichment protocol.
+    ///
+    /// Off by default, and deliberately so. It puts an external process in
+    /// the ingest path, it waits for a workspace index, and it turns a
+    /// two-second run into a minute-scale one. When it fails it degrades
+    /// to the syn-only graph rather than failing the ingest, because a
+    /// language server that will not start is an environment problem and
+    /// the structural graph is still worth having.
+    pub semantic_rust: bool,
+    /// How long to wait for the language server to finish indexing before
+    /// giving up on the semantic pass.
+    pub semantic_timeout: std::time::Duration,
 }
 
 impl Default for CodebaseConfig {
@@ -65,6 +79,8 @@ impl Default for CodebaseConfig {
             embed: false,
             max_file_bytes: 1024 * 1024,
             embed_task: "retrieval.passage".to_string(),
+            semantic_rust: false,
+            semantic_timeout: std::time::Duration::from_secs(180),
         }
     }
 }
@@ -91,6 +107,8 @@ pub struct CodebaseSummary {
     pub chunks_written: usize,
     /// Embeddings written.
     pub embeddings_written: usize,
+    /// Crates the semantic pass indexed, zero when it did not run.
+    pub semantic_crates: usize,
 }
 
 /// One analyzed file, held until the node pass completes.
@@ -129,8 +147,18 @@ where
         write_chunks_and_embeddings(sink, file, chunker, embedder, config, &mut summary).await?;
     }
 
+    // Pass 1b: the semantic enrichment, when asked for. Symbols written a
+    // second time by a language server converge onto the same rows through
+    // the same keys, which is the Phase 7 enrichment protocol, and the
+    // endpoints the semantic edges need must exist before pass 2.
+    let semantic = if config.semantic_rust {
+        semantic_rust_pass(root, sink, &analyzed, config, &mut summary).await
+    } else {
+        Vec::new()
+    };
+
     // Pass 2: edges, now that every endpoint is resolvable.
-    write_edges(sink, &analyzed, config, &mut summary).await?;
+    write_edges(sink, &analyzed, semantic, config, &mut summary).await?;
 
     info!(
         seen = summary.files_seen,
@@ -404,6 +432,7 @@ fn push_resolved(
 async fn write_edges<S: IngestSink>(
     sink: &S,
     analyzed: &[Analyzed],
+    semantic: Vec<Value>,
     config: &CodebaseConfig,
     summary: &mut CodebaseSummary,
 ) -> Result<(), PipelineError> {
@@ -411,10 +440,10 @@ async fn write_edges<S: IngestSink>(
     // that is not already stored. Any change at all reopens the whole
     // corpus, because a new symbol in one file can be the target of an
     // import in a file that did not change.
-    if !analyzed.iter().any(|f| f.changed) {
+    if !analyzed.iter().any(|f| f.changed) && semantic.is_empty() {
         return Ok(());
     }
-    let mut docs: Vec<Value> = Vec::new();
+    let mut docs: Vec<Value> = semantic;
 
     // `defines`, straight off the analysis. The file literally declares the
     // symbol, which is the parent PRD's Phase 4 definition of `declared`.
@@ -519,4 +548,128 @@ async fn write_edges<S: IngestSink>(
     summary.edges_written += out.created;
     summary.edges_unresolved += out.errors;
     Ok(())
+}
+
+/// The semantic Rust pass: rust-analyzer over each crate, for the symbols
+/// and edges only a compiler front end can resolve.
+///
+/// Returns edge documents for the caller to write with the rest, and
+/// writes the enriched symbol nodes itself, because the edges it returns
+/// point at them.
+///
+/// Never fails the ingest. A language server that will not start, will not
+/// index in time, or dies mid-crate leaves the structural graph standing
+/// and says what happened.
+async fn semantic_rust_pass<S: IngestSink>(
+    root: &Path,
+    sink: &S,
+    analyzed: &[Analyzed],
+    config: &CodebaseConfig,
+    summary: &mut CodebaseSummary,
+) -> Vec<Value> {
+    let rust_files: Vec<std::path::PathBuf> = analyzed
+        .iter()
+        .filter(|f| f.analysis.language == Language::Rust)
+        .map(|f| root.join(&f.rel_path))
+        .collect();
+    if rust_files.is_empty() {
+        return Vec::new();
+    }
+
+    // rust-analyzer indexes a crate, not a file, so the files are grouped
+    // by the manifest that owns them.
+    let by_crate = lsp::group_files_by_crate(&rust_files);
+    info!(crates = by_crate.len(), "starting the semantic Rust pass");
+
+    let mut extraction: HashMap<String, lsp::symbols::FileExtraction> = HashMap::new();
+    for (crate_root, files) in &by_crate {
+        let session = match lsp::RustAnalyzerSession::start(crate_root).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(crate_root = %crate_root.display(), %e,
+                      "no language server, keeping the structural graph");
+                continue;
+            }
+        };
+        if !session
+            .wait_for_workspace_ready(config.semantic_timeout)
+            .await
+        {
+            warn!(crate_root = %crate_root.display(),
+                  "language server did not finish indexing in time, skipping this crate");
+            continue;
+        }
+        let refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
+        let extractor = lsp::RustSymbolExtractor::new(&session, true).with_path_root(root);
+        for (path, data) in extractor.extract_crate(&refs).await {
+            // Key on the path relative to the ingest root, so the keys
+            // match the ones the structural pass already wrote.
+            let rel = std::path::Path::new(&path)
+                .strip_prefix(root)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or(path);
+            extraction.insert(rel, data);
+        }
+    }
+    if extraction.is_empty() {
+        warn!("the semantic pass produced nothing, keeping the structural graph");
+        return Vec::new();
+    }
+
+    let resolver = lsp::LspEdgeResolver::new(extraction, "rust-analyzer");
+
+    // The semantic half of the enrichment protocol (Phase 7): the same
+    // keys, richer payloads, landing on the rows syn already wrote.
+    let symbol_docs: Vec<Value> = resolver
+        .build_symbol_documents()
+        .iter()
+        .filter_map(|d| {
+            let mut v = serde_json::to_value(d).ok()?;
+            // The sink reads `kind` off the document for symbol nodes, and
+            // SymbolDocument already carries the universal primitive there.
+            v.as_object_mut()?.insert("enriched".into(), json!(true));
+            Some(v)
+        })
+        .collect();
+    if !symbol_docs.is_empty() {
+        match sink
+            .insert_documents(SYMBOLS, &symbol_docs, config.overwrite)
+            .await
+        {
+            Ok(out) => {
+                info!(
+                    enriched = out.created,
+                    rejected = out.errors,
+                    "semantic symbols enriched"
+                );
+            }
+            Err(e) => {
+                warn!(%e, "could not write enriched symbols, keeping the structural graph");
+                return Vec::new();
+            }
+        }
+    }
+
+    // `defines` from a language server is still the file declaring the
+    // symbol, so Phase 4 keeps it `declared`. Calls and implements are
+    // what only an analyzer could resolve, which is `structural`.
+    let mut docs = Vec::new();
+    for e in resolver.build_edges() {
+        let relation = e.kind.as_str();
+        let basis = match e.kind {
+            lsp::EdgeKind::Defines | lsp::EdgeKind::Imports => "declared",
+            lsp::EdgeKind::Calls | lsp::EdgeKind::Implements => "structural",
+        };
+        docs.push(json!({
+            "from": e.from,
+            "to": e.to,
+            "relation": relation,
+            "basis": basis,
+            "analyzer": "rust-analyzer",
+            "payload": e.metadata,
+        }));
+    }
+    info!(edges = docs.len(), "semantic Rust edges resolved");
+    summary.semantic_crates = by_crate.len();
+    docs
 }
