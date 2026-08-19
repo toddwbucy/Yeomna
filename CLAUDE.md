@@ -9,7 +9,7 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and specs at `docs/specs/NNN-slug/spec.md` with review notes alongside.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, nine crates, 297 tests. **The Rust side of the
+`rust-toolchain.toml`, nine crates, 310 tests. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
 and merged. **The store exists and holes-ledger H1 is filled** (specs 008
@@ -35,8 +35,22 @@ no-SQL lint admits. Every call leaves one audit row, reads included, and the
 row commits before the verb runs, so an attempt that dies leaves a NULL
 outcome rather than no trace. The schema version is a compiled-in constant
 with no stored marker, because a marker exists to detect drift and drift is
-not a state this appliance allows. Next is Phase 3, the graph and database
-lifecycle verbs.
+not a state this appliance allows.
+
+**Phase 3 is merged as well** (spec 013, 2026-08-17): the traversal verbs
+per D7 with partition pruning proven at the verb level, graph.drop as the
+first destructive verb, and the database lifecycle under the fourth role,
+`yeomna_provision`, with kg-pattern databases stamped from
+`yeomna_template` because pgvector is not a trusted extension. The session
+serializes calls and retires itself if a role escalation cannot prove its
+reset. M2 has its instrument and still needs its benchmark run. Next is
+Phase 4: write verbs, the audit transaction, and the scoped `sql` verb.
+
+**The project is on hold as of 2026-08-17**, expected about a week, for
+WeaverTools frontend work on this machine. The cluster may be stopped
+during the hold (`sudo systemctl start yeomna-postgres` to resume, then
+the workspace gate to confirm). The hub's parking report carries the full
+resume state.
 
 **H3 is filled and this repository is a graph** (spec 011, merged
 2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the
