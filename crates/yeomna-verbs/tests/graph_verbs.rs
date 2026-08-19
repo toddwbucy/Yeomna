@@ -443,23 +443,24 @@ async fn the_cap_bounds_the_walk_on_a_dense_graph() {
         )
         .await
         .unwrap();
-    let started = std::time::Instant::now();
-    let env = s
-        .call(&Verb::GraphShortestPath(ShortestPathRequest {
+    // The timeout is the enforcement, not a post-hoc measurement: if
+    // the walk stalled, an elapsed check after the await would never
+    // run and the guard would hang the suite instead of failing it.
+    let bound = std::time::Duration::from_secs(10);
+    let env = tokio::time::timeout(
+        bound,
+        s.call(&Verb::GraphShortestPath(ShortestPathRequest {
             graph: "gv_dense_k".into(),
             from: "n1".into(),
             to: "n15".into(),
             relations: vec![],
             bases: vec![],
             cap: 2_000,
-        }))
-        .await;
-    let elapsed = started.elapsed();
+        })),
+    )
+    .await
+    .expect("the cap bounded the walk inside ten seconds");
     let d = data(&env).clone();
-    assert!(
-        elapsed.as_secs() < 10,
-        "the cap bounded the walk: {elapsed:?}"
-    );
     assert_eq!(d["found"], true, "a direct edge exists: {d}");
     assert_eq!(d["length"], 1, "and level order found it first");
     // Traverse over the same graph. The first version of this asserted
@@ -479,12 +480,20 @@ async fn the_cap_bounds_the_walk_on_a_dense_graph() {
             limit,
         })
     };
-    let started = std::time::Instant::now();
-    let d = data(&s.call(&traverse(10_000)).await).clone();
-    assert!(started.elapsed().as_secs() < 10);
+    let d = data(
+        &tokio::time::timeout(bound, s.call(&traverse(10_000)))
+            .await
+            .expect("the dedup bounded the walk inside ten seconds"),
+    )
+    .clone();
     assert_eq!(d["nodes"].as_array().unwrap().len(), 15, "all of K15: {d}");
     assert_eq!(d["truncated"], false, "the dedup kept the walk small");
-    let d = data(&s.call(&traverse(10)).await).clone();
+    let d = data(
+        &tokio::time::timeout(bound, s.call(&traverse(10)))
+            .await
+            .expect("a capped walk answers inside ten seconds"),
+    )
+    .clone();
     assert_eq!(d["truncated"], true, "a cap below the walk truncates: {d}");
     owner
         .execute("DELETE FROM graphs WHERE name = 'gv_dense_k'", &[])

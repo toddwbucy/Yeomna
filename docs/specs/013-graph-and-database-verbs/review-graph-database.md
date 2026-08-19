@@ -167,11 +167,12 @@ applies, this time for the path walk, and proposed a
 predecessor-reconstruction rewrite. Rather than argue the fetch
 semantics again, the suite now proves them: a complete directed graph
 on fifteen nodes, whose simple paths to depth ten are astronomically
-many, answers a capped shortest-path in milliseconds, which could not
-happen if the walk ran to completion. The test doubles as the
-regression guard for the stop-recursion idiom: if Postgres ever
-changes that behavior, the test hangs visibly instead of production
-finding out. Two hardenings taken from the finding's spirit:
+many, answers a capped shortest-path inside an enforced ten-second timeout,
+which could not happen if the walk enumerated the space. Observed runs
+finish in milliseconds, and the timeout is what the test enforces: a
+stalled walk fails the guard by name rather than hanging the suite,
+which the first draft would have done, since an elapsed check after an
+await that never returns never runs either. Two hardenings taken from the finding's spirit:
 PATH_DEPTH dropped from twenty to ten, since the reference measured
 real depths of one to three and every hop of headroom multiplies the
 worst case should the fetch bound ever stop holding, and the cap's doc
