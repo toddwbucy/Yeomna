@@ -22,6 +22,10 @@ const RELATIONS: [&str; 5] = ["defines", "calls", "implements", "imports", "cont
 const BASES: [&str; 3] = ["declared", "structural", "asserted"];
 /// The internal depth bound on the enumerating shortest-path walk.
 const PATH_DEPTH: i32 = 20;
+/// The structural bound on traversal depth, whatever the caller asks.
+/// The row cap stops the walk through the fetch limit, and this clamp is
+/// the guarantee that does not depend on fetch semantics.
+const MAX_DEPTH: i32 = 100;
 
 fn db(e: tokio_postgres::Error) -> VerbError {
     VerbError::Internal(format!("store error: {e}"))
@@ -57,10 +61,11 @@ pub fn basis_clause(bases: &[String]) -> Result<String, VerbError> {
     Ok(format!("AND e.basis IN ({})", list.join(", ")))
 }
 
-/// The traversal SQL for a given basis filter. Public so the pruning test
-/// can EXPLAIN exactly what the verb executes rather than a copy that
-/// drifts (spec 013 FR 1).
-pub fn traverse_sql(bases: &[String]) -> Result<String, VerbError> {
+/// The traversal SQL for a given basis filter. Crate-private: the pruning
+/// proof lives in this module's own tests so it can EXPLAIN exactly what
+/// the verb executes without the builder becoming a second public surface
+/// beside the verbs, which charter section 6 forbids.
+pub(crate) fn traverse_sql(bases: &[String]) -> Result<String, VerbError> {
     let basis = basis_clause(bases)?;
     Ok(format!(
         "WITH RECURSIVE walk(node, depth) AS (
@@ -111,7 +116,7 @@ pub async fn traverse(s: &Session, r: &TraverseRequest) -> Result<Value, VerbErr
     let sql = traverse_sql(&r.bases)?;
     let g = graph_id(s, &r.graph).await?;
     let start = node_id(s, g, &r.start).await?;
-    let depth = i32::try_from(r.depth).unwrap_or(i32::MAX);
+    let depth = i32::try_from(r.depth).unwrap_or(MAX_DEPTH).min(MAX_DEPTH);
     let limit = i64::from(r.limit.max(1));
     let rows = s
         .client()
@@ -200,61 +205,42 @@ pub async fn shortest_path(s: &Session, r: &ShortestPathRequest) -> Result<Value
                {basis}
          ),
          capped AS (SELECT node, path, depth FROM walk LIMIT $6)
-         SELECT (SELECT array_agg(n.natural_key ORDER BY t.ord)
-                 FROM unnest(f.path) WITH ORDINALITY AS t(id, ord)
-                 JOIN nodes n ON n.id = t.id) AS path,
-                f.depth,
-                (SELECT count(*) FROM capped)::bigint AS visited
-         FROM capped f WHERE f.node = $4
-         ORDER BY f.depth LIMIT 1"
+         SELECT (SELECT count(*) FROM capped)::bigint AS visited,
+                best.path, best.depth
+         FROM (SELECT 1) one
+         LEFT JOIN LATERAL (
+             SELECT (SELECT array_agg(n.natural_key ORDER BY t.ord)
+                     FROM unnest(f.path) WITH ORDINALITY AS t(id, ord)
+                     JOIN nodes n ON n.id = t.id) AS path,
+                    f.depth
+             FROM capped f WHERE f.node = $4
+             ORDER BY f.depth LIMIT 1
+         ) best ON true"
     );
     let row = s
         .client()
-        .query_opt(&sql, &[&from, &g, &PATH_DEPTH, &to, &r.relations, &cap])
+        .query_one(&sql, &[&from, &g, &PATH_DEPTH, &to, &r.relations, &cap])
         .await
         .map_err(db)?;
+    let visited: i64 = row.get(0);
+    let path: Option<Vec<String>> = row.get(1);
     // No path is an answer, not an error. A truncated search that found
     // nothing says so, since no path within the cap and no path at all
-    // are different facts. Absence leaves us without the visited count,
-    // which one cheap follow-up recovers only when needed.
-    match row {
-        Some(row) => Ok(json!({
+    // are different facts. One walk answers both questions.
+    match path {
+        Some(path) => Ok(json!({
             "graph": r.graph, "from": r.from, "to": r.to,
             "found": true,
-            "path": row.get::<_, Vec<String>>(0),
-            "length": row.get::<_, i32>(1),
-            "truncated": row.get::<_, i64>(2) >= cap,
+            "length": row.get::<_, i32>(2),
+            "path": path,
+            "truncated": visited >= cap,
         })),
-        None => {
-            let visited: i64 = s
-                .client()
-                .query_one(
-                    &format!(
-                        "WITH RECURSIVE walk(node, path, depth) AS (
-                             SELECT $1::bigint, ARRAY[$1::bigint], 0
-                             UNION ALL
-                             SELECT e.dst_id, w.path || e.dst_id, w.depth + 1
-                             FROM walk w
-                             JOIN edges e ON e.src_id = w.node AND e.graph_id = $2
-                             WHERE w.depth < $3 AND w.node <> $4
-                               AND e.dst_id <> ALL(w.path)
-                               AND (cardinality($5::text[]) = 0 OR e.relation = ANY($5))
-                               {basis}
-                         )
-                         SELECT count(*) FROM (SELECT 1 FROM walk LIMIT $6) c"
-                    ),
-                    &[&from, &g, &PATH_DEPTH, &to, &r.relations, &cap],
-                )
-                .await
-                .map_err(db)?
-                .get(0);
-            Ok(json!({
-                "graph": r.graph, "from": r.from, "to": r.to,
-                "found": false,
-                "path": Value::Null,
-                "truncated": visited >= cap,
-            }))
-        }
+        None => Ok(json!({
+            "graph": r.graph, "from": r.from, "to": r.to,
+            "found": false,
+            "path": Value::Null,
+            "truncated": visited >= cap,
+        })),
     }
 }
 
@@ -316,22 +302,26 @@ pub async fn drop(s: &Session, r: &DropRequest) -> Result<Value, VerbError> {
         )));
     }
     let g = graph_id(s, &r.name).await?;
+    // Counts and delete in one statement: every sub-statement of a WITH
+    // runs on the same snapshot, so the reported sweep is what the
+    // cascade removed, not what existed moments earlier. This is the
+    // caller's only record of a destructive act.
     let counts = s
         .client()
         .query_one(
-            "SELECT
-               (SELECT count(*) FROM nodes n WHERE n.graph_id = $1),
-               (SELECT count(*) FROM edges e WHERE e.graph_id = $1),
-               (SELECT count(*) FROM chunks c JOIN nodes n ON n.id = c.node_id
-                  WHERE n.graph_id = $1),
-               (SELECT count(*) FROM embeddings em JOIN chunks c ON c.id = em.chunk_id
-                  JOIN nodes n ON n.id = c.node_id WHERE n.graph_id = $1)",
+            "WITH measured AS (
+               SELECT
+                 (SELECT count(*) FROM nodes n WHERE n.graph_id = $1) AS nodes,
+                 (SELECT count(*) FROM edges e WHERE e.graph_id = $1) AS edges,
+                 (SELECT count(*) FROM chunks c JOIN nodes n ON n.id = c.node_id
+                    WHERE n.graph_id = $1) AS chunks,
+                 (SELECT count(*) FROM embeddings em JOIN chunks c ON c.id = em.chunk_id
+                    JOIN nodes n ON n.id = c.node_id WHERE n.graph_id = $1) AS embeddings
+             ),
+             deleted AS (DELETE FROM graphs WHERE id = $1)
+             SELECT nodes, edges, chunks, embeddings FROM measured",
             &[&g],
         )
-        .await
-        .map_err(db)?;
-    s.client()
-        .execute("DELETE FROM graphs WHERE id = $1", &[&g])
         .await
         .map_err(db)?;
     Ok(json!({
@@ -344,4 +334,48 @@ pub async fn drop(s: &Session, r: &DropRequest) -> Result<Value, VerbError> {
             "embeddings": counts.get::<_, i64>(3),
         },
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spec 013 FR 1 at the verb level: the plan for the SQL this module
+    /// executes, with bases restricted to declared and structural, does
+    /// not touch the asserted partition. GENERIC_PLAN plans with the
+    /// placeholders unbound, and the extended protocol would demand
+    /// values, so the EXPLAIN goes through simple_query. Cluster-gated
+    /// like every live test.
+    #[tokio::test]
+    async fn the_traversal_plan_prunes_the_asserted_partition() {
+        let dir = std::env::var("YEOMNA_TEST_DB").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            format!("{home}/.local/share/yeomna/run")
+        });
+        if !std::path::Path::new(&format!("{dir}/.s.PGSQL.5433")).exists() {
+            eprintln!("SKIP: no cluster socket (set YEOMNA_TEST_DB)");
+            return;
+        }
+        let Ok(owner) = yeomna_store::connect(&dir, 5433, "yeomna_owner", "yeomna").await else {
+            eprintln!("SKIP: cannot connect as yeomna_owner");
+            return;
+        };
+        let sql = traverse_sql(&["declared".into(), "structural".into()]).unwrap();
+        let plan: String = owner
+            .simple_query(&format!("EXPLAIN (COSTS OFF, GENERIC_PLAN) {sql}"))
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|m| match m {
+                tokio_postgres::SimpleQueryMessage::Row(r) => r.get(0).map(String::from),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !plan.contains("edges_asserted"),
+            "claim 1 at the verb level:\n{plan}"
+        );
+        assert!(plan.contains("edges_declared"), "plan:\n{plan}");
+    }
 }

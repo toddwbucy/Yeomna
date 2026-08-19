@@ -222,16 +222,15 @@ async fn refusals_are_typed_and_the_session_never_stays_escalated() {
     assert!(!env.success);
     assert!(env.error.unwrap().starts_with("not-found"));
 
-    // EC-5: after every failure above, the session is still the app
-    // role, not the provision role.
-    let user: String = owner
-        .query_one("SELECT 1 WHERE false", &[])
-        .await
-        .map(|_| unreachable!())
-        .unwrap_or_else(|_| "unused".into());
-    let _ = user;
+    // EC-5: after every failure above, the session's own connection is
+    // still executing as the app role. Status reports current_user for
+    // exactly this proof, and it runs on the session connection, which
+    // is the only place role state lives.
     let d = data(&s.call(&Verb::Status(Empty {})).await).clone();
-    assert_eq!(d["store"], "answering");
+    assert_eq!(
+        d["role"], "yeomna_app",
+        "no failure left the session escalated"
+    );
 }
 
 #[tokio::test]

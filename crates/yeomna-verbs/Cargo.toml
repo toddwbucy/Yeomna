@@ -11,6 +11,8 @@ chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# The session's one-call-at-a-time lock (tokio::sync::Mutex).
+tokio.workspace = true
 tokio-postgres.workspace = true
 tracing.workspace = true
 yeomna-store = { path = "../yeomna-store" }

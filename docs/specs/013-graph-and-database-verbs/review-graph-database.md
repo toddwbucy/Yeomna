@@ -83,6 +83,66 @@ for, and the refusal is audited like everything else.
    ownership comes from `current_user` at CREATE DATABASE time under
    SET ROLE.
 
+## CodeRabbit round (2026-08-17)
+
+Eight findings. Six fixed, one partially corrected, one skipped.
+
+**The session pair, and it was the round's real value.** Two findings
+together showed the escalation was safe only under polite use. The
+client pipelines concurrent queries, so a read verb sharing an
+`Arc<Session>` could have run between SET ROLE and RESET ROLE, and a
+call future dropped mid-escalation would never poll the reset at all.
+The session now serializes whole calls behind a `tokio::sync::Mutex`,
+and an escalation flag is raised before SET ROLE and lowered only when
+RESET ROLE completes: a failed or cancelled reset leaves it raised, and
+a raised flag retires the session, which refuses every further call.
+That is the session-level form of discarding a connection that cannot
+prove what role it holds, and it is cancellation-safe because the flag
+is raised eagerly rather than lowered in a destructor. The earlier
+claim that the helper resets on every path was too strong and is
+withdrawn: it resets, or the session retires.
+
+**The traversal bound, partially corrected.** The finding claimed a
+recursive CTE is materialized in full before an outer LIMIT applies,
+which is not how this query shape executes: the capped subquery pulls
+rows directly from the walk, and Postgres evaluates a WITH query only
+as far as the parent fetches, which is the documented stop-recursion
+idiom. The fragility half of the finding stands, since the same
+documentation cautions against relying on the idiom, so the fix is
+structural: traversal depth is clamped to a fixed maximum whatever the
+caller asks, and the cap doubles as the fetch bound. Shortest-path was
+also restructured into one walk, answering found and not-found from the
+same capped enumeration through a lateral join, where the absence
+branch previously paid for the walk twice.
+
+**The atomic sweep.** The swept counts and the graph delete ran as two
+statements, so a concurrent writer could make the reported counts lie
+about a destructive act. Both now run as one statement, counts and
+delete as sub-statements of one WITH, which share one snapshot.
+
+**The leaked SQL builder.** `traverse_sql` was exported so the pruning
+test could EXPLAIN the exact statement, and the export was a second
+contract beside the verbs, which charter section 6 forbids. It is
+crate-private again and the pruning proof moved into the module's own
+tests, where it EXPLAINs the same string without anything outside the
+crate seeing a query surface.
+
+**Two test defects.** The EC-5 block asserted nothing: it computed a
+constant through a query that always errors, and its status check would
+have passed escalated or not. `status` now reports `current_user`,
+which runs on the session's own connection, the only place role state
+lives, and the test asserts it is the app role after every failure
+path. And the cycle-termination test used `Vec::dedup`, which removes
+only consecutive repeats while the rows are ordered by depth first, so
+a repeated key would have survived it. A set proves uniqueness now.
+
+**Skipped: restructuring this file as a phase spec.** The guideline
+that `docs/specs/**` files carry the spec sections applies to the
+specs. Review notes alongside them are this repository's own documented
+convention, stated in CLAUDE.md and practiced by every spec since 001,
+and moving them would break the record's shape for the linter's
+comfort.
+
 ## What is deliberately not here
 
 Naming swept contents inside the audit trail belongs to Phase 6's

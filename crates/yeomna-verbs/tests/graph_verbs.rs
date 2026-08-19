@@ -157,35 +157,6 @@ async fn traverse_walks_and_basis_filters_hold() {
 }
 
 #[tokio::test]
-async fn traverse_prunes_the_asserted_partition_from_the_plan() {
-    let Some((owner, _s)) = fixtures("gv_prune").await else {
-        return;
-    };
-    // FR 1: EXPLAIN exactly what the verb executes, via the SQL it
-    // exposes for this purpose, rather than a copy that drifts.
-    let sql = traverse_sql(&["declared".into(), "structural".into()]).unwrap();
-    // GENERIC_PLAN exists for exactly this: planning with unbound
-    // placeholders. The extended protocol would demand values, so this
-    // goes through simple_query.
-    let plan: String = owner
-        .simple_query(&format!("EXPLAIN (COSTS OFF, GENERIC_PLAN) {sql}"))
-        .await
-        .unwrap()
-        .iter()
-        .filter_map(|m| match m {
-            tokio_postgres::SimpleQueryMessage::Row(r) => r.get(0).map(String::from),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        !plan.contains("edges_asserted"),
-        "claim 1 at the verb level, the asserted partition is pruned:\n{plan}"
-    );
-    assert!(plan.contains("edges_declared"), "plan:\n{plan}");
-}
-
-#[tokio::test]
 async fn traverse_terminates_on_the_dogfood_cycles() {
     let Some(dir) = socket_dir() else { return };
     let Ok(owner) = yeomna_store::connect(&dir, PORT, "yeomna_owner", "yeomna").await else {
@@ -229,15 +200,17 @@ async fn traverse_terminates_on_the_dogfood_cycles() {
     assert!(started.elapsed().as_secs() < 10, "terminated promptly");
     let n = d["nodes"].as_array().unwrap().len();
     assert!(n >= 1, "reached something: {n}");
-    let mut keys: Vec<&str> = d["nodes"]
+    // A set, not Vec::dedup: dedup removes only consecutive repeats,
+    // and rows here are ordered by depth first, so a repeated key would
+    // not be adjacent and would survive it.
+    let keys: Vec<&str> = d["nodes"]
         .as_array()
         .unwrap()
         .iter()
         .map(|x| x["key"].as_str().unwrap())
         .collect();
-    let total = keys.len();
-    keys.dedup();
-    assert_eq!(keys.len(), total, "each node exactly once");
+    let unique: std::collections::HashSet<&&str> = keys.iter().collect();
+    assert_eq!(unique.len(), keys.len(), "each node exactly once");
 }
 
 #[tokio::test]
