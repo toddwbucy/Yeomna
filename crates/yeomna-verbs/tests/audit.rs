@@ -94,6 +94,53 @@ fn phase_two_verbs() -> Vec<Verb> {
             structural: false,
         }),
         Verb::SchemaVersion(Empty {}),
+        // -- Phase 3 (spec 013). Chosen so auditing is proven without
+        // side effects: refusals and misses are audited the same as
+        // successes, and none of these mutates the cluster.
+        Verb::GraphList(Empty {}),
+        Verb::GraphTraverse(TraverseRequest {
+            graph: "audit_graph".into(),
+            start: "absent".into(), // NotFound, audited as failed
+            relations: vec![],
+            bases: vec![],
+            depth: 5,
+            limit: 100,
+        }),
+        Verb::GraphNeighbors(NeighborsRequest {
+            graph: "audit_graph".into(),
+            key: "absent".into(),
+            direction: Direction::Both,
+            relations: vec![],
+            bases: vec![],
+            limit: 10,
+        }),
+        Verb::GraphShortestPath(ShortestPathRequest {
+            graph: "audit_graph".into(),
+            from: "a".into(),
+            to: "b".into(),
+            relations: vec![],
+            bases: vec![],
+            cap: 100,
+        }),
+        Verb::GraphCreate(GraphName {
+            name: "audit_graph".into(), // exists, InvalidArgs
+        }),
+        Verb::GraphDrop(DropRequest {
+            name: "audit_graph".into(),
+            force: false, // Denied, and the refusal is on the record
+        }),
+        Verb::GraphMaterialize(GraphScoped {
+            graph: "audit_graph".into(), // R14's refusal, audited
+        }),
+        Verb::DatabaseList(Empty {}),
+        Verb::DatabaseCreate(DatabaseCreateRequest {
+            name: "Bad-Name".into(), // InvalidArgs before any SQL
+            kind: DatabaseKind::Plain,
+        }),
+        Verb::DatabaseDrop(DropRequest {
+            name: "audit_db_never".into(),
+            force: false, // Denied at the force gate
+        }),
     ]
 }
 

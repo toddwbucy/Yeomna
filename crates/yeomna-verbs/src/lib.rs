@@ -19,9 +19,11 @@
 //!   flags are rendering concerns and do not exist here.
 
 mod audit;
+mod database;
 mod envelope;
 mod error;
 mod execute;
+mod graph;
 mod read;
 mod verb;
 

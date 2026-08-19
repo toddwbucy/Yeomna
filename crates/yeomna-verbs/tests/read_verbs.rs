@@ -425,8 +425,10 @@ async fn get_reports_ambiguity_rather_than_choosing() {
 async fn a_later_phase_verb_names_the_phase_it_waits_for() {
     require!(_o, s, "verbs_later");
     // EC-1: reachable through dispatch, refused by name, never a panic.
+    // This list shrinks as phases land: spec 013 implemented the graph
+    // and database verbs, so Phase 3 no longer appears here.
     let cases = [
-        (Verb::GraphList(Empty {}), "Phase 3"),
+        (Verb::SchemaShow(Empty {}), "H7"),
         (
             Verb::Purge(PurgeRequest {
                 key: "docA".into(),

@@ -329,7 +329,10 @@ pub struct ShortestPathRequest {
     pub relations: Vec<String>,
     #[serde(default)]
     pub bases: Vec<String>,
-    /// The hard row cap on the enumerating form (D7's named exception).
+    /// The hard cap on the enumerating form (D7's named exception). It
+    /// bounds both the walk, through the fetch limit that stops the
+    /// recursion, and the result: a search that hits it reports
+    /// truncated.
     #[serde(default = "default_row_cap")]
     pub cap: u32,
 }

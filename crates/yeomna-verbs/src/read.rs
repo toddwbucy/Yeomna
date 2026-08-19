@@ -160,7 +160,7 @@ pub async fn status(s: &Session) -> Result<Value, VerbError> {
     let row = s
         .client()
         .query_one(
-            "SELECT current_database(), (SELECT count(*) FROM graphs)",
+            "SELECT current_database(), (SELECT count(*) FROM graphs), current_user::text",
             &[],
         )
         .await
@@ -169,6 +169,9 @@ pub async fn status(s: &Session) -> Result<Value, VerbError> {
         "store": "answering",
         "database": row.get::<_, String>(0),
         "graphs": row.get::<_, i64>(1),
+        // The role this session is executing as, which is how a test, or
+        // an operator, proves an escalation did not outlive its verb.
+        "role": row.get::<_, String>(2),
         "schema_version": yeomna_store::SCHEMA_VERSION,
         "session_graph": s.graph(),
     }))
