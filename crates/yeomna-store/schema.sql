@@ -153,7 +153,13 @@ CREATE TABLE IF NOT EXISTS audit_log (
 -- Prerequisites, provisioned at cluster creation and not by this file:
 -- the roles yeomna_app and yeomna_audit exist, and the applying role
 -- (yeomna_owner) is a member of yeomna_audit, which ALTER TABLE ...
--- OWNER TO requires.
+-- OWNER TO requires. Spec 013 adds two more provisioning steps: the
+-- yeomna_provision role (CREATEDB, NOLOGIN, granted to yeomna_app, and
+-- holding no grant on any table here) and the yeomna_template database,
+-- this schema applied by the owner and marked IS_TEMPLATE, which is what
+-- database.create stamps kg-pattern databases from, since pgvector is
+-- not a trusted extension and a fresh database could not receive it from
+-- a non-superuser.
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON graphs, nodes, chunks, embeddings, edges,
        edges_declared, edges_structural, edges_asserted

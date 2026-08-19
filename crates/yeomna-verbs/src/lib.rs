@@ -19,13 +19,18 @@
 //!   flags are rendering concerns and do not exist here.
 
 mod audit;
+mod database;
 mod envelope;
 mod error;
 mod execute;
+mod graph;
 mod read;
 mod verb;
 
 pub use envelope::{Envelope, envelope, error_envelope};
 pub use error::VerbError;
 pub use execute::Session;
+/// The traversal SQL, exposed so the pruning test EXPLAINs exactly what
+/// the verb executes rather than a copy that drifts (spec 013 FR 1).
+pub use graph::traverse_sql;
 pub use verb::*;

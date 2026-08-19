@@ -14,8 +14,10 @@ use serde_json::Value;
 use tokio_postgres::Client;
 
 use crate::audit;
+use crate::database;
 use crate::envelope::{Envelope, envelope, error_envelope};
 use crate::error::VerbError;
+use crate::graph;
 use crate::read;
 use crate::verb::Verb;
 
@@ -55,6 +57,19 @@ impl Session {
     /// The session's graph, if it has one.
     pub(crate) fn graph(&self) -> Option<&str> {
         self.graph.as_deref()
+    }
+
+    /// Run one statement as `yeomna_provision`, resetting the role on
+    /// every path (spec 013 EC-5): no error leaves the session escalated,
+    /// which is scoping by construction rather than by discipline.
+    pub(crate) async fn as_provision(&self, sql: &str) -> Result<(), tokio_postgres::Error> {
+        self.client
+            .batch_execute("SET ROLE yeomna_provision")
+            .await?;
+        let result = self.client.batch_execute(sql).await;
+        let reset = self.client.batch_execute("RESET ROLE").await;
+        result?;
+        reset
     }
 
     /// Run one verb: record the attempt, dispatch, mark the outcome, and
@@ -99,17 +114,21 @@ impl Session {
             Verb::Query(r) => read::query(self, r).await,
             Verb::SchemaVersion(_) => read::schema_version(),
 
-            // -- Later phases, named ---------------------------------------
-            Verb::GraphTraverse(_)
-            | Verb::GraphNeighbors(_)
-            | Verb::GraphShortestPath(_)
-            | Verb::GraphList(_)
-            | Verb::GraphCreate(_)
-            | Verb::GraphDrop(_)
-            | Verb::GraphMaterialize(_)
-            | Verb::DatabaseList(_)
-            | Verb::DatabaseCreate(_)
-            | Verb::DatabaseDrop(_) => Err(unimplemented_in("Phase 3", verb)),
+            // -- Phase 3, spec 013 -----------------------------------------
+            Verb::GraphTraverse(r) => graph::traverse(self, r).await,
+            Verb::GraphNeighbors(r) => graph::neighbors(self, r).await,
+            Verb::GraphShortestPath(r) => graph::shortest_path(self, r).await,
+            Verb::GraphList(_) => graph::list(self).await,
+            Verb::GraphCreate(r) => graph::create(self, r).await,
+            Verb::GraphDrop(r) => graph::drop(self, r).await,
+            Verb::DatabaseList(_) => database::list(self).await,
+            Verb::DatabaseCreate(r) => database::create(self, r).await,
+            Verb::DatabaseDrop(r) => database::drop(self, r).await,
+            // R14: the name is bound by R4, the meaning is not yet
+            // anyone's. It refuses until a consumer defines it.
+            Verb::GraphMaterialize(_) => Err(VerbError::Unimplemented(
+                "graph.materialize waits for a consumer that defines materialization (R14)".into(),
+            )),
 
             Verb::Insert(_) | Verb::Update(_) | Verb::Delete(_) | Verb::Purge(_) | Verb::Sql(_) => {
                 Err(unimplemented_in("Phase 4", verb))

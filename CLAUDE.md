@@ -136,8 +136,8 @@ violates charter section 5. Do not develop against the system instance.
 | Data dir | `~/.local/share/yeomna/pgdata` |
 | Socket dir | `~/.local/share/yeomna/run`, mode 0700, port 5433 |
 | Logs | `~/.local/share/yeomna/log` |
-| Roles | `yeomna_owner` (DDL), `yeomna_app` (runtime), `yeomna_audit` (owns audit) |
-| Database | `yeomna` |
+| Roles | `yeomna_owner` (DDL, superuser), `yeomna_app` (runtime), `yeomna_audit` (owns audit), `yeomna_provision` (CREATEDB NOLOGIN, reached by SET ROLE for database lifecycle, spec 013) |
+| Database | `yeomna`, plus `yeomna_template` (the schema stamped and marked IS_TEMPLATE, what `database.create` copies for kg-pattern databases) |
 | Memory | `shared_buffers=8GB`, `huge_pages=on`, `effective_cache_size=8GB`, `full_page_writes=off` (safe only on CoW storage) |
 
 It runs as a systemd unit, `yeomna-postgres.service`, enabled at boot. Do not
