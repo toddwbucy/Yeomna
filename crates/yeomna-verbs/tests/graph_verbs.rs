@@ -400,3 +400,94 @@ async fn bad_inputs_are_refused_by_name() {
     assert!(!env.success);
     assert!(env.error.unwrap().contains("materialization"));
 }
+
+/// The cap bounds the walk, proven rather than argued: a complete
+/// directed graph on 15 nodes holds astronomically many simple paths to
+/// depth 10, so if the fetch limit did not stop the recursion this test
+/// could not finish. It is the regression guard for the stop-recursion
+/// idiom the traversal relies on: if Postgres ever changes that
+/// behavior, this hangs visibly instead of production finding out.
+#[tokio::test]
+async fn the_cap_bounds_the_walk_on_a_dense_graph() {
+    let Some((owner, s)) = fixtures("gv_dense").await else {
+        return;
+    };
+    owner
+        .execute("DELETE FROM graphs WHERE name = 'gv_dense_k'", &[])
+        .await
+        .unwrap();
+    let g: i64 = owner
+        .query_one(
+            "INSERT INTO graphs (name) VALUES ('gv_dense_k') RETURNING id",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    // K15: every node calls every other node.
+    owner
+        .execute(
+            "INSERT INTO nodes (graph_id, natural_key, kind)
+             SELECT $1, 'n' || i, 'callable' FROM generate_series(1, 15) i",
+            &[&g],
+        )
+        .await
+        .unwrap();
+    owner
+        .execute(
+            "INSERT INTO edges (graph_id, src_id, dst_id, relation, basis, analyzer)
+             SELECT $1, a.id, b.id, 'calls', 'structural', 'test'
+             FROM nodes a, nodes b
+             WHERE a.graph_id = $1 AND b.graph_id = $1 AND a.id <> b.id",
+            &[&g],
+        )
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let env = s
+        .call(&Verb::GraphShortestPath(ShortestPathRequest {
+            graph: "gv_dense_k".into(),
+            from: "n1".into(),
+            to: "n15".into(),
+            relations: vec![],
+            bases: vec![],
+            cap: 2_000,
+        }))
+        .await;
+    let elapsed = started.elapsed();
+    let d = data(&env).clone();
+    assert!(
+        elapsed.as_secs() < 10,
+        "the cap bounded the walk: {elapsed:?}"
+    );
+    assert_eq!(d["found"], true, "a direct edge exists: {d}");
+    assert_eq!(d["length"], 1, "and level order found it first");
+    // Traverse over the same graph. The first version of this asserted
+    // truncation at limit 500 and learned something better: UNION dedup
+    // keeps the walk to (node, depth) pairs, so K15 tops out near 285
+    // rows and 500 never truncates. The dedup is what makes traversal
+    // polynomial on a complete graph, which is D7's whole point, so this
+    // asserts both halves: a full walk sees every node untruncated, and
+    // a cap below the dedup'd row count truncates honestly.
+    let traverse = |limit: u32| {
+        Verb::GraphTraverse(TraverseRequest {
+            graph: "gv_dense_k".into(),
+            start: "n1".into(),
+            relations: vec![],
+            bases: vec![],
+            depth: 20,
+            limit,
+        })
+    };
+    let started = std::time::Instant::now();
+    let d = data(&s.call(&traverse(10_000)).await).clone();
+    assert!(started.elapsed().as_secs() < 10);
+    assert_eq!(d["nodes"].as_array().unwrap().len(), 15, "all of K15: {d}");
+    assert_eq!(d["truncated"], false, "the dedup kept the walk small");
+    let d = data(&s.call(&traverse(10)).await).clone();
+    assert_eq!(d["truncated"], true, "a cap below the walk truncates: {d}");
+    owner
+        .execute("DELETE FROM graphs WHERE name = 'gv_dense_k'", &[])
+        .await
+        .unwrap();
+}

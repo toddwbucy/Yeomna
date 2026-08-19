@@ -100,7 +100,13 @@ That is the session-level form of discarding a connection that cannot
 prove what role it holds, and it is cancellation-safe because the flag
 is raised eagerly rather than lowered in a destructor. The earlier
 claim that the helper resets on every path was too strong and is
-withdrawn: it resets, or the session retires.
+withdrawn. The contract in full: an error from SET ROLE itself clears
+the flag and surfaces, since the role never changed and retiring the
+session over a missing role would brick it for nothing. After a
+successful escalation, the flag lowers only when RESET ROLE completes,
+and a failed or cancelled reset retires the session. A cancellation
+while SET ROLE is in flight also retires it, since the statement may
+have taken effect server-side with nobody left polling.
 
 **The traversal bound, partially corrected.** The finding claimed a
 recursive CTE is materialized in full before an outer LIMIT applies,
@@ -142,6 +148,59 @@ specs. Review notes alongside them are this repository's own documented
 convention, stated in CLAUDE.md and practiced by every spec since 001,
 and moving them would break the record's shape for the linter's
 comfort.
+
+## CodeRabbit round two (2026-08-17)
+
+Five findings. Two fixed, one answered with a proof, two skipped.
+
+**Fixed: the flag outlived a failed SET ROLE.** Round one's retirement
+logic raised the escalation flag before SET ROLE and never lowered it
+when SET ROLE itself returned an error, so a missing provision role
+would have permanently retired every session that tried. An explicit
+error from SET ROLE means the role never changed, and the flag now
+clears on that path. The cancellation window stays covered, as the
+consolidated contract above states.
+
+**Answered with a proof: the shortest-path bound.** The finding
+repeated round one's claim that the recursion completes before the cap
+applies, this time for the path walk, and proposed a
+predecessor-reconstruction rewrite. Rather than argue the fetch
+semantics again, the suite now proves them: a complete directed graph
+on fifteen nodes, whose simple paths to depth ten are astronomically
+many, answers a capped shortest-path in milliseconds, which could not
+happen if the walk ran to completion. The test doubles as the
+regression guard for the stop-recursion idiom: if Postgres ever
+changes that behavior, the test hangs visibly instead of production
+finding out. Two hardenings taken from the finding's spirit:
+PATH_DEPTH dropped from twenty to ten, since the reference measured
+real depths of one to three and every hop of headroom multiplies the
+worst case should the fetch bound ever stop holding, and the cap's doc
+comment now states both duties. The proposed rewrite is declined: a
+node-deduplicated recursive CTE cannot carry a predecessor without the
+predecessor defeating the dedup, which is why the path-array form is
+the standard Postgres idiom.
+
+The first draft of the dense-graph test taught something worth keeping:
+it asserted truncation at a cap of 500 and failed, because UNION dedup
+keeps the traverse walk to node-and-depth pairs, roughly 285 rows on
+K15. The dedup is what makes traversal polynomial on a complete graph,
+which is D7's whole point, and the test now asserts both halves.
+
+**Skipped: the test environment fallback.** The finding asked the
+in-crate pruning test to skip when YEOMNA_TEST_DB is unset and to take
+its port from configuration. The fallback to the dev cluster's socket
+and the fixed port are the standing cluster-gate pattern of every test
+since spec 008, stated in those tests' own docs. Changing one instance
+would diverge from the convention, and changing the convention is not
+this PR.
+
+**Skipped: removing SQL from `read.rs`.** The finding asked that the
+verb layer obtain `current_user` through an approved data-access layer
+rather than SQL, on the guideline that nothing outside the verb layer
+holds SQL. `read.rs` is the verb layer: the charter says the verbs
+emit the SQL, and the workspace lint names `yeomna-verbs` as one of
+the two crates allowed to hold it. The guideline the finding cites is
+the one this file exists to satisfy.
 
 ## What is deliberately not here
 

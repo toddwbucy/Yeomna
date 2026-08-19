@@ -84,9 +84,17 @@ impl Session {
     pub(crate) async fn as_provision(&self, sql: &str) -> Result<(), tokio_postgres::Error> {
         use std::sync::atomic::Ordering;
         self.escalated.store(true, Ordering::SeqCst);
-        self.client
-            .batch_execute("SET ROLE yeomna_provision")
-            .await?;
+        if let Err(e) = self.client.batch_execute("SET ROLE yeomna_provision").await {
+            // An error from SET ROLE means the role never changed, so
+            // the session is not escalated and must not retire over it:
+            // a missing provision role would otherwise brick every
+            // session that tried. A cancellation during the await never
+            // reaches this line, which is the case the eager flag exists
+            // for, since the statement may have taken effect server-side
+            // with nobody left polling.
+            self.escalated.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
         let result = self.client.batch_execute(sql).await;
         let reset = self.client.batch_execute("RESET ROLE").await;
         if reset.is_ok() {

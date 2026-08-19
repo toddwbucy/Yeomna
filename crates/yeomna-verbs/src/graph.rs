@@ -21,7 +21,10 @@ const RELATIONS: [&str; 5] = ["defines", "calls", "implements", "imports", "cont
 /// The bases the enum admits.
 const BASES: [&str; 3] = ["declared", "structural", "asserted"];
 /// The internal depth bound on the enumerating shortest-path walk.
-const PATH_DEPTH: i32 = 20;
+/// Ten, not the traversal's twenty: the reference measured real query
+/// depths of one to three, and every hop of headroom multiplies the
+/// worst-case enumeration should the fetch bound ever stop holding.
+const PATH_DEPTH: i32 = 10;
 /// The structural bound on traversal depth, whatever the caller asks.
 /// The row cap stops the walk through the fetch limit, and this clamp is
 /// the guarantee that does not depend on fetch semantics.
