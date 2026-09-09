@@ -18,6 +18,7 @@ use crate::database;
 use crate::envelope::{Envelope, envelope, error_envelope};
 use crate::error::VerbError;
 use crate::graph;
+use crate::ingest;
 use crate::read;
 use crate::sql;
 use crate::verb::Verb;
@@ -142,6 +143,15 @@ impl Session {
         self
     }
 
+    /// Where this cluster answers, for the verbs that open their own
+    /// connection: `sql` reaches another database, and the ingesting
+    /// verbs need a client the call lock is not holding.
+    fn endpoint(&self) -> Option<(&str, u16)> {
+        self.endpoint
+            .as_ref()
+            .map(|(dir, port)| (dir.as_str(), *port))
+    }
+
     fn exec<'a>(&'a self, client: &'a Client) -> Exec<'a> {
         Exec {
             client,
@@ -240,13 +250,7 @@ impl Session {
             Verb::Purge(r) => write::purge(client, graph, attempt, r).await,
             Verb::EdgeAssert(r) => write::edge_assert(client, graph, attempt, r).await,
             Verb::EdgeRetract(r) => write::edge_retract(client, graph, attempt, r).await,
-            Verb::Sql(r) => {
-                let endpoint = self
-                    .endpoint
-                    .as_ref()
-                    .map(|(dir, port)| (dir.as_str(), *port));
-                sql::sql(&self.exec(client), endpoint, r).await
-            }
+            Verb::Sql(r) => sql::sql(&self.exec(client), self.endpoint(), r).await,
 
             Verb::SchemaApply(_) | Verb::SchemaList(_) | Verb::SchemaShow(_) => {
                 Err(unimplemented_in("the schema manager, H7", verb))
@@ -258,12 +262,21 @@ impl Session {
                 Err(unimplemented_in("the graph-embed era, H9", verb))
             }
 
-            Verb::Ingest(_)
-            | Verb::CodebaseIngest(_)
-            | Verb::CodebaseRetire(_)
-            | Verb::CodebasePrune(_)
-            | Verb::CodebaseDrift(_)
-            | Verb::CodebaseValidate(_) => Err(unimplemented_in("Phase 6", verb)),
+            // -- Phase 6a, spec 019 ----------------------------------------
+            Verb::Ingest(r) => ingest::ingest(&self.exec(client), self.endpoint(), r).await,
+            Verb::CodebaseIngest(r) => {
+                ingest::codebase_ingest(&self.exec(client), self.endpoint(), r).await
+            }
+            Verb::CodebaseDrift(r) => {
+                ingest::codebase_drift(&self.exec(client), self.endpoint(), r).await
+            }
+            Verb::CodebaseValidate(r) => ingest::codebase_validate(&self.exec(client), r).await,
+
+            // The destructive half, whose audit args carry the sentence
+            // T3's truth rests on.
+            Verb::CodebaseRetire(_) | Verb::CodebasePrune(_) => {
+                Err(unimplemented_in("Phase 6b", verb))
+            }
         }
     }
 }

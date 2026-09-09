@@ -630,6 +630,21 @@ impl yeomna_pipeline::probe::IngestProbe for PgSink {
             .map(|r| r.get(0)))
     }
 
+    async fn stored_file_keys(&self) -> Result<Vec<(String, String)>, StoreError> {
+        Ok(self
+            .client
+            .query(
+                "SELECT natural_key, payload->>'path' FROM nodes
+                 WHERE graph_id = $1 AND kind = 'file' AND payload ? 'path'
+                 ORDER BY natural_key",
+                &[&self.graph_id],
+            )
+            .await?
+            .iter()
+            .map(|r| (r.get(0), r.get(1)))
+            .collect())
+    }
+
     async fn enrichment_present(&self, file_keys: &[String]) -> Result<bool, StoreError> {
         if file_keys.is_empty() {
             return Ok(false);

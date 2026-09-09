@@ -26,6 +26,7 @@ mod error;
 mod execute;
 pub mod frame;
 mod graph;
+mod ingest;
 mod read;
 mod sql;
 mod verb;

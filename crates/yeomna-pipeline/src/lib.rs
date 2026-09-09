@@ -21,7 +21,7 @@ pub mod probe;
 pub mod profile;
 pub mod sink;
 
-pub use codebase::{CodebaseConfig, CodebaseSummary, ingest_codebase};
+pub use codebase::{CodebaseConfig, CodebaseSummary, DriftSummary, drift, ingest_codebase};
 pub use documents::{
     ConformsSummary, DocumentsConfig, DocumentsSummary, ingest_documents, link_conforms,
 };

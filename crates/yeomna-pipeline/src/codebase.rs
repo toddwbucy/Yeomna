@@ -190,6 +190,96 @@ where
     Ok(summary)
 }
 
+/// What a drift comparison found (D2). Paths rather than counts alone,
+/// because an operator asked to trust a graph wants to see which files
+/// the graph is wrong about.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DriftSummary {
+    /// Files the walk offered and analyzed.
+    pub files_seen: usize,
+    /// Files whose stored `symbol_hash` matches. The graph is right
+    /// about these.
+    pub unchanged: usize,
+    /// Files whose symbols hash differently than the graph holds.
+    pub changed: Vec<String>,
+    /// Files the tree has and the graph has never seen.
+    pub new: Vec<String>,
+    /// Files the graph holds and the tree no longer has. This is the
+    /// list `retire` acts on.
+    pub missing: Vec<String>,
+    /// Files that could not be read or analyzed, so nothing can be said
+    /// about them either way.
+    pub unreadable: Vec<String>,
+}
+
+impl DriftSummary {
+    /// True when the graph matches the tree.
+    pub fn clean(&self) -> bool {
+        self.changed.is_empty() && self.new.is_empty() && self.missing.is_empty()
+    }
+}
+
+/// Compare a tree against what the graph holds, and write nothing (D2).
+///
+/// Shares the ingest's own walk and analysis, so the comparison is
+/// against what an ingest would write rather than against a second idea
+/// of it. That is the whole value: a drift that agreed with a different
+/// analyzer than the one that fills the graph would report drift where
+/// there is none, or miss it where there is.
+pub async fn drift<S>(
+    root: &Path,
+    sink: &S,
+    config: &CodebaseConfig,
+) -> Result<DriftSummary, PipelineError>
+where
+    S: IngestProbe,
+{
+    let mut walked = CodebaseSummary::default();
+    let analyzed = walk_and_analyze(root, sink, config, &mut walked).await?;
+    let mut summary = DriftSummary {
+        files_seen: analyzed.len(),
+        ..Default::default()
+    };
+
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for file in &analyzed {
+        seen_keys.insert(file.file_key.clone());
+        let stored = sink
+            .stored_symbol_hash(&file.file_key)
+            .await
+            .map_err(|e| PipelineError::Sink(Box::new(e)))?;
+        match stored {
+            None => summary.new.push(file.rel_path.clone()),
+            Some(h) if h == file.analysis.symbol_hash => summary.unchanged += 1,
+            Some(_) => summary.changed.push(file.rel_path.clone()),
+        }
+    }
+
+    for (key, path) in sink
+        .stored_file_keys()
+        .await
+        .map_err(|e| PipelineError::Sink(Box::new(e)))?
+    {
+        if !seen_keys.contains(&key) {
+            summary.missing.push(path);
+        }
+    }
+
+    // The walk counts what it could not read, and drift says so rather
+    // than letting an unreadable file look unchanged.
+    if walked.files_failed > 0 {
+        summary.unreadable.push(format!(
+            "{} file(s) could not be analyzed",
+            walked.files_failed
+        ));
+    }
+    summary.changed.sort();
+    summary.new.sort();
+    summary.missing.sort();
+    info!(?summary, "drift complete");
+    Ok(summary)
+}
+
 /// Walk the tree and analyze what it offers, honoring `.gitignore`.
 async fn walk_and_analyze<S>(
     root: &Path,
