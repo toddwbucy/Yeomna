@@ -100,13 +100,24 @@ SPU replaces). The weaver-spu embedder operation is the primary path.
 | CLI holes it fills | 6 (`embed` tree) |
 | Also fills | late-chunking wiring (specified in the reference, never wired), the PE-API successor contract with a Yeomna-native name, retirement of the client's TCP default |
 | Constraint | 32k-context late-chunking-capable model, GPU 2 |
+| Measured 2026-09-09 | weaver-spu has no embedder operation (the Python embedder retired at its PR-1.J and nothing replaced it), so this contract means adding an embed directive to the SPU wire protocol, not pointing at an existing one |
+| Harvest pointers (from docling-rag, read not adopted, R19) | the deterministic hash embedder as a test double for cluster-anywhere embedding tests, and RRF hybrid fusion as reference when the `hybrid` query flag lands |
 
 ## H5. The extraction backend
 
-**R5 ruled 2026-08-15: stay where we are and watch.** The 2026-08-12
-direction toward a Rust engine is not reversed, it is not acted on. The
-Python service stays the behavioral reference and the interim path, and
-PR #17 stays in draft.
+**R19 ruled 2026-09-09 (revising R5): the declarative half goes native.**
+R5's revisit trigger fired when the WeaverTools corpus arrived (51k
+lines of load-bearing Markdown that a semantic KG cannot do without),
+and spec 015 adopts the `docling` converter crate, pinned, behind an
+extraction trait, PDF feature off. Markdown proves it now and the
+office formats ride along untested until a corpus needs one. The PDF
+half of this hole is unchanged: the Python service stays the
+behavioral reference, PR #17 stays in draft, and the R5 spike
+(captions, formulas, parity on our documents) is still owed before
+that flips. Spec 015 also carries the `conforms:` doc-to-code
+resolver, the linkage that makes the WeaverTools graph semantic.
+
+The original R5 reasoning, kept for the record:
 
 The reasoning, and the correction that came with it:
 
@@ -277,6 +288,8 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R7 | `edge_basis` Rust mapping | **Ruled 2026-08-15 as R12 (spec 011): text at the boundary**, cast in SQL, no second enum to drift from the DDL |
 | R15 | PostgreSQL major version | **Ruled 2026-09-09: stay pinned at 18.x.** PG 19 is still in beta, the repos carry 18.6, and the feature that would have mattered, SQL/PGQ property graphs, was reverted from 19 on 2026-09-07 for design issues. D7's recursive CTEs never depended on it. Revisit at PG 20 GA (expected late 2027) if SQL/PGQ returns, as an internal traversal rewrite behind unchanged verbs |
 | R16-R18 | Session ownership, the `sql` verb's role and detection, the edge verbs | **Agreed 2026-09-09 and built (spec 014)**. R16: the client lives inside the call lock. R17/R17a: `sql` runs as the provision role on a per-call connection, kg pattern detected structurally. R18 amends the contract (40 to 42 verbs, `edge.assert` and `edge.retract`), exposed by the first customer: a deployment graph is mostly edges and the contract could not write one. The build moved the relation CHECK into the partitions (SCHEMA_VERSION 1.1.0) and let the store PRD's inherited cascade rule delete and purge, both recorded in the 014 review notes |
+| R19 | Native extraction (revises R5) | **Agreed 2026-09-09, specced (015)**: adopt the `docling` converter crate only, pinned, PDF feature off, behind an extraction trait, proven on the WeaverTools Markdown corpus. PR #17 stays in draft as the PDF reference until the R5 spike runs against the Rust engine. `docling-rag` declined: its defaults are a second store, a remote LLM, and a foreign chunker, three charter violations before configuration. What changed since R5: the format migration is complete and byte-for-byte validated upstream, and declarative formats need no ML assets |
+| R19a | The `conforms` relation | **Proposed in spec 015**, awaiting Todd: the closed relation list on the declared and structural partitions gains `conforms` for doc-to-code edges (SCHEMA_VERSION 1.2.0). Reusing `implements` declined as ambiguous with trait-impl edges |
 
 ## The fill order, as the dependencies read
 
