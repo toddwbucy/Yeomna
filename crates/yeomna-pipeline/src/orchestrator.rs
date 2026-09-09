@@ -6,11 +6,12 @@ use std::time::Instant;
 use serde_json::{Value, json};
 use tracing::{debug, error, info, instrument, warn};
 
+use crate::extract::{ExtractError, Extractor};
 use crate::profile::CollectionProfile;
 use crate::sink::IngestSink;
 use yeomna_chunking::{ChunkingStrategy, TextChunk};
 use yeomna_embed::embedding::{EmbedResult, EmbeddingClient, EmbeddingError};
-use yeomna_embed::extraction::{ExtractOptions, ExtractResult, ExtractionClient, ExtractionError};
+use yeomna_embed::extraction::{ExtractOptions, ExtractResult, ExtractionClient};
 use yeomna_keys as keys;
 
 /// Pipeline configuration.
@@ -44,7 +45,7 @@ impl Default for PipelineConfig {
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
     #[error("extraction failed: {0}")]
-    Extraction(#[from] ExtractionError),
+    Extraction(#[from] ExtractError),
 
     #[error("embedding failed: {0}")]
     Embedding(#[from] EmbeddingError),
@@ -107,22 +108,19 @@ impl PipelineSummary {
 /// The document processing pipeline.
 ///
 /// Orchestrates extraction, chunking, embedding, and storage for
-/// documents flowing into the Yeomna knowledge graph.
-pub struct Pipeline<S: IngestSink> {
-    extractor: ExtractionClient,
+/// documents flowing into the Yeomna knowledge graph. Generic over its
+/// extractor since spec 015: the socket client by default, the native
+/// docling backend when the caller says so.
+pub struct Pipeline<S: IngestSink, X: Extractor = ExtractionClient> {
+    extractor: X,
     embedder: EmbeddingClient,
     sink: S,
     config: PipelineConfig,
 }
 
-impl<S: IngestSink> Pipeline<S> {
-    /// Create a new pipeline with the given service clients, sink, and config.
-    pub fn new(
-        extractor: ExtractionClient,
-        embedder: EmbeddingClient,
-        sink: S,
-        config: PipelineConfig,
-    ) -> Self {
+impl<S: IngestSink, X: Extractor> Pipeline<S, X> {
+    /// Create a new pipeline with the given extractor, embedder, sink, and config.
+    pub fn new(extractor: X, embedder: EmbeddingClient, sink: S, config: PipelineConfig) -> Self {
         Self {
             extractor,
             embedder,
@@ -476,7 +474,7 @@ impl<S: IngestSink> Pipeline<S> {
     }
 }
 
-impl<S: IngestSink> std::fmt::Debug for Pipeline<S> {
+impl<S: IngestSink, X: Extractor> std::fmt::Debug for Pipeline<S, X> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pipeline")
             .field("profile", &self.config.profile)
@@ -499,7 +497,12 @@ impl<S: IngestSink> std::fmt::Debug for Pipeline<S> {
 /// Writing both, with the field name taken from the SAME `CollectionProfile`
 /// the reader uses, makes writer/reader agreement structural rather than
 /// conventional.
-fn chunk_doc(profile: &CollectionProfile, doc_key: &str, index: usize, chunk: &TextChunk) -> Value {
+pub(crate) fn chunk_doc(
+    profile: &CollectionProfile,
+    doc_key: &str,
+    index: usize,
+    chunk: &TextChunk,
+) -> Value {
     let mut doc = json!({
         "_key": keys::chunk_key(doc_key, index),
         "doc_key": doc_key,

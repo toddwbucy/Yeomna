@@ -11,11 +11,18 @@ yeomna-chunking = { path = "../yeomna-chunking" }
 yeomna-keys = { path = "../yeomna-keys" }
 yeomna-embed = { path = "../yeomna-embed" }
 yeomna-code = { path = "../yeomna-code" }
+yeomna-proto = { path = "../yeomna-proto" }
 ignore.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 tracing.workspace = true
+# R19 (spec 015): the converter crate only, pinned exactly because it
+# releases several times a day, default features off so the PDF, ASR,
+# VLM, and image-fetch pipelines and their models never enter the tree.
+docling = { version = "=1.41.0", default-features = false }
 
 [dev-dependencies]
-tokio.workspace = true
+tempfile.workspace = true

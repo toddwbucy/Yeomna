@@ -38,7 +38,8 @@ fn session_graph(graph: Option<&str>) -> Result<&str, VerbError> {
 
 /// An asserted relation is the caller's vocabulary, bounded to identifier
 /// shape and deliberately not enumerated (R18). Mirrors the
-/// `edges_asserted` partition CHECK by construction.
+/// `edges_asserted` partition CHECK by construction, hyphen included
+/// since R19a admitted kebab on the open partitions.
 fn check_relation(relation: &str) -> Result<(), VerbError> {
     let ok = !relation.is_empty()
         && relation.len() <= 63
@@ -48,12 +49,12 @@ fn check_relation(relation: &str) -> Result<(), VerbError> {
             .is_some_and(|c| c.is_ascii_lowercase())
         && relation
             .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
     if ok {
         return Ok(());
     }
     Err(VerbError::InvalidArgs(format!(
-        "relation {relation:?} must be a lowercase identifier (a-z, then a-z, 0-9, _), at most 63 bytes"
+        "relation {relation:?} must be a lowercase identifier (a-z, then a-z, 0-9, _, -), at most 63 bytes"
     )))
 }
 

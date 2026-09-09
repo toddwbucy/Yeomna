@@ -607,6 +607,29 @@ impl yeomna_pipeline::probe::IngestProbe for PgSink {
             .and_then(|r| r.get(0)))
     }
 
+    async fn stored_document_hash(&self, natural_key: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .client
+            .query_opt(
+                "SELECT payload->>'content_hash' FROM nodes
+                 WHERE graph_id = $1 AND natural_key = $2",
+                &[&self.graph_id, &natural_key],
+            )
+            .await?
+            .and_then(|r| r.get(0)))
+    }
+
+    async fn stored_kind(&self, natural_key: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .client
+            .query_opt(
+                "SELECT kind FROM nodes WHERE graph_id = $1 AND natural_key = $2",
+                &[&self.graph_id, &natural_key],
+            )
+            .await?
+            .map(|r| r.get(0)))
+    }
+
     async fn enrichment_present(&self, file_keys: &[String]) -> Result<bool, StoreError> {
         if file_keys.is_empty() {
             return Ok(false);
