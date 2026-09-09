@@ -63,7 +63,7 @@ its code, documents, databases, services, and agents, and the edges
 between them. The boundary is ruled (D9): Yeomna is an external RAG
 appliance, never a part of the WeaverTools architecture, and its first
 caller is Claude Code itself, using the graph as the RAG for building
-these projects. **Phase 4 is built** (spec 014, PR #36 in review): seven
+these projects. **Phase 4 is merged** (spec 014, PR #36, 2026-09-09): seven
 verbs including R18's `edge.assert` and `edge.retract`, the contract at
 42 wire names, and the audit transaction proven by a crash-shaped test.
 Next per R21's ten-PR order: the spec 015 document graph, the M2
