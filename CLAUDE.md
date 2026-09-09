@@ -22,7 +22,8 @@ without a cluster. Edge identity is ruled (R6, spec 009).
 
 **H2, the verb layer, is under construction.** `docs/PRD-verb-layer.md` is
 settled at v0.4 (all five review questions ruled) and Phase 1 of 7 is merged
-(spec 010): `crates/yeomna-verbs` carries the closed 40-verb contract, the
+(spec 010): `crates/yeomna-verbs` carries the closed verb contract (40 wire
+names at Phase 1, 42 since R18 added the edge verbs in Phase 4), the
 envelope, and the error taxonomy, with R4 closed so the wire names are
 binding. The `audit_log.outcome` column landed with it under a column-scoped
 grant, which is how attempt logging coexists with an append-only table. A
