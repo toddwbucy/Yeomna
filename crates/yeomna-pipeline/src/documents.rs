@@ -5,9 +5,13 @@
 //!
 //! Two disciplines borrowed whole from the codebase orchestrator: a file
 //! that will not convert is a counted refusal and the batch continues,
-//! and an unchanged file is skipped for writing on the strength of a
-//! stored content hash, so R8 and R9 hold for documents exactly as they
-//! do for code.
+//! and an unchanged file is skipped for conversion and writing on the
+//! strength of a stored content hash, so R8 and R9 hold for documents
+//! exactly as they do for code. Skipped for writing, never for
+//! declaration: every file's graph blocks are read and re-declared on
+//! every run, which is what makes a run interrupted between a document
+//! and its declarations, or an edge the sink rejected, repair itself on
+//! the next run instead of hiding behind the hash.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -89,6 +93,10 @@ pub struct DocumentsSummary {
     pub placeholders: usize,
     pub edges_declared: usize,
     pub edges_rejected: usize,
+    /// Repeated declarations of one node key or one edge identity across
+    /// the corpus. The first in sorted order wins and the rest are
+    /// counted here rather than written over it.
+    pub duplicates: usize,
     /// Declared edges by relation, as the corpus named them.
     pub relations: BTreeMap<String, usize>,
     /// Every per-file and per-block refusal, as `path: reason`.
@@ -193,6 +201,29 @@ where
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
+        // The blocks are read from the source, not the export, so a
+        // converter that reflows fences cannot hide a declaration. And
+        // they are read before the hash-skip, for every file: skipped for
+        // conversion and writing, never for declaration.
+        let blocks = std::str::from_utf8(&bytes)
+            .map(parse_graph_blocks)
+            .unwrap_or_default();
+        let block_count = blocks.blocks_seen;
+        summary.blocks_seen += block_count;
+        summary.blocks_refused += blocks.refusals.len();
+        for r in &blocks.refusals {
+            summary
+                .refusals
+                .push(format!("{}:{}: {}", file.rel_path, r.line, r.reason));
+        }
+        if !blocks.nodes.is_empty() || !blocks.edges.is_empty() {
+            declared.push(Declared {
+                doc_key: doc_key.clone(),
+                nodes: blocks.nodes,
+                edges: blocks.edges,
+            });
+        }
+
         let stored = sink
             .stored_document_hash(&doc_key)
             .await
@@ -216,19 +247,6 @@ where
             }
         };
 
-        // The blocks are read from the source, not the export, so a
-        // converter that reflows fences cannot hide a declaration.
-        let blocks = std::str::from_utf8(&bytes)
-            .map(parse_graph_blocks)
-            .unwrap_or_default();
-        summary.blocks_seen += blocks.blocks_seen;
-        summary.blocks_refused += blocks.refusals.len();
-        for r in &blocks.refusals {
-            summary
-                .refusals
-                .push(format!("{}:{}: {}", file.rel_path, r.line, r.reason));
-        }
-
         let headings: Value = extracted
             .metadata
             .get("headings")
@@ -244,7 +262,7 @@ where
             "extractor": extracted.metadata.get("extractor"),
             "full_text": extracted.full_text,
             "chunk_count": chunks.len(),
-            "graph_blocks": blocks.blocks_seen,
+            "graph_blocks": block_count,
         });
         let out = sink
             .insert_documents(DOCUMENTS, &[doc], config.overwrite)
@@ -278,14 +296,6 @@ where
                 .map_err(|e| PipelineError::Sink(Box::new(e)))?;
             summary.chunks_written += out.created;
         }
-
-        if !blocks.nodes.is_empty() || !blocks.edges.is_empty() {
-            declared.push(Declared {
-                doc_key,
-                nodes: blocks.nodes,
-                edges: blocks.edges,
-            });
-        }
     }
 
     write_declared(sink, config, &declared, &mut summary).await?;
@@ -312,7 +322,12 @@ where
     let mut node_docs: Vec<Value> = Vec::new();
     for d in declared {
         for n in &d.nodes {
-            declared_keys.insert(n.key.clone());
+            // First declaration wins, the walk being sorted, and a second
+            // one is a count rather than an overwrite.
+            if !declared_keys.insert(n.key.clone()) {
+                summary.duplicates += 1;
+                continue;
+            }
             let existing = sink
                 .stored_kind(&n.key)
                 .await
@@ -375,10 +390,16 @@ where
         summary.placeholders += out.created;
     }
 
-    // Edges, relation names as the corpus wrote them.
+    // Edges, relation names as the corpus wrote them, one row per R6
+    // identity however many times the corpus restates it.
     let mut edge_docs: Vec<Value> = Vec::new();
+    let mut identities: HashSet<(String, String, String)> = HashSet::new();
     for d in declared {
         for e in &d.edges {
+            if !identities.insert((e.from.clone(), e.to.clone(), e.relation.clone())) {
+                summary.duplicates += 1;
+                continue;
+            }
             *summary.relations.entry(e.relation.clone()).or_insert(0) += 1;
             let mut payload = json!({
                 "declared_in": d.doc_key,
@@ -423,6 +444,9 @@ pub struct ConformsSummary {
     /// Slugs no node carries, each named once. A header pointing at a
     /// retired claim is a finding the graph owes its operator (EC-2).
     pub unresolved: Vec<String>,
+    /// The same file naming the same claim more than once: one edge,
+    /// the first line kept, the rest counted here.
+    pub duplicates: usize,
     pub refusals: Vec<String>,
 }
 
@@ -440,6 +464,7 @@ where
     let mut summary = ConformsSummary::default();
     let mut known: HashMap<String, bool> = HashMap::new();
     let mut unresolved: HashSet<String> = HashSet::new();
+    let mut linked: HashSet<(String, String)> = HashSet::new();
     let mut edge_docs: Vec<Value> = Vec::new();
 
     let mut files: Vec<(String, std::path::PathBuf, u64)> = Vec::new();
@@ -483,6 +508,10 @@ where
         }
         let file_key = keys::file_key(&rel_path);
         for h in scan.headers {
+            if !linked.insert((file_key.clone(), h.slug.clone())) {
+                summary.duplicates += 1;
+                continue;
+            }
             let exists = match known.get(&h.slug) {
                 Some(v) => *v,
                 None => {

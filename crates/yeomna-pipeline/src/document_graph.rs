@@ -133,6 +133,36 @@ enum Stanza {
     Edge(GraphEdge),
 }
 
+/// Keys the notation reserves, refused as extras rather than stored, so
+/// a missing blank line between a node stanza and an edge stanza cannot
+/// fold one into the other's extras and vanish, and so an extra can never
+/// shadow a field the writer sets on the row. Two sets, because the
+/// notation lets an edge carry `tag:` and `kind:` as attributes (the
+/// corpus's own format document does), while on a node those are the
+/// declaration itself.
+const ROW_FIELDS: [&str; 5] = [
+    "_key",
+    "declared_in",
+    "declared_at_line",
+    "placeholder",
+    "first_named_in",
+];
+const NODE_RESERVED: [&str; 4] = ["node", "edge", "from", "to"];
+const EDGE_RESERVED: [&str; 2] = ["node", "edge"];
+
+fn is_reserved(key: &str, stanza: &[&str]) -> bool {
+    ROW_FIELDS.contains(&key) || stanza.contains(&key)
+}
+
+fn reserved(line: usize, key: &str) -> Refusal {
+    Refusal {
+        line,
+        reason: format!(
+            "{key}: is reserved here, a blank line separates stanzas and a row field is not an extra"
+        ),
+    }
+}
+
 /// One block: stanzas split on blank lines, any bad stanza refuses the
 /// whole block (EC-7), because a block is one declaration.
 fn parse_block(start: usize, lines: &[(usize, String)], out: &mut GraphBlocks) {
@@ -217,6 +247,9 @@ fn parse_stanza(lines: &[(usize, &str)]) -> Result<Stanza, Refusal> {
                         }
                     }
                     _ => {
+                        if is_reserved(&k, &NODE_RESERVED) {
+                            return Err(reserved(n, &k));
+                        }
                         node.extra.insert(k, v);
                     }
                 }
@@ -242,13 +275,16 @@ fn parse_stanza(lines: &[(usize, &str)]) -> Result<Stanza, Refusal> {
                                 reason: format!("{k}: {v:?} is not one token"),
                             });
                         }
-                        if k == "from" {
-                            from = Some(v);
-                        } else {
-                            to = Some(v);
+                        let slot = if k == "from" { &mut from } else { &mut to };
+                        if slot.is_some() {
+                            return Err(reserved(n, &k));
                         }
+                        *slot = Some(v);
                     }
                     _ => {
+                        if is_reserved(&k, &EDGE_RESERVED) {
+                            return Err(reserved(n, &k));
+                        }
                         extra.insert(k, v);
                     }
                 }
@@ -410,6 +446,44 @@ weight: 2
                 .reason
                 .contains("both from: and to:")
         );
+    }
+
+    #[test]
+    fn reserved_keys_refuse_rather_than_become_extras() {
+        // A missing blank line would otherwise fold the edge into the
+        // node's extras and drop it with no count.
+        let md =
+            "```graph\nnode: a-claim\nkind: assertion\nedge: asserts\nfrom: x\nto: a-claim\n```\n";
+        let g = parse_graph_blocks(md);
+        assert!(g.nodes.is_empty() && g.edges.is_empty());
+        assert_eq!(g.refusals.len(), 1);
+        assert!(
+            g.refusals[0].reason.starts_with("edge: is reserved"),
+            "{:?}",
+            g.refusals
+        );
+        // An extra cannot shadow a row field.
+        let md = "```graph\nnode: a-claim\n_key: other\n```\n";
+        assert!(
+            parse_graph_blocks(md).refusals[0]
+                .reason
+                .starts_with("_key: is reserved")
+        );
+        // A second from: is a mistake, not an override.
+        let md = "```graph\nedge: asserts\nfrom: x\nfrom: y\nto: z\n```\n";
+        assert!(
+            parse_graph_blocks(md).refusals[0]
+                .reason
+                .starts_with("from: is reserved")
+        );
+        // An edge carries tag: and kind: as attributes, as the corpus's
+        // format document itself does, so those are extras on an edge and
+        // the declaration on a node.
+        let md = "```graph\nedge: party\nfrom: x\nto: y\ntag: manifest\nkind: witness\n```\n";
+        let g = parse_graph_blocks(md);
+        assert!(g.refusals.is_empty(), "{:?}", g.refusals);
+        assert_eq!(g.edges[0].extra["tag"], "manifest");
+        assert_eq!(g.edges[0].extra["kind"], "witness");
     }
 
     #[test]

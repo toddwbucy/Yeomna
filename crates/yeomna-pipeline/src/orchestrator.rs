@@ -11,7 +11,7 @@ use crate::profile::CollectionProfile;
 use crate::sink::IngestSink;
 use yeomna_chunking::{ChunkingStrategy, TextChunk};
 use yeomna_embed::embedding::{EmbedResult, EmbeddingClient, EmbeddingError};
-use yeomna_embed::extraction::{ExtractOptions, ExtractResult, ExtractionClient};
+use yeomna_embed::extraction::{ExtractOptions, ExtractResult, ExtractionClient, ExtractionError};
 use yeomna_keys as keys;
 
 /// Pipeline configuration.
@@ -44,8 +44,15 @@ impl Default for PipelineConfig {
 /// Error type for pipeline operations.
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
+    /// The service client's error, kept as the lifted API's variant (spec
+    /// 005) for callers that reach the client directly.
     #[error("extraction failed: {0}")]
-    Extraction(#[from] ExtractError),
+    Extraction(#[from] ExtractionError),
+
+    /// The extraction seam's error (spec 015), which is what the pipeline
+    /// itself sees now that the extractor is a trait.
+    #[error("extraction failed: {0}")]
+    Extract(#[from] ExtractError),
 
     #[error("embedding failed: {0}")]
     Embedding(#[from] EmbeddingError),

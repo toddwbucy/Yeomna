@@ -185,13 +185,21 @@ async fn documents_land_with_chunks_and_the_corpus_declared_graph() {
         return;
     };
     let root = corpus();
+    // A later file restating the claim with a different tag: the first
+    // in sorted order wins and the restatement is a count.
+    std::fs::write(
+        root.path().join("docs/zz-restated.md"),
+        "# Restated\n\n```graph\nnode: some-claim\nkind: assertion\ntag: review\n\nedge: asserts\nfrom: weaver-types\nto: some-claim\n```\n",
+    )
+    .unwrap();
     let s = run_documents(root.path(), &sink).await;
 
-    assert_eq!(s.files_seen, 2);
-    assert_eq!(s.files_written, 2);
+    assert_eq!(s.files_seen, 3);
+    assert_eq!(s.files_written, 3);
     assert_eq!(s.files_failed, 0, "{:?}", s.refusals);
-    assert!(s.chunks_written >= 2, "{s:?}");
-    assert_eq!(s.blocks_seen, 2);
+    assert!(s.chunks_written >= 3, "{s:?}");
+    assert_eq!(s.blocks_seen, 3);
+    assert_eq!(s.duplicates, 2, "one node and one edge restated");
     assert_eq!(
         s.blocks_refused, 1,
         "the prose kind refuses its block (EC-7)"
@@ -229,7 +237,7 @@ async fn documents_land_with_chunks_and_the_corpus_declared_graph() {
     let (claim_id, kind, payload) = node(&owner, G, "some-claim").await.expect("claim node");
     assert_eq!(kind, "document");
     assert_eq!(payload["declared_kind"], "assertion");
-    assert_eq!(payload["tag"], "perturbation");
+    assert_eq!(payload["tag"], "perturbation", "spec.md's declaration won");
     assert_eq!(payload["declared_in"], doc_key);
 
     // The placeholder: created, flagged, never overwriting.
@@ -261,17 +269,35 @@ async fn re_ingest_skips_unchanged_and_logs_only_what_changed() {
     let spec_key = keys::normalize_document_key("docs/spec.md");
     assert_eq!(log_len(&owner, G, &notes_key).await, 1);
 
+    // Between runs an edge goes missing, as an interrupted run or a
+    // rejected write would leave it. The hash still matches, and the
+    // next run repairs it anyway: skipped for writing, not for
+    // declaration.
+    owner
+        .execute(
+            "DELETE FROM edges e USING graphs g
+             WHERE g.id = e.graph_id AND g.name = $1 AND e.relation = 'floor-link'",
+            &[&G],
+        )
+        .await
+        .unwrap();
+    assert_eq!(edges(&owner, G).await.len(), 1);
+
     let again = run_documents(root.path(), &sink).await;
     assert_eq!(again.files_skipped, 2, "{again:?}");
     assert_eq!(again.files_written, 0);
-    assert_eq!(
-        again.edges_declared, 0,
-        "a skipped document re-declares nothing"
-    );
+    assert_eq!(again.blocks_seen, 2, "blocks are read on every run");
+    assert_eq!(again.edges_declared, 2, "re-declared, idempotently");
+    assert_eq!(edges(&owner, G).await.len(), 2, "the missing edge is back");
     assert_eq!(
         log_len(&owner, G, &notes_key).await,
         1,
         "R8: no entry for no change"
+    );
+    assert_eq!(
+        log_len(&owner, G, "some-claim").await,
+        1,
+        "R8 holds for re-declared nodes too"
     );
 
     std::fs::write(root.path().join("notes.md"), "Different words now.\n").unwrap();
@@ -332,7 +358,7 @@ fn repo_with_docs() -> TempDir {
     std::fs::create_dir_all(d.path().join("docs")).unwrap();
     std::fs::write(
         d.path().join("helper.rs"),
-        "//! conforms: some-claim\n//! conforms: no-such-claim\n\npub fn helper() -> i64 {\n    1\n}\n",
+        "//! conforms: some-claim\n//! conforms: no-such-claim\n\n/// conforms: some-claim\npub fn helper() -> i64 {\n    1\n}\n",
     )
     .unwrap();
     std::fs::write(
@@ -396,7 +422,10 @@ async fn placeholders_promote_declarations_fuse_and_conforms_links() {
     .unwrap();
     let fused = run_documents(root.path(), &sink).await;
     assert_eq!(fused.nodes_fused, 1, "{fused:?}");
-    assert_eq!(fused.nodes_declared, 0);
+    assert_eq!(
+        fused.nodes_declared, 1,
+        "the unchanged spec re-declares its claim, the crate declaration fused instead"
+    );
     let (_, kind, _) = node(&owner, G, &file_key).await.unwrap();
     assert_eq!(kind, "file", "the code node was not overwritten");
 
@@ -406,7 +435,8 @@ async fn placeholders_promote_declarations_fuse_and_conforms_links() {
         .await
         .expect("conforms pass runs");
     assert_eq!(links.files_scanned, 1);
-    assert_eq!(links.headers_seen, 2);
+    assert_eq!(links.headers_seen, 3);
+    assert_eq!(links.duplicates, 1, "the item-level restatement");
     assert_eq!(links.edges_written, 1);
     assert_eq!(links.edges_rejected, 0);
     assert_eq!(links.unresolved, vec!["no-such-claim".to_string()]);

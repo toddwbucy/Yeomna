@@ -31,6 +31,11 @@ pub enum ExtractError {
     /// Converted cleanly to nothing worth indexing.
     #[error("{path}: no indexable content")]
     Empty { path: String },
+    /// The converter itself failed, which is the backend's fault and
+    /// not the file's, and an operator must be able to tell the two
+    /// apart in the refusal list.
+    #[error("{path}: converter failed: {reason}")]
+    Backend { path: String, reason: String },
     /// The file could not be read.
     #[error("{path}: {source}")]
     Io {
@@ -127,7 +132,7 @@ impl Extractor for NativeExtractor {
         let owned = path.to_path_buf();
         tokio::task::spawn_blocking(move || convert_markdown(&owned))
             .await
-            .map_err(|e| ExtractError::Malformed {
+            .map_err(|e| ExtractError::Backend {
                 path: shown,
                 reason: format!("conversion task failed: {e}"),
             })?
