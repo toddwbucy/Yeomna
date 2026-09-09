@@ -40,15 +40,21 @@ fn name_in_passwd(uid: u32, text: &str) -> Option<String> {
     })
 }
 
+/// The login name for a uid, or `None` when this machine cannot name
+/// it. The daemon asks this about a socket peer and refuses when the
+/// answer is `None` (D6), because an audit row that cannot say who
+/// acted is not a record and a synthetic name would make one.
+pub fn name_for_uid(uid: u32) -> Option<String> {
+    name_for(uid, Path::new("/etc/passwd"))
+}
+
 /// The actor this process calls as. A name when the table has one,
 /// `uid:<n>` when it does not, and `unknown` when even the kernel would
 /// not say, which is a machine shaped in a way this appliance has not
 /// met and is recorded rather than guessed at.
 pub fn from_kernel() -> String {
     match real_uid() {
-        Some(uid) => {
-            name_for(uid, Path::new("/etc/passwd")).unwrap_or_else(|| format!("uid:{uid}"))
-        }
+        Some(uid) => name_for_uid(uid).unwrap_or_else(|| format!("uid:{uid}")),
         None => "unknown".to_string(),
     }
 }

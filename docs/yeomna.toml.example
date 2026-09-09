@@ -20,3 +20,8 @@ database = "yeomna"
 # The graph a session starts scoped to when the caller names none.
 # Absent by default, which several verbs refuse and several do not.
 # graph = "yeomna_self"
+
+# Where the daemon listens (spec 018). Defaults to yeomna.sock beside
+# the store's socket, which is a directory the appliance already keeps
+# at 0700. Only `yeomna call --daemon` and yeomnad read it.
+# socket_path = "/run/yeomna/yeomna.sock"

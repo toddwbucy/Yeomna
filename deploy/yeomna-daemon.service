@@ -1,0 +1,50 @@
+[Unit]
+# The verb layer's socket surface (spec 018, PRD Phase 5). Mirrors
+# yeomna-postgres.service, which this daemon talks to and cannot start
+# without.
+Description=Yeomna verb daemon (Unix socket only)
+Documentation=file:///home/todd/git/Yeomna/docs/PRD-verb-layer.md
+After=yeomna-postgres.service
+Requires=yeomna-postgres.service
+
+[Service]
+Type=simple
+# Development runs as the operator, matching the Postgres unit. A
+# deployment gives this a dedicated system user, which is also the
+# durable fix for the 2026-09-09 incident where logind's RemoveIPC
+# swept a regular user's Postgres shared memory on logout. A system
+# user is immune by category, where a regular user needs
+# /etc/systemd/logind.conf.d/50-remove-ipc.conf to be safe.
+User=todd
+Group=todd
+ExecStart=/usr/local/bin/yeomnad
+Environment=YEOMNA_LOG=yeomna_daemon=info
+
+# Charter 5.2, and the reason this line matters more than any config
+# key: the kernel refuses anything but a Unix socket, so an edit
+# elsewhere cannot open a network surface on its own.
+RestrictAddressFamilies=AF_UNIX
+
+# The socket lives in a 0700 directory and the file itself is 0600.
+# Filesystem permission is the gate and peercred is what names who
+# passed it.
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/todd/.local/share/yeomna/run
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+
+# Like the Postgres unit: a restart loop cannot conjure a store that is
+# not there, and a daemon that will not start is a fact an operator
+# should see rather than a symptom that repeats.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

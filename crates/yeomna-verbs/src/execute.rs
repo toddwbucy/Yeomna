@@ -55,6 +55,7 @@ pub struct Session {
 /// the reach safe.
 pub(crate) struct Exec<'a> {
     client: &'a Client,
+    actor: &'a str,
     graph: Option<&'a str>,
     escalated: &'a std::sync::atomic::AtomicBool,
 }
@@ -68,6 +69,14 @@ impl Exec<'_> {
     /// The session's graph, if it has one.
     pub(crate) fn graph(&self) -> Option<&str> {
         self.graph
+    }
+
+    /// Who this session calls as. Reported by `status` so a caller can
+    /// ask the appliance who it thinks the caller is, which is the only
+    /// way to see the answer without reading the audit log, and the
+    /// audit log has no verb.
+    pub(crate) fn actor(&self) -> &str {
+        self.actor
     }
 
     /// Run one statement as `yeomna_provision`.
@@ -136,6 +145,7 @@ impl Session {
     fn exec<'a>(&'a self, client: &'a Client) -> Exec<'a> {
         Exec {
             client,
+            actor: &self.actor,
             graph: self.graph.as_deref(),
             escalated: &self.escalated,
         }
