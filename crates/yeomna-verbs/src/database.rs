@@ -13,7 +13,7 @@
 use serde_json::{Value, json};
 
 use crate::error::VerbError;
-use crate::execute::Session;
+use crate::execute::Exec;
 use crate::verb::{DatabaseCreateRequest, DatabaseKind, DropRequest};
 
 /// The template every kg-pattern database is stamped from.
@@ -27,7 +27,7 @@ fn db(e: tokio_postgres::Error) -> VerbError {
 /// nothing else. Postgres allows more, and the verb layer does not,
 /// because the name is the one thing here that cannot be a bind
 /// parameter.
-fn check_name(name: &str) -> Result<(), VerbError> {
+pub(crate) fn check_name(name: &str) -> Result<(), VerbError> {
     let ok = !name.is_empty()
         && name.len() <= 63
         && name
@@ -51,7 +51,7 @@ fn check_name(name: &str) -> Result<(), VerbError> {
 }
 
 /// `database.list`: what the cluster holds.
-pub async fn list(s: &Session) -> Result<Value, VerbError> {
+pub async fn list(s: &Exec<'_>) -> Result<Value, VerbError> {
     let rows = s
         .client()
         .query(
@@ -74,7 +74,7 @@ pub async fn list(s: &Session) -> Result<Value, VerbError> {
 }
 
 /// `database.create`: stamp the yeomna pattern, or an empty database.
-pub async fn create(s: &Session, r: &DatabaseCreateRequest) -> Result<Value, VerbError> {
+pub async fn create(s: &Exec<'_>, r: &DatabaseCreateRequest) -> Result<Value, VerbError> {
     check_name(&r.name)?;
     let sql = match r.kind {
         DatabaseKind::Kg => format!("CREATE DATABASE \"{}\" TEMPLATE {TEMPLATE}", r.name),
@@ -103,7 +103,7 @@ pub async fn create(s: &Session, r: &DatabaseCreateRequest) -> Result<Value, Ver
 /// `database.drop`: the customer's call, with the appliance's own
 /// foundations protected by name and the primary protected by mechanism,
 /// since the provision role does not own it.
-pub async fn drop(s: &Session, r: &DropRequest) -> Result<Value, VerbError> {
+pub async fn drop(s: &Exec<'_>, r: &DropRequest) -> Result<Value, VerbError> {
     check_name(&r.name)?;
     if !r.force {
         return Err(VerbError::Denied(format!(

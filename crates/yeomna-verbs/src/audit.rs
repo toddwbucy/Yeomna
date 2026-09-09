@@ -24,6 +24,14 @@ pub struct Attempt {
     id: i64,
 }
 
+impl Attempt {
+    /// The row's id, for the write path that marks its own outcome
+    /// inside the mutation transaction (spec 014 FR5).
+    pub(crate) fn id(&self) -> i64 {
+        self.id
+    }
+}
+
 /// Record the attempt. The verb does not run if this fails (EC-5): a call
 /// that cannot be recorded is a call the appliance declines to make,
 /// which is what one audited entry point costs when the log is
@@ -61,7 +69,10 @@ pub async fn finish(client: &Client, attempt: Attempt, outcome: Result<(), &Verb
     };
     if let Err(e) = client
         .execute(
-            "UPDATE audit_log SET outcome = $1 WHERE id = $2",
+            // The NULL guard makes the first mark the only mark: a write
+            // verb that committed 'ok' inside its transaction is not
+            // overwritten by the generic pass that follows dispatch.
+            "UPDATE audit_log SET outcome = $1 WHERE id = $2 AND outcome IS NULL",
             &[&mark, &attempt.id],
         )
         .await

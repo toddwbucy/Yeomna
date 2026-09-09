@@ -141,6 +141,41 @@ fn phase_two_verbs() -> Vec<Verb> {
             name: "audit_db_never".into(),
             force: false, // Denied at the force gate
         }),
+        // -- Phase 4 (spec 014). Same principle: refusals and misses
+        // audit like successes, and none of these mutates anything.
+        Verb::Insert(WriteRequest {
+            kind: "no_such_kind".into(), // InvalidArgs before any SQL
+            key: "never".into(),
+            payload: serde_json::json!({}),
+        }),
+        Verb::Update(WriteRequest {
+            kind: "document".into(),
+            key: "absent".into(), // NotFound, the transaction rolls back
+            payload: serde_json::json!({}),
+        }),
+        Verb::Delete(KindKey {
+            kind: "document".into(),
+            key: "absent".into(), // NotFound
+        }),
+        Verb::Purge(PurgeRequest {
+            key: "absent".into(),
+            force: false, // Denied at the force gate
+        }),
+        Verb::EdgeAssert(EdgeAssertRequest {
+            from: "absent".into(), // NotFound names the missing side
+            to: "also_absent".into(),
+            relation: "depends_on".into(),
+            payload: serde_json::Value::Null,
+        }),
+        Verb::EdgeRetract(EdgeRetractRequest {
+            from: "absent".into(), // NotFound, no such asserted edge
+            to: "also_absent".into(),
+            relation: "depends_on".into(),
+        }),
+        Verb::Sql(SqlRequest {
+            database: "postgres".into(), // Denied by name before any SQL
+            statement: "SELECT 1".into(),
+        }),
     ]
 }
 

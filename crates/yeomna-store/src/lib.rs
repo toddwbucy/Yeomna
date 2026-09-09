@@ -25,7 +25,13 @@ pub const SCHEMA_SQL: &str = include_str!("../schema.sql");
 /// migration this project declines to own.
 ///
 /// Bump it when `schema.sql` changes shape.
-pub const SCHEMA_VERSION: &str = "1.0.0";
+///
+/// 1.1.0 (spec 014, R18): the relation vocabulary moved from the edges
+/// parent to per-partition CHECKs, closed on declared and structural,
+/// identifier-shaped on asserted. A 1.0.0 database refuses asserted
+/// relations outside the old closed list, which is drift, so the bump
+/// costs the drop and re-ingest the header promises.
+pub const SCHEMA_VERSION: &str = "1.1.0";
 
 /// Error type for store operations.
 #[derive(Debug, thiserror::Error)]

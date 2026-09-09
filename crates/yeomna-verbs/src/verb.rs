@@ -68,6 +68,17 @@ pub enum Verb {
     #[serde(rename = "purge")]
     Purge(PurgeRequest),
 
+    // -- Edges (Phase 4, R18) ---------------------------------------------
+    /// Write one asserted edge between two existing nodes. Hand-written
+    /// edges are basis `asserted` by definition, so there is no basis
+    /// field to send.
+    #[serde(rename = "edge.assert")]
+    EdgeAssert(EdgeAssertRequest),
+    /// Remove one asserted edge. Declared and structural edges belong to
+    /// ingest and are refused.
+    #[serde(rename = "edge.retract")]
+    EdgeRetract(EdgeRetractRequest),
+
     // -- Graph (Phase 3) --------------------------------------------------
     /// Recursive traversal, D7 node-dedup form.
     #[serde(rename = "graph.traverse")]
@@ -190,6 +201,31 @@ pub struct GraphKey {
 pub struct KindKey {
     pub kind: String,
     pub key: String,
+}
+
+/// One asserted edge to write (R18). Both endpoints are node keys in the
+/// session's graph. The relation is the caller's vocabulary, validated as
+/// an identifier and deliberately not enumerated.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EdgeAssertRequest {
+    pub from: String,
+    pub to: String,
+    pub relation: String,
+    /// Edge attributes, empty when absent. Asserting an existing edge
+    /// again replaces these, which makes assertion a restatement rather
+    /// than an error.
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub payload: serde_json::Value,
+}
+
+/// One asserted edge to remove (R18).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EdgeRetractRequest {
+    pub from: String,
+    pub to: String,
+    pub relation: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -489,6 +525,8 @@ impl Verb {
             Verb::Update(_) => "update",
             Verb::Delete(_) => "delete",
             Verb::Purge(_) => "purge",
+            Verb::EdgeAssert(_) => "edge.assert",
+            Verb::EdgeRetract(_) => "edge.retract",
             Verb::GraphTraverse(_) => "graph.traverse",
             Verb::GraphNeighbors(_) => "graph.neighbors",
             Verb::GraphShortestPath(_) => "graph.shortest-path",

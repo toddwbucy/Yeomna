@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tokio_postgres::Row;
 
 use crate::error::VerbError;
-use crate::execute::Session;
+use crate::execute::Exec;
 use crate::verb::{
     CheckRequest, CountRequest, GraphScoped, KindKey, ListRequest, OrientRequest, QueryRequest,
     RecentRequest, StatsRequest,
@@ -25,9 +25,9 @@ const KINDS: [&str; 6] = ["file", "module", "type", "callable", "value", "docume
 
 /// The most rows any paged read returns, whatever was asked for. Reported
 /// back as the applied limit rather than the requested one.
-const MAX_PAGE: u32 = 1000;
+pub(crate) const MAX_PAGE: u32 = 1000;
 
-fn check_kind(kind: &str) -> Result<(), VerbError> {
+pub(crate) fn check_kind(kind: &str) -> Result<(), VerbError> {
     if KINDS.contains(&kind) {
         return Ok(());
     }
@@ -60,7 +60,7 @@ pub fn schema_version() -> Result<Value, VerbError> {
 /// What a graph is about and where it stands, as structured facts. Any
 /// narrative belongs to whatever is reading, and any welcome text belongs
 /// to the deployment's config file (H10).
-pub async fn orient(s: &Session, r: &OrientRequest) -> Result<Value, VerbError> {
+pub async fn orient(s: &Exec<'_>, r: &OrientRequest) -> Result<Value, VerbError> {
     let names: Vec<String> = match r.graph.as_deref().or_else(|| s.graph()) {
         Some(g) => {
             let exists = s
@@ -156,7 +156,7 @@ pub async fn orient(s: &Session, r: &OrientRequest) -> Result<Value, VerbError> 
 }
 
 /// `status`: does the appliance answer, and what is it.
-pub async fn status(s: &Session) -> Result<Value, VerbError> {
+pub async fn status(s: &Exec<'_>) -> Result<Value, VerbError> {
     let row = s
         .client()
         .query_one(
@@ -182,7 +182,7 @@ pub async fn status(s: &Session) -> Result<Value, VerbError> {
 /// Numbers rather than a verdict, because a document with no chunks is
 /// normal in one corpus and a defect in another, and the caller knows
 /// which it has.
-pub async fn health(s: &Session) -> Result<Value, VerbError> {
+pub async fn health(s: &Exec<'_>) -> Result<Value, VerbError> {
     let row = s
         .client()
         .query_one(
@@ -207,7 +207,7 @@ pub async fn health(s: &Session) -> Result<Value, VerbError> {
 }
 
 /// `check`: does this key exist, and where.
-pub async fn check(s: &Session, r: &CheckRequest) -> Result<Value, VerbError> {
+pub async fn check(s: &Exec<'_>, r: &CheckRequest) -> Result<Value, VerbError> {
     let rows = s
         .client()
         .query(
@@ -228,7 +228,7 @@ pub async fn check(s: &Session, r: &CheckRequest) -> Result<Value, VerbError> {
 }
 
 /// `stats`: row counts, scoped to a graph when one is named.
-pub async fn stats(s: &Session, r: &StatsRequest) -> Result<Value, VerbError> {
+pub async fn stats(s: &Exec<'_>, r: &StatsRequest) -> Result<Value, VerbError> {
     let scope = r.graph.as_deref().or_else(|| s.graph());
     // A misspelled name would otherwise answer with zeros, which reads as
     // an empty graph rather than no graph. `orient` and `codebase.stats`
@@ -272,7 +272,7 @@ pub async fn stats(s: &Session, r: &StatsRequest) -> Result<Value, VerbError> {
 }
 
 /// `codebase.stats`: what shape a code graph is in.
-pub async fn codebase_stats(s: &Session, r: &GraphScoped) -> Result<Value, VerbError> {
+pub async fn codebase_stats(s: &Exec<'_>, r: &GraphScoped) -> Result<Value, VerbError> {
     let symbols = s
         .client()
         .query(
@@ -319,7 +319,7 @@ pub async fn codebase_stats(s: &Session, r: &GraphScoped) -> Result<Value, VerbE
 }
 
 /// `get`: one node, by kind and key.
-pub async fn get(s: &Session, r: &KindKey) -> Result<Value, VerbError> {
+pub async fn get(s: &Exec<'_>, r: &KindKey) -> Result<Value, VerbError> {
     check_kind(&r.kind)?;
     let rows = s
         .client()
@@ -367,7 +367,7 @@ fn node_json(row: &Row) -> Value {
 }
 
 /// `list`: nodes by kind, paged, optionally under a parent.
-pub async fn list(s: &Session, r: &ListRequest) -> Result<Value, VerbError> {
+pub async fn list(s: &Exec<'_>, r: &ListRequest) -> Result<Value, VerbError> {
     if let Some(k) = r.kind.as_deref() {
         check_kind(k)?;
     }
@@ -400,7 +400,7 @@ pub async fn list(s: &Session, r: &ListRequest) -> Result<Value, VerbError> {
 }
 
 /// `count`: how many, by kind when named.
-pub async fn count(s: &Session, r: &CountRequest) -> Result<Value, VerbError> {
+pub async fn count(s: &Exec<'_>, r: &CountRequest) -> Result<Value, VerbError> {
     if let Some(k) = r.kind.as_deref() {
         check_kind(k)?;
     }
@@ -419,7 +419,7 @@ pub async fn count(s: &Session, r: &CountRequest) -> Result<Value, VerbError> {
 }
 
 /// `recent`: what landed last, which R9's `ingested_at` made answerable.
-pub async fn recent(s: &Session, r: &RecentRequest) -> Result<Value, VerbError> {
+pub async fn recent(s: &Exec<'_>, r: &RecentRequest) -> Result<Value, VerbError> {
     let limit = i64::from(r.limit.min(MAX_PAGE));
     let rows = s
         .client()
@@ -441,7 +441,7 @@ pub async fn recent(s: &Session, r: &RecentRequest) -> Result<Value, VerbError> 
 /// A1: this is search over text, not a filter engine. There is no
 /// caller-supplied field or operator, so there is no allowlist to escape,
 /// which is the shape charter section 6 wants.
-pub async fn query(s: &Session, r: &QueryRequest) -> Result<Value, VerbError> {
+pub async fn query(s: &Exec<'_>, r: &QueryRequest) -> Result<Value, VerbError> {
     if r.hybrid {
         return Err(VerbError::Unimplemented(
             "hybrid ranking needs the embedder, H4. Ask again without it".into(),
