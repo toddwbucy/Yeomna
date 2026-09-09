@@ -639,12 +639,23 @@ upstream, inside the same engine. Not a second store.
 Dogfooding this repository informs M1 and cannot settle it, since a code
 repository is not a firm's document set.
 
-### M2. Recursive CTE behavior at depth. Open.
+### M2. Recursive CTE behavior at depth. Measured 2026-09-09.
 
 Partition pruning through the recursive term is confirmed, now on 18.4. Untested
-is cycle behavior and row growth at depth on a real code graph, where calls edges
-do cycle. The benchmark should try to blow up the depth-20 ceiling rather than
-confirm that depth 3 works.
+was cycle behavior and row growth at depth on a real code graph, where calls edges
+do cycle. The benchmark was told to try to blow up the depth-20 ceiling rather
+than confirm that depth 3 works.
+
+**Measured, spec 016, `docs/measurements/M2-recursive-cte-at-depth.md`.** On
+the dogfood graph (1976 nodes, 1325 rust-analyzer-resolved `calls`, one
+two-cycle) neither formulation blows up: reachability from every hub saturates
+by depth 5 at 76 nodes or fewer, the D7 walk costs 3 to 12 ms at every depth
+through 100 with zero spill, and the reference's path-enumerating shape
+exhausts at 190 paths. The synthetic explosion below needed a branching and
+cycle density a real call graph does not have. The row cap and depth clamp stay
+as the guards for the pathological graph (spec 013's K15 proof). Reopens on a
+real corpus where a hub's reachable set does not saturate by depth 20 or the
+D7 walk spills at all.
 
 **Early signal, from a synthetic probe and not a substitute for the benchmark.**
 The depth-20 ceiling blew up on the first attempt. A 6,000-edge graph with
@@ -654,8 +665,9 @@ follow. Row growth at depth is real and the row cap is load-bearing rather than
 defensive. And the benchmark must test both traversal formulations, since the
 reference's shape is the one that explodes.
 
-Dogfooding produces the real graph. It supplies the corpus, not the answer. M2
-stays open until the benchmark is run and reported.
+Dogfooding produced the real graph and supplied the corpus, and spec 016 ran
+the benchmark on it. The measured section above is the answer, and M2 reopens
+only on the conditions stated there.
 
 ### M3. Ingest isolation. Decided here.
 
