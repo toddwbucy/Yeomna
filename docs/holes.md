@@ -1,19 +1,22 @@
 # The Holes Ledger
 
-Status: v2.1, 2026-09-09. H1 and H3 retired, H2 four phases merged
-(Phase 4 merged as PR #36, the first merge under the three-exchange
-rule). The 2026-08-17 hold ended 2026-09-09
-with the cluster verified and the gate green (327, cluster tests
-running). The resumption has a driver: **a semantic KG over the WeaverTools
-codebase**, its databases, services, agents, and documents. The
-boundary is ruled (D9): Yeomna is an external RAG appliance, and its
-first caller is **Claude Code itself**, using the graph as the RAG
-for building these projects, with weaver agents and buyers behind it.
-That puts Phases 4 through 6, the client surface (epic #37, the
-`yeomna call` client above all), and the document graph (spec 015) on
-the critical path. **The severance is complete**: R19b
-and R20 closed the last two held drafts unmerged (branches kept as
-records), so nothing of the reference remains in flight.
+Status: v2.2, 2026-09-09. H1, H3, H6, and H10 retired, H2 five phases
+of seven merged, M2 measured. The 2026-08-17 hold ended and five PRs
+landed the same day: Phase 4's write verbs (#36), the document graph
+(#39), the M2 benchmark (#41), `yeomna call` with the config file
+(#43), and the daemon (#45). **The graph is reachable**: a session on
+this machine calls the whole 42-verb contract through `yeomna call`,
+and anything else reaches it over the daemon's socket with the caller
+named by the kernel. The resumption's driver is a semantic KG over the
+WeaverTools codebase, and the boundary is ruled (D9): Yeomna is an
+external RAG appliance whose **first caller is Claude Code itself**,
+using the graph as the RAG for building these projects, with weaver
+agents and buyers behind it. What remains on R21's order: the
+WeaverTools KG stand-up, Phase 6 in two halves (T3 goes true with
+retire and prune), the CLI tree with H8, the native embedder, and
+hybrid query. **The severance is complete**: R19b and R20 closed the
+last two held drafts unmerged (branches kept as records), so nothing
+of the reference remains in flight.
 The hole-mapping step of the severance sequence
 (PRD-pipeline-libraries v0.2). This is the map of everything Yeomna needs and
 does not yet have, each hole named, owned, and sourced. The authoritative
@@ -67,7 +70,8 @@ ported: the excluded reference code is not consulted.
 | Includes | Q3 renames of ArangoDB-vocabulary command names, the audit table wiring, peercred policy |
 | Progress | **Phase 4 of 7 done.** Phase 4 (spec 014, PR #36, issue #35, merged 2026-09-09): seven verbs including R18's `edge.assert` and `edge.retract`, the audit transaction proven by a crash-shaped test, the scoped `sql` verb under R17/R17a, R16's client inside the call lock. Phase 3 (spec 013, PR #34): the graph answers, traversal pruning proven at the verb level, the first destructive verb, the kg pattern stamped from the template under `yeomna_provision` (R13/R13a), materialize refusing under R14, the session retiring itself on unproven role resets. Earlier: Phase 1 (spec 010, PR #27): the closed 40-verb contract, R4 closed, the audit outcome column. Phase 2 (spec 012, PR #32): eleven read verbs, the session, the exhaustive dispatch, and the audit write, with G1 as a permanent test over every implemented verb. The schema version is a compiled-in constant, ruled rather than stored |
 | Still false | **T3.** The destructive paths are Phase 4 and Phase 6, so the charter's thesis stays false until they land and the CLI is repointed at Phase 7 |
-| Next | **R21's order, #36 and 015 merged, M2 measured (spec 016)**: `yeomna call`, the daemon with its config file, the WeaverTools KG stand-up, Phase 6 in two halves (T3 goes true with retire and prune), the CLI tree with H8, the embedder, hybrid query |
+| Progress note | **Phase 5 merged too** (spec 018, PR #45): the daemon, H6 filled, the socket carrying the contract with the caller named by the kernel. Five of seven phases done |
+| Next | **R21's order, five merged**: the WeaverTools KG stand-up, Phase 6 in two halves (T3 goes true with retire and prune), the CLI tree with H8, the native embedder, hybrid query |
 | The client surface | **Re-scoped 2026-09-09 under R20 into epic #37.** PR #19 (the capture) closed unmerged, branch kept: its contract role passed to spec 010's table, its census role to compile-time completeness from the closed enum, its code to reference material. The epic parts out the daemon (Phase 5), `yeomna call` (the agent surface, embedded mode first), the contract-born per-verb CLI tree (Phase 7), H8's tools commands, and H10's config file, with the capture's five findings carried as do-not-reproduce items |
 
 ## H3. The ingest orchestrator. FILLED 2026-08-15
