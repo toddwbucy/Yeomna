@@ -110,12 +110,15 @@ R5's revisit trigger fired when the WeaverTools corpus arrived (51k
 lines of load-bearing Markdown that a semantic KG cannot do without),
 and spec 015 adopts the `docling` converter crate, pinned, behind an
 extraction trait, PDF feature off. Markdown proves it now and the
-office formats ride along untested until a corpus needs one. The PDF
-half of this hole is unchanged: the Python service stays the
-behavioral reference, PR #17 stays in draft, and the R5 spike
-(captions, formulas, parity on our documents) is still owed before
-that flips. Spec 015 also carries the `conforms:` doc-to-code
-resolver, the linkage that makes the WeaverTools graph semantic.
+office formats ride along untested until a corpus needs one. **R19b
+closed PR #17 unmerged the same day** (branch kept as the severance
+record): upstream validates against Python docling continuously, so
+the wrapper added nothing the ledger had not already harvested. The
+R5 spike (captions, formulas, on our documents) is still owed before
+the PDF path ships, run against the Rust engine directly, with
+pip-installed docling as the side-by-side if one is wanted. Spec 015
+also carries the `conforms:` doc-to-code resolver, the linkage that
+makes the WeaverTools graph semantic.
 
 The original R5 reasoning, kept for the record:
 
@@ -148,7 +151,7 @@ than rediscovered.
 | Contract in hand | the `yeomna.extraction` wire protocol (proto plus Rust client on main), the Python service's behavior |
 | The surface a replacement must cover | six things, measured 2026-08-15 from `docling_backend.py`: `do_table_structure`, `do_ocr`, and `do_cell_matching` on the PDF pipeline, `export_to_markdown`, tables with captions, equations, figures with captions, and page count. LaTeX has its own native backend and the PyMuPDF fallback is not docling, so neither is at risk |
 | Unverified, and what a spike would settle | whether table and figure captions survive, whether formula extraction behaves (ours carries a fallback because `doc.equations` was unreliable, and the Rust side puts formulas behind enrichment that is off by default), and whether the engine's own byte-for-byte parity claim holds on our documents |
-| Riding this hole | the skipped server-architecture findings from the PR #17 review, service-level tests |
+| Riding this hole | the PR #17 server-architecture findings retired with the server (R19b): they described a Python service that will not ship. The R5 spike remains the live item |
 
 ### The scope this hole has, ruled 2026-08-15
 
@@ -288,7 +291,8 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R7 | `edge_basis` Rust mapping | **Ruled 2026-08-15 as R12 (spec 011): text at the boundary**, cast in SQL, no second enum to drift from the DDL |
 | R15 | PostgreSQL major version | **Ruled 2026-09-09: stay pinned at 18.x.** PG 19 is still in beta, the repos carry 18.6, and the feature that would have mattered, SQL/PGQ property graphs, was reverted from 19 on 2026-09-07 for design issues. D7's recursive CTEs never depended on it. Revisit at PG 20 GA (expected late 2027) if SQL/PGQ returns, as an internal traversal rewrite behind unchanged verbs |
 | R16-R18 | Session ownership, the `sql` verb's role and detection, the edge verbs | **Agreed 2026-09-09 and built (spec 014)**. R16: the client lives inside the call lock. R17/R17a: `sql` runs as the provision role on a per-call connection, kg pattern detected structurally. R18 amends the contract (40 to 42 verbs, `edge.assert` and `edge.retract`), exposed by the first customer: a deployment graph is mostly edges and the contract could not write one. The build moved the relation CHECK into the partitions (SCHEMA_VERSION 1.1.0) and let the store PRD's inherited cascade rule delete and purge, both recorded in the 014 review notes |
-| R19 | Native extraction (revises R5) | **Agreed 2026-09-09, specced (015)**: adopt the `docling` converter crate only, pinned, PDF feature off, behind an extraction trait, proven on the WeaverTools Markdown corpus. PR #17 stays in draft as the PDF reference until the R5 spike runs against the Rust engine. `docling-rag` declined: its defaults are a second store, a remote LLM, and a foreign chunker, three charter violations before configuration. What changed since R5: the format migration is complete and byte-for-byte validated upstream, and declarative formats need no ML assets |
+| R19 | Native extraction (revises R5) | **Agreed 2026-09-09, specced (015)**: adopt the `docling` converter crate only, pinned, PDF feature off, behind an extraction trait, proven on the WeaverTools Markdown corpus. The R5 spike still gates the PDF flip (its reference role passed to upstream and pip docling under R19b, which closed #17 the same day). `docling-rag` declined: its defaults are a second store, a remote LLM, and a foreign chunker, three charter violations before configuration. What changed since R5: the format migration is complete and byte-for-byte validated upstream, and declarative formats need no ML assets |
+| R19b | PR #17 closed unmerged | **Ruled 2026-09-09**: the Python extraction service closes without merging, branch kept as the severance record. R19 retired its declarative role, upstream's continuous validation against Python docling serves the reference role better than our wrapper would, and its unique findings (the six-item surface, the equation fallback) were already harvested into H5. The last living port ends and HADES-Burn is fully closed. If a PDF corpus arrives before the Rust engine's PDF pipeline proves out, the closed branch is the resurrection point |
 | R19a | Declared vocabulary is the source's own | **Ruled 2026-09-09 (v2, spec 015)** after the dig found the WeaverTools docs declare their own graph: 387 fenced graph blocks, 473 nodes, twelve edge relations. The `edges_declared` CHECK opens to identifier shape like `edges_asserted` (sources speak their own words), `edges_structural` keeps the closed list (our analyzers, our vocabulary), corpus-declared nodes land as kind `document` with block kind and tag in payload (the methodology disposition landing as ruled), SCHEMA_VERSION 1.2.0. Declined: enumerating any corpus's ontology into the DDL, which would make every future customer a schema migration. Todd's framing, now binding: a semantic KG is installation-specific and grown through use, so the substrate is fixed and the vocabulary is the operator's |
 
 ## The fill order, as the dependencies read

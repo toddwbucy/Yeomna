@@ -38,9 +38,11 @@ crate only, pinned, as a native extraction backend for declarative
 formats. Markdown proves it now, the office formats (DOCX, XLSX, PPTX,
 RTF, EML, legacy Office) ride along untested until a corpus needs one,
 each an afternoon's test per the H5 notes. The PDF pipeline is not
-flipped: PR #17 stays in draft as the PDF behavioral reference until
-the R5 spike (captions, formulas, parity on our documents) runs
-against the Rust engine's PDF path. `docling-rag` is declined with
+flipped: the R5 spike (captions, formulas, parity on our documents)
+is still owed against the Rust engine's PDF path before it ships.
+R19b, ruled later the same day, closed PR #17 unmerged (branch kept),
+its reference role passing to upstream's continuous validation and to
+pip-installed docling if a side-by-side is ever wanted. `docling-rag` is declined with
 reasons on the record: its defaults are a second store (sqlite-vec), a
 remote LLM (OpenRouter), a REST surface, and a foreign chunker that
 would break the golden-key chunk contract. Three harvest pointers are
@@ -128,8 +130,8 @@ operator's.
 
 ## Out of Scope
 
-- The PDF and image pipeline, its models, and the R5 spike. PR #17
-  stays in draft.
+- The PDF and image pipeline, its models, and the R5 spike. PR #17 is
+  closed unmerged under R19b, branch kept.
 - Office-format testing (no corpus yet), OCR, LaTeX source packages.
 - Embeddings (H4), hybrid retrieval, anything from `docling-rag`.
 - Repository connectors (charter 5.2, separate app).
@@ -220,7 +222,7 @@ DO:
 
 DON'T:
 
-- DON'T enable the PDF feature, download models, or touch #17.
+- DON'T enable the PDF feature, download models, or reopen #17.
 - DON'T import any docling-rag code or trait shapes.
 - DON'T write a second chunker, embedder, or store path.
 - DON'T let the resolver invent relations beyond `conforms` (the
