@@ -187,16 +187,23 @@ statement was never reached.
   nothing and appends nothing, and the envelope says `"changed": false`
   (the R8 discipline, held from ingest). Otherwise the head is replaced
   and `{"op":"update","from":...,"to":...}` appends.
-- **FR3 `delete`.** `NotFound` when absent. In one transaction: append
-  `{"op":"delete","from":payload}`, delete the head, sweep every edge
-  touching the node in either direction plus the node's chunks and
-  embeddings, measured and deleted as sub-statements of one WITH so the
-  reported counts and the deletion share a snapshot. The log survives
-  deliberately: the diff log is the source of truth for history, and a
-  deleted node is history.
-- **FR4 `purge`.** The force gate first: `force: false` is `Denied`
-  stating what force acknowledges. Then everything `delete` sweeps plus
-  every `node_log` row for the node. Counts reported. This is erasure of
+- **FR3 `delete`** (amended at build, see the review notes). `NotFound`
+  when absent. In one transaction: delete the head row and let the
+  inherited cascade (store PRD) take its chunks, embeddings, edges in
+  either direction, and `node_log` entries, with every count measured
+  as a sub-statement of the same WITH so the reported sweep and the
+  deletion share a snapshot. The diff log goes with the node it
+  describes: node ids are surrogates, so a log row for a vanished head
+  is unreachable by any verb, and the durable record of the act is the
+  audit row, the table built to be exactly that. The draft's
+  log-survives clause was withdrawn because the schema and the store
+  PRD had already ruled the cascade.
+- **FR4 `purge`** (amended at build). The force gate first:
+  `force: false` is `Denied` stating what force acknowledges. Then the
+  subtree erasure: the node named by key plus every node in the graph
+  whose payload names it as parent (`file_key` or `doc_key`, the `list`
+  verb's parent convention read in reverse), each with its cascade,
+  counts reported including nodes and log entries. This is erasure of
   the live store only, and the spec states what it does not solve: ZFS
   snapshots beneath Postgres retain purged bytes, which is M4, named
   here and left open.
