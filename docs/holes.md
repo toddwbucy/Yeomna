@@ -1,21 +1,24 @@
 # The Holes Ledger
 
-Status: v1.9, 2026-09-09. H1 and H3 retired, H2 three phases in.
-The 2026-08-17 hold ended 2026-09-09 with the cluster verified and the
-gate green (310, cluster tests running). The resumption has a driver:
-**WeaverTools needs a knowledge graph** for its databases, services,
-and agents, which makes it the verb layer's first customer and puts
-Phase 4 and Phase 5 on the critical path. Spec 014 is drafted.
+Status: v2.0, 2026-09-09. H1 and H3 retired, H2 four phases built
+(Phase 4 in review, PR #36). The 2026-08-17 hold ended 2026-09-09
+with the cluster verified and the gate green (327, cluster tests
+running). The resumption has a driver: **WeaverTools needs a
+knowledge graph** for its databases, services, agents, and documents,
+which makes it the verb layer's first customer and puts Phases 4
+through 6, the client surface (epic #37), and the document graph
+(spec 015) on the critical path. **The severance is complete**: R19b
+and R20 closed the last two held drafts unmerged (branches kept as
+records), so nothing of the reference remains in flight.
 The hole-mapping step of the severance sequence
 (PRD-pipeline-libraries v0.2). This is the map of everything Yeomna needs and
-does not yet have, each hole named, owned, and sourced. The executable form
-is `yeomna-cli`: 56 commands, every one a self-reporting hole with a census
-test over them. That crate is **not on main**. It sits in draft PR #19 and
-lands at H2 Phase 7, which rewrites its commands into daemon clients and
-inverts the census, so the check runs nowhere until then. The authoritative
-surface list in the meantime is spec 010's disposition table, which is on
-main and which R4 made binding. As verbs land, holes become behavior, and
-this document retires entry by entry.
+does not yet have, each hole named, owned, and sourced. The authoritative
+surface list is spec 010's disposition table, on main, R4-binding,
+now grown to 42 wire names by R18. Completeness checking moved from
+the retired capture's runtime census to the closed enum itself: a
+dispatch or CLI that exhaustive-matches `Verb` cannot omit a verb and
+still compile. As verbs land, holes become behavior, and this
+document retires entry by entry.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the words
 genuinely, honestly, or actually.
@@ -61,7 +64,7 @@ ported: the excluded reference code is not consulted.
 | Progress | **Phase 3 of 7 done.** Phase 3 (spec 013, PR #34): the graph answers, traversal pruning proven at the verb level, the first destructive verb, the kg pattern stamped from the template under `yeomna_provision` (R13/R13a), materialize refusing under R14, the session retiring itself on unproven role resets. Earlier: Phase 1 (spec 010, PR #27): the closed 40-verb contract, R4 closed, the audit outcome column. Phase 2 (spec 012, PR #32): eleven read verbs, the session, the exhaustive dispatch, and the audit write, with G1 as a permanent test over every implemented verb. The schema version is a compiled-in constant, ruled rather than stored |
 | Still false | **T3.** The destructive paths are Phase 4 and Phase 6, so the charter's thesis stays false until they land and the CLI is repointed at Phase 7 |
 | Next | **Phase 4, spec 014 drafted 2026-09-09**: the write verbs, the audit transaction (ok outcome durable if and only if the mutation is, crash-shaped test), the scoped `sql` verb under R17/R17a, and the R18 edge verbs the WeaverTools graph needs. Phase 5 follows immediately, since the daemon socket is what WeaverTools connects to |
-| Waiting in Phase 7 | Draft PR #19, deliberately held 2026-08-15 rather than merged and fixed twice, since Phase 7 rewrites these commands into daemon clients anyway. It carries, and Phase 7 inherits: (1) the daemon `--mcp-*` flags, which the capture declares while its own record says they were dropped, plus a reference to a `--mcp-token-file` that does not exist, (2) `output.rs` printing table headers to stderr while rows go to stdout, so redirecting stdout loses the header, (3) awaits-distribution counts in the review notes that reach 56 by double-counting six commands, and (4) the R4 reconciliation: nine captured commands (`Create`, `Collections`, `Databases`, `CreateDatabase`, `Truncate`, `DropCollection`, `Export`, `CreateIndex`, `IndexStatus`) that spec 010 has since removed or absorbed, so the census counts 56 holes where roughly 40 become verbs. Trial-merged 2026-08-15 against main: conflicts are `Cargo.toml` and `Cargo.lock` only, and the crate builds, passes its census, and clears the no-SQL lint |
+| The client surface | **Re-scoped 2026-09-09 under R20 into epic #37.** PR #19 (the capture) closed unmerged, branch kept: its contract role passed to spec 010's table, its census role to compile-time completeness from the closed enum, its code to reference material. The epic parts out the daemon (Phase 5), `yeomna call` (the agent surface, embedded mode first), the contract-born per-verb CLI tree (Phase 7), H8's tools commands, and H10's config file, with the capture's five findings carried as do-not-reproduce items |
 
 ## H3. The ingest orchestrator. FILLED 2026-08-15
 
@@ -221,11 +224,13 @@ Declarative YAML bootstrap (`schema apply`). The reference's
 
 `tools status` and `tools install`. Notably the shallowest hole:
 `yeomna-code` already carries `resolve_and_probe` and the managed-tools-dir
-logic (`YEOMNA_TOOLS_DIR`), so this is mostly wiring.
+logic (`YEOMNA_TOOLS_DIR`), so this is mostly wiring. **Unblocked by
+R20**: it was waiting on the captured CLI and now lands with the
+contract-born CLI in epic #37.
 
 | | |
 |---|---|
-| Owner | any convenient spec, candidate first hole to fill |
+| Owner | epic #37, its own small spec |
 | CLI holes it fills | 2 |
 
 ## H9. The graph-embed era
@@ -252,7 +257,7 @@ under Yeomna names as interim.
 | Owner | R3 ruled 2026-08-14, then small work in each consumer |
 | Product surface today | one variable, `YEOMNA_TOOLS_DIR` (`yeomna-code`, `managed_tools_dir`). The embedder endpoint, CLI `--db` resolution, and daemon socket paths were listed here before they existed and still do not |
 | Not in scope | test and development knobs, which stay environment variables: `YEOMNA_TEST_DB`, `YEOMNA_CUDA_FIXTURE`, `YEOMNA_RA_BIN`. `HOME` and `CARGO_MANIFEST_DIR` are facts of the OS and the build, not configuration |
-| Lands with | its first real consumer, the daemon (H2 Phase 5) or the CLI (PR #19). Building a config crate before one exists would be vocabulary ahead of its consumer |
+| Lands with | its first real consumer, the daemon, inside epic #37 (R20). Building a config crate before one exists would be vocabulary ahead of its consumer |
 
 ## H11. Review follow-up ledgers
 
@@ -292,6 +297,7 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R15 | PostgreSQL major version | **Ruled 2026-09-09: stay pinned at 18.x.** PG 19 is still in beta, the repos carry 18.6, and the feature that would have mattered, SQL/PGQ property graphs, was reverted from 19 on 2026-09-07 for design issues. D7's recursive CTEs never depended on it. Revisit at PG 20 GA (expected late 2027) if SQL/PGQ returns, as an internal traversal rewrite behind unchanged verbs |
 | R16-R18 | Session ownership, the `sql` verb's role and detection, the edge verbs | **Agreed 2026-09-09 and built (spec 014)**. R16: the client lives inside the call lock. R17/R17a: `sql` runs as the provision role on a per-call connection, kg pattern detected structurally. R18 amends the contract (40 to 42 verbs, `edge.assert` and `edge.retract`), exposed by the first customer: a deployment graph is mostly edges and the contract could not write one. The build moved the relation CHECK into the partitions (SCHEMA_VERSION 1.1.0) and let the store PRD's inherited cascade rule delete and purge, both recorded in the 014 review notes |
 | R19 | Native extraction (revises R5) | **Agreed 2026-09-09, specced (015)**: adopt the `docling` converter crate only, pinned, PDF feature off, behind an extraction trait, proven on the WeaverTools Markdown corpus. The R5 spike still gates the PDF flip (its reference role passed to upstream and pip docling under R19b, which closed #17 the same day). `docling-rag` declined: its defaults are a second store, a remote LLM, and a foreign chunker, three charter violations before configuration. What changed since R5: the format migration is complete and byte-for-byte validated upstream, and declarative formats need no ML assets |
+| R20 | PR #19 closed unmerged, the client surface re-scoped | **Ruled 2026-09-09**: the capture's contract role was superseded by its own product (spec 010's binding disposition table), its census role is replaced by compile-time completeness from the closed enum (a CLI that exhaustive-matches `Verb` cannot omit a verb and build), and its lift role thinned to reference material since the request structs are now the arg shapes. Branch kept. Epic #37 parts out the client surface (daemon, `yeomna call`, the contract-born CLI tree, H8's tools commands, H10's config file) with the five #19 findings carried as do-not-reproduce items. H8 is unblocked |
 | R19b | PR #17 closed unmerged | **Ruled 2026-09-09**: the Python extraction service closes without merging, branch kept as the severance record. R19 retired its declarative role, upstream's continuous validation against Python docling serves the reference role better than our wrapper would, and its unique findings (the six-item surface, the equation fallback) were already harvested into H5. The last living port ends and HADES-Burn is fully closed. If a PDF corpus arrives before the Rust engine's PDF pipeline proves out, the closed branch is the resurrection point |
 | R19a | Declared vocabulary is the source's own | **Ruled 2026-09-09 (v2, spec 015)** after the dig found the WeaverTools docs declare their own graph: 387 fenced graph blocks, 473 nodes, twelve edge relations. The `edges_declared` CHECK opens to identifier shape like `edges_asserted` (sources speak their own words), `edges_structural` keeps the closed list (our analyzers, our vocabulary), corpus-declared nodes land as kind `document` with block kind and tag in payload (the methodology disposition landing as ruled), SCHEMA_VERSION 1.2.0. Declined: enumerating any corpus's ontology into the DDL, which would make every future customer a schema migration. Todd's framing, now binding: a semantic KG is installation-specific and grown through use, so the substrate is fixed and the vocabulary is the operator's |
 
