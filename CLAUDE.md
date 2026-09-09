@@ -9,7 +9,7 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and specs at `docs/specs/NNN-slug/spec.md` with review notes alongside.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, nine crates, 310 tests. **The Rust side of the
+`rust-toolchain.toml`, nine crates, 327 tests. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
 and merged. **The store exists and holes-ledger H1 is filled** (specs 008
@@ -22,7 +22,8 @@ without a cluster. Edge identity is ruled (R6, spec 009).
 
 **H2, the verb layer, is under construction.** `docs/PRD-verb-layer.md` is
 settled at v0.4 (all five review questions ruled) and Phase 1 of 7 is merged
-(spec 010): `crates/yeomna-verbs` carries the closed 40-verb contract, the
+(spec 010): `crates/yeomna-verbs` carries the closed verb contract (40 wire
+names at Phase 1, 42 since R18 added the edge verbs in Phase 4), the
 envelope, and the error taxonomy, with R4 closed so the wire names are
 binding. The `audit_log.outcome` column landed with it under a column-scoped
 grant, which is how attempt logging coexists with an append-only table. A
@@ -43,14 +44,30 @@ first destructive verb, and the database lifecycle under the fourth role,
 `yeomna_provision`, with kg-pattern databases stamped from
 `yeomna_template` because pgvector is not a trusted extension. The session
 serializes calls and retires itself if a role escalation cannot prove its
-reset. M2 has its instrument and still needs its benchmark run. Next is
-Phase 4: write verbs, the audit transaction, and the scoped `sql` verb.
+reset. M2 has its instrument and still needs its benchmark run (R21 D8:
+report-only, queued right after spec 015). Phase 4 followed, below.
 
-**The project is on hold as of 2026-08-17**, expected about a week, for
-WeaverTools frontend work on this machine. The cluster may be stopped
-during the hold (`sudo systemctl start yeomna-postgres` to resume, then
-the workspace gate to confirm). The hub's parking report carries the full
-resume state.
+**The hold ended 2026-09-09.** Resume verification passed: cluster up,
+data intact, seal held, hugepages sufficient (4246 needed, measured the
+ask-Postgres way), gate 310 green with cluster tests running. One
+incident was found and fixed during the hold window: systemd-logind's
+`RemoveIPC=yes` deleted the todd-owned Postgres shared memory segments
+on a logout (2026-08-28), and the server limped a week before dying on
+2026-09-04 with no data loss. The fix is
+`/etc/systemd/logind.conf.d/50-remove-ipc.conf` setting `RemoveIPC=no`,
+applied 2026-09-09. The deployment-era fix is a dedicated system user
+for the unit, which is immune by category.
+
+**The resumption driver is a semantic KG over the WeaverTools codebase**:
+its code, documents, databases, services, and agents, and the edges
+between them. The boundary is ruled (D9): Yeomna is an external RAG
+appliance, never a part of the WeaverTools architecture, and its first
+caller is Claude Code itself, using the graph as the RAG for building
+these projects. **Phase 4 is built** (spec 014, PR #36 in review): seven
+verbs including R18's `edge.assert` and `edge.retract`, the contract at
+42 wire names, and the audit transaction proven by a crash-shaped test.
+Next per R21's ten-PR order: the spec 015 document graph, the M2
+benchmark, then the `yeomna call` client and the daemon (epic #37).
 
 **H3 is filled and this repository is a graph** (spec 011, merged
 2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the
@@ -111,15 +128,31 @@ a reason to skip it.
 
 1. A GitHub Issue documenting the move (source paths, LOC, coupling, review
    notes).
-2. A branch and a **draft PR**. The first commit is the verbatim move,
-   diffable against the reference. Todd takes the PR out of draft manually,
-   which triggers CodeRabbit review.
+2. A branch and a PR. For a lift the first commit is the verbatim move,
+   diffable against the reference. For a build the first commits are the
+   spec and the implementation. The PR opens ready for review rather than
+   as a draft (amended 2026-09-09, so CodeRabbit starts without waiting on
+   a hand), and it triggers CodeRabbit review.
 3. CodeRabbit findings are addressed as **separate commits on the same PR**,
    never squashed into the move commit. The move commit is the only surviving
    record of what the reference did, since the reference cannot run.
 4. Once all CodeRabbit comments are addressed, e2e testing on the crate
    confirms functionality.
-5. Then, and only then, merge to main.
+5. **The merge rule, ruled 2026-09-09.** CodeRabbit gets at most three
+   exchanges. One exchange is a review with findings, then a push of fixes
+   as separate commits, each finding either fixed and verified or declined
+   with its reason on the PR. If the review is clear within three exchanges
+   and the workspace gate is green three times with cluster tests running,
+   the PR merges without waiting on Todd. If the fourth review still finds a
+   problem, work stops there and Todd and Claude investigate together.
+   Docs-only commits that trigger incremental reviews do not count as
+   exchanges. The stop also applies at any round to a finding that needs a
+   ruling: a design decision, a spec contradiction beyond a recorded
+   build-finding amendment, a repeated finding Claude keeps declining, or
+   anything reaching the machine outside the branch and the dev cluster's
+   documented rebuild. After every merge, epic #21, the ledger, this file,
+   and a hub report are updated, which is how Todd catches up
+   asynchronously while working elsewhere.
 
 This amends the lift PRD's R1: defects found in transit are fixed on the PR in
 follow-up commits rather than deferred, but never inside the move commit
@@ -162,9 +195,12 @@ sudo systemctl start yeomna-postgres
 psql -h "$HOME/.local/share/yeomna/run" -p 5433 -U yeomna_owner -d yeomna
 ```
 
-**The system `postgresql.service` is disabled**, because it bound
-`127.0.0.1:5432` and a bare `psql` would land there instead of here. The package
-stays installed, since this cluster runs its `/usr/bin/postgres`.
+**The system `postgresql.service` is active again as of the 2026-08
+hold**: it is WeaverTools' database now, on `127.0.0.1:5432`, run by the
+`postgres` system user. Yeomna's seal is unaffected (nothing listens on
+5433), but the old hazard is live again: a bare `psql` lands on 5432 and
+the wrong project. Always connect with the socket path and port shown
+above.
 
 The seal is held at three layers, all verified 2026-08-10:
 
@@ -199,6 +235,12 @@ Updates are a deployment concern and get revisited when development is done.
 This is also charter section 5's tradeoff arriving early: stock Postgres means
 upstream's binary and upstream's cadence, and at development time the pin is how
 that cadence gets refused.
+
+R15 (ruled 2026-09-09) keeps the pin through the PostgreSQL 19 cycle.
+The SQL/PGQ property-graph feature was reverted from 19 before GA, so
+19 offers this project nothing decisive, and D7's recursive CTEs never
+assumed it. Revisit at PG 20 if SQL/PGQ lands there, and even then only
+as an internal rewrite of traversal SQL behind unchanged verbs.
 
 The dataset is dedicated so it can be snapshotted independently, which is what
 charter section 8.3 needs for copy-on-write checkpoint versioning. It carries

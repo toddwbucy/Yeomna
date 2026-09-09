@@ -11,7 +11,7 @@
 use serde_json::{Value, json};
 
 use crate::error::VerbError;
-use crate::execute::Session;
+use crate::execute::Exec;
 use crate::verb::{
     Direction, DropRequest, GraphName, NeighborsRequest, ShortestPathRequest, TraverseRequest,
 };
@@ -91,7 +91,7 @@ pub(crate) fn traverse_sql(bases: &[String]) -> Result<String, VerbError> {
 }
 
 /// Resolve a graph name to its id.
-async fn graph_id(s: &Session, name: &str) -> Result<i64, VerbError> {
+async fn graph_id(s: &Exec<'_>, name: &str) -> Result<i64, VerbError> {
     s.client()
         .query_opt("SELECT id FROM graphs WHERE name = $1", &[&name])
         .await
@@ -101,7 +101,7 @@ async fn graph_id(s: &Session, name: &str) -> Result<i64, VerbError> {
 }
 
 /// Resolve a node key inside a graph.
-async fn node_id(s: &Session, g: i64, key: &str) -> Result<i64, VerbError> {
+async fn node_id(s: &Exec<'_>, g: i64, key: &str) -> Result<i64, VerbError> {
     s.client()
         .query_opt(
             "SELECT id FROM nodes WHERE graph_id = $1 AND natural_key = $2",
@@ -114,7 +114,7 @@ async fn node_id(s: &Session, g: i64, key: &str) -> Result<i64, VerbError> {
 }
 
 /// `graph.traverse`: reachability, each node once at its minimum depth.
-pub async fn traverse(s: &Session, r: &TraverseRequest) -> Result<Value, VerbError> {
+pub async fn traverse(s: &Exec<'_>, r: &TraverseRequest) -> Result<Value, VerbError> {
     check_relations(&r.relations)?;
     let sql = traverse_sql(&r.bases)?;
     let g = graph_id(s, &r.graph).await?;
@@ -142,7 +142,7 @@ pub async fn traverse(s: &Session, r: &TraverseRequest) -> Result<Value, VerbErr
 }
 
 /// `graph.neighbors`: one hop, by direction.
-pub async fn neighbors(s: &Session, r: &NeighborsRequest) -> Result<Value, VerbError> {
+pub async fn neighbors(s: &Exec<'_>, r: &NeighborsRequest) -> Result<Value, VerbError> {
     check_relations(&r.relations)?;
     let basis = basis_clause(&r.bases)?;
     let g = graph_id(s, &r.graph).await?;
@@ -187,7 +187,7 @@ pub async fn neighbors(s: &Session, r: &NeighborsRequest) -> Result<Value, VerbE
 /// `graph.shortest-path`: the enumerating exception, capped and honest
 /// about truncation. Level-order recursion means the first arrival at the
 /// target inside the cap is a shortest path.
-pub async fn shortest_path(s: &Session, r: &ShortestPathRequest) -> Result<Value, VerbError> {
+pub async fn shortest_path(s: &Exec<'_>, r: &ShortestPathRequest) -> Result<Value, VerbError> {
     check_relations(&r.relations)?;
     let basis = basis_clause(&r.bases)?;
     let g = graph_id(s, &r.graph).await?;
@@ -248,7 +248,7 @@ pub async fn shortest_path(s: &Session, r: &ShortestPathRequest) -> Result<Value
 }
 
 /// `graph.list`: the registry with sizes.
-pub async fn list(s: &Session) -> Result<Value, VerbError> {
+pub async fn list(s: &Exec<'_>) -> Result<Value, VerbError> {
     let rows = s
         .client()
         .query(
@@ -276,7 +276,7 @@ pub async fn list(s: &Session) -> Result<Value, VerbError> {
 /// `graph.create`: a registry row. Not idempotent at the verb layer,
 /// because a caller who creates twice is confused and should hear so
 /// (EC-2).
-pub async fn create(s: &Session, r: &GraphName) -> Result<Value, VerbError> {
+pub async fn create(s: &Exec<'_>, r: &GraphName) -> Result<Value, VerbError> {
     let affected = s
         .client()
         .execute(
@@ -297,7 +297,7 @@ pub async fn create(s: &Session, r: &GraphName) -> Result<Value, VerbError> {
 /// `graph.drop`: the first destructive verb. One DELETE, which is T4 made
 /// mechanical through the cascade claim 4 proves, with the swept counts
 /// measured first and reported.
-pub async fn drop(s: &Session, r: &DropRequest) -> Result<Value, VerbError> {
+pub async fn drop(s: &Exec<'_>, r: &DropRequest) -> Result<Value, VerbError> {
     if !r.force {
         return Err(VerbError::Denied(format!(
             "dropping graph {:?} deletes everything in it, pass force to acknowledge",

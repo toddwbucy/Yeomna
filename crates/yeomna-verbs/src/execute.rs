@@ -19,19 +19,26 @@ use crate::envelope::{Envelope, envelope, error_envelope};
 use crate::error::VerbError;
 use crate::graph;
 use crate::read;
+use crate::sql;
 use crate::verb::Verb;
+use crate::write;
 
 /// One caller's session over the store.
 pub struct Session {
-    client: Client,
+    /// R16 (spec 014): the client lives inside the lock that serializes
+    /// whole calls. The lock used to guard a unit and the client sat
+    /// beside it, until `Client::transaction` demanded `&mut Client` and
+    /// the answer was to merge the two: holding the lock is what yields
+    /// the exclusive borrow, so one mechanism owns both invariants
+    /// (finding: pipelined queries would otherwise interleave with an
+    /// escalation).
+    client: tokio::sync::Mutex<Client>,
     actor: String,
     graph: Option<String>,
-    /// Serializes whole calls. The client pipelines concurrent queries
-    /// happily, and that is exactly wrong here: a read verb sharing the
-    /// connection could run between SET ROLE and RESET ROLE. One call at
-    /// a time is the session's contract, held by lock rather than by
-    /// hope.
-    serial: tokio::sync::Mutex<()>,
+    /// Where this cluster answers, for the one verb that opens a second
+    /// connection (`sql` reaches its target database directly). A session
+    /// built without it refuses that verb rather than guessing.
+    endpoint: Option<(String, u16)>,
     /// Set when an escalation begins, cleared only when RESET ROLE
     /// completes. A cancelled or failed reset leaves it set, and a set
     /// flag retires the session: refusing every further call is the
@@ -40,37 +47,27 @@ pub struct Session {
     escalated: std::sync::atomic::AtomicBool,
 }
 
-impl Session {
-    /// Open a session for an actor the caller has already established.
-    ///
-    /// Not reachable over the wire: the actor arrives here from the
-    /// kernel by way of the daemon, or from a test that names itself.
-    pub fn new(client: Client, actor: impl Into<String>) -> Self {
-        Self {
-            client,
-            actor: actor.into(),
-            graph: None,
-            serial: tokio::sync::Mutex::new(()),
-            escalated: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
+/// One call's view of the session, lent to the verb modules.
+///
+/// Exists because the client lives inside the call lock (R16): dispatch
+/// holds the guard and lends the borrow here, so a verb implementation
+/// can never reach the connection without the serialization that makes
+/// the reach safe.
+pub(crate) struct Exec<'a> {
+    client: &'a Client,
+    graph: Option<&'a str>,
+    escalated: &'a std::sync::atomic::AtomicBool,
+}
 
-    /// Scope this session's document reads to one graph. Absent, they
-    /// span the database, which `get` treats as an ambiguity to report
-    /// rather than a choice to make (EC-2).
-    pub fn with_graph(mut self, graph: impl Into<String>) -> Self {
-        self.graph = Some(graph.into());
-        self
-    }
-
+impl Exec<'_> {
     /// The connection, for the verb modules that emit SQL.
     pub(crate) fn client(&self) -> &Client {
-        &self.client
+        self.client
     }
 
     /// The session's graph, if it has one.
     pub(crate) fn graph(&self) -> Option<&str> {
-        self.graph.as_deref()
+        self.graph
     }
 
     /// Run one statement as `yeomna_provision`.
@@ -103,14 +100,55 @@ impl Session {
         result?;
         reset
     }
+}
+
+impl Session {
+    /// Open a session for an actor the caller has already established.
+    ///
+    /// Not reachable over the wire: the actor arrives here from the
+    /// kernel by way of the daemon, or from a test that names itself.
+    pub fn new(client: Client, actor: impl Into<String>) -> Self {
+        Self {
+            client: tokio::sync::Mutex::new(client),
+            actor: actor.into(),
+            graph: None,
+            endpoint: None,
+            escalated: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Scope this session's document reads to one graph. Absent, they
+    /// span the database, which `get` treats as an ambiguity to report
+    /// rather than a choice to make (EC-2).
+    pub fn with_graph(mut self, graph: impl Into<String>) -> Self {
+        self.graph = Some(graph.into());
+        self
+    }
+
+    /// Tell the session where its cluster answers, so the `sql` verb can
+    /// open its per-call connection to a target database (R17). The
+    /// values are the ones the session's own client was built from.
+    pub fn with_endpoint(mut self, socket_dir: impl Into<String>, port: u16) -> Self {
+        self.endpoint = Some((socket_dir.into(), port));
+        self
+    }
+
+    fn exec<'a>(&'a self, client: &'a Client) -> Exec<'a> {
+        Exec {
+            client,
+            graph: self.graph.as_deref(),
+            escalated: &self.escalated,
+        }
+    }
 
     /// Run one verb: record the attempt, dispatch, mark the outcome, and
     /// answer in the envelope either way.
     pub async fn call(&self, verb: &Verb) -> Envelope {
         let name = verb.wire_name();
-        // One call at a time on this connection (finding: pipelined
-        // queries would otherwise interleave with an escalation).
-        let _serial = self.serial.lock().await;
+        // One call at a time on this connection, and the lock is also
+        // where the exclusive client borrow for transactions comes from
+        // (R16).
+        let mut client = self.client.lock().await;
         // A session whose last escalation never proved its reset is
         // retired, not reused.
         if self.escalated.load(std::sync::atomic::Ordering::SeqCst) {
@@ -127,13 +165,17 @@ impl Session {
             .unwrap_or(Value::Null);
 
         // EC-5: an attempt that cannot be recorded is not made.
-        let attempt = match audit::begin(self.client(), &self.actor, name, &args).await {
+        let attempt = match audit::begin(&client, &self.actor, name, &args).await {
             Ok(a) => a,
             Err(e) => return error_envelope(name, &e),
         };
 
-        let result = self.dispatch(verb).await;
-        audit::finish(self.client(), attempt, result.as_ref().map(|_| ())).await;
+        let result = self.dispatch(&mut client, attempt, verb).await;
+        // A write verb that committed marked its own outcome inside the
+        // transaction (FR5: an ok on a write is durable if and only if
+        // the mutation is), and `finish` guards on a NULL outcome, so
+        // this mark is terminal everywhere else and a no-op there.
+        audit::finish(&client, attempt, result.as_ref().map(|_| ())).await;
 
         match result {
             Ok(data) => envelope(name, data),
@@ -143,40 +185,57 @@ impl Session {
 
     /// The exhaustive match. Verbs of later phases name the phase they
     /// wait for rather than panicking or pretending (EC-1).
-    async fn dispatch(&self, verb: &Verb) -> Result<Value, VerbError> {
+    async fn dispatch(
+        &self,
+        client: &mut Client,
+        attempt: audit::Attempt,
+        verb: &Verb,
+    ) -> Result<Value, VerbError> {
+        let graph = self.graph.as_deref();
         match verb {
-            // -- Phase 2, this spec ---------------------------------------
-            Verb::Orient(r) => read::orient(self, r).await,
-            Verb::Status(_) => read::status(self).await,
-            Verb::Health(_) => read::health(self).await,
-            Verb::Check(r) => read::check(self, r).await,
-            Verb::Stats(r) => read::stats(self, r).await,
-            Verb::CodebaseStats(r) => read::codebase_stats(self, r).await,
-            Verb::Get(r) => read::get(self, r).await,
-            Verb::List(r) => read::list(self, r).await,
-            Verb::Count(r) => read::count(self, r).await,
-            Verb::Recent(r) => read::recent(self, r).await,
-            Verb::Query(r) => read::query(self, r).await,
+            // -- Phase 2, spec 012 -----------------------------------------
+            Verb::Orient(r) => read::orient(&self.exec(client), r).await,
+            Verb::Status(_) => read::status(&self.exec(client)).await,
+            Verb::Health(_) => read::health(&self.exec(client)).await,
+            Verb::Check(r) => read::check(&self.exec(client), r).await,
+            Verb::Stats(r) => read::stats(&self.exec(client), r).await,
+            Verb::CodebaseStats(r) => read::codebase_stats(&self.exec(client), r).await,
+            Verb::Get(r) => read::get(&self.exec(client), r).await,
+            Verb::List(r) => read::list(&self.exec(client), r).await,
+            Verb::Count(r) => read::count(&self.exec(client), r).await,
+            Verb::Recent(r) => read::recent(&self.exec(client), r).await,
+            Verb::Query(r) => read::query(&self.exec(client), r).await,
             Verb::SchemaVersion(_) => read::schema_version(),
 
             // -- Phase 3, spec 013 -----------------------------------------
-            Verb::GraphTraverse(r) => graph::traverse(self, r).await,
-            Verb::GraphNeighbors(r) => graph::neighbors(self, r).await,
-            Verb::GraphShortestPath(r) => graph::shortest_path(self, r).await,
-            Verb::GraphList(_) => graph::list(self).await,
-            Verb::GraphCreate(r) => graph::create(self, r).await,
-            Verb::GraphDrop(r) => graph::drop(self, r).await,
-            Verb::DatabaseList(_) => database::list(self).await,
-            Verb::DatabaseCreate(r) => database::create(self, r).await,
-            Verb::DatabaseDrop(r) => database::drop(self, r).await,
+            Verb::GraphTraverse(r) => graph::traverse(&self.exec(client), r).await,
+            Verb::GraphNeighbors(r) => graph::neighbors(&self.exec(client), r).await,
+            Verb::GraphShortestPath(r) => graph::shortest_path(&self.exec(client), r).await,
+            Verb::GraphList(_) => graph::list(&self.exec(client)).await,
+            Verb::GraphCreate(r) => graph::create(&self.exec(client), r).await,
+            Verb::GraphDrop(r) => graph::drop(&self.exec(client), r).await,
+            Verb::DatabaseList(_) => database::list(&self.exec(client)).await,
+            Verb::DatabaseCreate(r) => database::create(&self.exec(client), r).await,
+            Verb::DatabaseDrop(r) => database::drop(&self.exec(client), r).await,
             // R14: the name is bound by R4, the meaning is not yet
             // anyone's. It refuses until a consumer defines it.
             Verb::GraphMaterialize(_) => Err(VerbError::Unimplemented(
                 "graph.materialize waits for a consumer that defines materialization (R14)".into(),
             )),
 
-            Verb::Insert(_) | Verb::Update(_) | Verb::Delete(_) | Verb::Purge(_) | Verb::Sql(_) => {
-                Err(unimplemented_in("Phase 4", verb))
+            // -- Phase 4, spec 014 -----------------------------------------
+            Verb::Insert(r) => write::insert(client, graph, attempt, r).await,
+            Verb::Update(r) => write::update(client, graph, attempt, r).await,
+            Verb::Delete(r) => write::delete(client, graph, attempt, r).await,
+            Verb::Purge(r) => write::purge(client, graph, attempt, r).await,
+            Verb::EdgeAssert(r) => write::edge_assert(client, graph, attempt, r).await,
+            Verb::EdgeRetract(r) => write::edge_retract(client, graph, attempt, r).await,
+            Verb::Sql(r) => {
+                let endpoint = self
+                    .endpoint
+                    .as_ref()
+                    .map(|(dir, port)| (dir.as_str(), *port));
+                sql::sql(&self.exec(client), endpoint, r).await
             }
 
             Verb::SchemaApply(_) | Verb::SchemaList(_) | Verb::SchemaShow(_) => {

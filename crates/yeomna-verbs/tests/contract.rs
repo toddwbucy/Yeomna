@@ -151,11 +151,23 @@ fn all_examples() -> Vec<Verb> {
         Verb::CodebaseValidate(GraphScoped {
             graph: "yeomna".into(),
         }),
+        Verb::EdgeAssert(EdgeAssertRequest {
+            from: "frontend_db".into(),
+            to: "redis".into(),
+            relation: "depends_on".into(),
+            payload: json!({"since": "2026-09"}),
+        }),
+        Verb::EdgeRetract(EdgeRetractRequest {
+            from: "frontend_db".into(),
+            to: "redis".into(),
+            relation: "depends_on".into(),
+        }),
     ]
 }
 
-/// The R4 table, as the test sees it.
-const WIRE_NAMES: [&str; 40] = [
+/// The R4 table, as the test sees it, extended by R18 (spec 014): the
+/// two edge verbs land at the end so every earlier position is stable.
+const WIRE_NAMES: [&str; 42] = [
     "orient",
     "status",
     "health",
@@ -196,12 +208,14 @@ const WIRE_NAMES: [&str; 40] = [
     "codebase.prune",
     "codebase.drift",
     "codebase.validate",
+    "edge.assert",
+    "edge.retract",
 ];
 
 #[test]
 fn every_verb_round_trips_and_names_match_the_r4_table() {
     let examples = all_examples();
-    assert_eq!(examples.len(), 40, "one example per verb");
+    assert_eq!(examples.len(), 42, "one example per verb");
     let mut seen = std::collections::BTreeSet::new();
     for (verb, expected_name) in examples.iter().zip(WIRE_NAMES) {
         assert_eq!(verb.wire_name(), expected_name, "R4 table order");

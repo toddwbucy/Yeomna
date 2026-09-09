@@ -85,13 +85,18 @@ END $$;
 -- are NOT NULL: Q1's ruling in DDL, an unattributed edge is
 -- unrepresentable (the reference carried 118 of them because provenance
 -- could be omitted).
+-- The relation vocabulary is scoped by basis (R18, spec 014). The parent
+-- leaves relation unchecked so each partition states its own truth: the
+-- analyzer-emitted partitions keep the closed list, and asserted edges
+-- carry the caller's vocabulary bounded to identifier shape, because a
+-- deployment graph's relations (depends_on, runs_on) are the caller's to
+-- name and closing that list would be authoring their ontology.
 CREATE TABLE IF NOT EXISTS edges (
     id       bigint GENERATED ALWAYS AS IDENTITY,
     graph_id bigint NOT NULL REFERENCES graphs(id) ON DELETE CASCADE,
     src_id   bigint NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
     dst_id   bigint NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    relation text   NOT NULL CHECK (relation IN
-               ('defines', 'calls', 'implements', 'imports', 'contains')),
+    relation text   NOT NULL,
     basis    edge_basis NOT NULL,
     status   text NOT NULL DEFAULT 'ratified'
                CHECK (status IN ('ratified', 'pending')),
@@ -101,11 +106,16 @@ CREATE TABLE IF NOT EXISTS edges (
 ) PARTITION BY LIST (basis);
 
 CREATE TABLE IF NOT EXISTS edges_declared
-    PARTITION OF edges FOR VALUES IN ('declared');
+    PARTITION OF edges (CHECK (relation IN
+        ('defines', 'calls', 'implements', 'imports', 'contains')))
+    FOR VALUES IN ('declared');
 CREATE TABLE IF NOT EXISTS edges_structural
-    PARTITION OF edges FOR VALUES IN ('structural');
+    PARTITION OF edges (CHECK (relation IN
+        ('defines', 'calls', 'implements', 'imports', 'contains')))
+    FOR VALUES IN ('structural');
 CREATE TABLE IF NOT EXISTS edges_asserted
-    PARTITION OF edges FOR VALUES IN ('asserted');
+    PARTITION OF edges (CHECK (relation ~ '^[a-z][a-z0-9_]{0,62}$'))
+    FOR VALUES IN ('asserted');
 
 CREATE INDEX IF NOT EXISTS edges_src ON edges (graph_id, src_id);
 CREATE INDEX IF NOT EXISTS edges_dst ON edges (graph_id, dst_id);
