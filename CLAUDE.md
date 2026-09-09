@@ -44,8 +44,10 @@ first destructive verb, and the database lifecycle under the fourth role,
 `yeomna_provision`, with kg-pattern databases stamped from
 `yeomna_template` because pgvector is not a trusted extension. The session
 serializes calls and retires itself if a role escalation cannot prove its
-reset. M2 has its instrument and still needs its benchmark run (R21 D8:
-report-only, queued right after spec 015). Phase 4 followed, below.
+reset. M2 was measured 2026-09-09 (spec 016,
+`docs/measurements/M2-recursive-cte-at-depth.md`): neither traversal
+formulation blows up on the real graph, reachability saturates by depth 5,
+D7 costs 12 ms at depth 100 with zero spill. Phase 4 followed, below.
 
 **The hold ended 2026-09-09.** Resume verification passed: cluster up,
 data intact, seal held, hugepages sufficient (4246 needed, measured the
@@ -84,9 +86,9 @@ document one: walk, analyze, hash-skip, chunk, embed, write, with every
 language reaching the edge resolver built for it, chosen by the analyzer
 that ran rather than by extension. The language-server pass (rust-analyzer,
 gopls) is opt-in, gated per crate or module, and degrades to the structural
-graph rather than failing. The dogfood graph `yeomna_self` holds 1620 nodes
-and 2650 edges including 861 `calls`, which is the corpus M2 wanted. M2
-stays open until the benchmark is run and reported.
+graph rather than failing. The dogfood graph `yeomna_self` holds 1976 nodes
+and 3533 edges including 1325 `calls` after the 2026-09-09 re-ingests, the
+corpus M2 wanted, and M2 was measured on it the same day (spec 016).
 
 The pipeline-libraries PRD's own Phase 6, the Python services, waits on the
 SPU and config rulings. Note that phase numbers are per PRD and do not

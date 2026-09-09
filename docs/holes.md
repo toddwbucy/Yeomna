@@ -67,7 +67,7 @@ ported: the excluded reference code is not consulted.
 | Includes | Q3 renames of ArangoDB-vocabulary command names, the audit table wiring, peercred policy |
 | Progress | **Phase 4 of 7 done.** Phase 4 (spec 014, PR #36, issue #35, merged 2026-09-09): seven verbs including R18's `edge.assert` and `edge.retract`, the audit transaction proven by a crash-shaped test, the scoped `sql` verb under R17/R17a, R16's client inside the call lock. Phase 3 (spec 013, PR #34): the graph answers, traversal pruning proven at the verb level, the first destructive verb, the kg pattern stamped from the template under `yeomna_provision` (R13/R13a), materialize refusing under R14, the session retiring itself on unproven role resets. Earlier: Phase 1 (spec 010, PR #27): the closed 40-verb contract, R4 closed, the audit outcome column. Phase 2 (spec 012, PR #32): eleven read verbs, the session, the exhaustive dispatch, and the audit write, with G1 as a permanent test over every implemented verb. The schema version is a compiled-in constant, ruled rather than stored |
 | Still false | **T3.** The destructive paths are Phase 4 and Phase 6, so the charter's thesis stays false until they land and the CLI is repointed at Phase 7 |
-| Next | **R21's order, #36 merged, 015 built and in review**: the M2 benchmark, `yeomna call`, the daemon with its config file, the WeaverTools KG stand-up, Phase 6 in two halves (T3 goes true with retire and prune), the CLI tree with H8, the embedder, hybrid query |
+| Next | **R21's order, #36 and 015 merged, M2 measured (spec 016)**: `yeomna call`, the daemon with its config file, the WeaverTools KG stand-up, Phase 6 in two halves (T3 goes true with retire and prune), the CLI tree with H8, the embedder, hybrid query |
 | The client surface | **Re-scoped 2026-09-09 under R20 into epic #37.** PR #19 (the capture) closed unmerged, branch kept: its contract role passed to spec 010's table, its census role to compile-time completeness from the closed enum, its code to reference material. The epic parts out the daemon (Phase 5), `yeomna call` (the agent surface, embedded mode first), the contract-born per-verb CLI tree (Phase 7), H8's tools commands, and H10's config file, with the capture's five findings carried as do-not-reproduce items |
 
 ## H3. The ingest orchestrator. FILLED 2026-08-15
@@ -84,16 +84,19 @@ and tree-sitter for anything that fell back. The language-server pass is
 opt-in, gated per crate or module, and degrades to the structural graph
 rather than failing an ingest.
 
-**This repository is now a graph**: 1620 nodes, 2650 edges including 861
-`calls`, with call chains reaching the depth cap. That is the corpus M2
-has always needed, and M2 stays open until the benchmark is run.
+**This repository is now a graph**: 1976 nodes and 3533 edges after the
+2026-09-09 re-ingests, 1325 of them `calls`. That is the corpus M2 always
+needed, and **M2 was measured on it 2026-09-09** (spec 016,
+`docs/measurements/M2-recursive-cte-at-depth.md`): neither traversal
+formulation blows up, reachability saturates by depth 5, the D7 walk
+costs 12 ms at depth 100 with zero spill.
 
 | | |
 |---|---|
 | Owner | store PRD Phases 4 and 7, spec 011 |
 | Filled | R7 as R12 (`edge_basis` stays text), FR 2's enrichment protocol, the first dogfood ingest |
 | CLI holes it fills | 9 (`codebase` tree, `ingest`), still waiting on H2 Phases 6 and 7 for their verbs |
-| Still open | M2's benchmark, M3's concurrency window, Python call edges wired but unexercised |
+| Still open | M3's concurrency window, Python call edges wired but unexercised (M2 measured 2026-09-09, reopens on a corpus whose hubs do not saturate by depth 20) |
 
 ## H4. The embedder backend
 

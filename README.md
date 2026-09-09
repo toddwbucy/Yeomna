@@ -445,7 +445,11 @@ what the reference does, not "as good as Elasticsearch." Graduation: pg_search.
 variable-length traversal? Partition pruning through the recursive term is
 already confirmed. What is untested is cycle behavior and row growth at depth on
 a real code graph, where calls edges do cycle. The benchmark should try to blow
-up the depth-20 ceiling rather than confirm that depth 3 works.
+up the depth-20 ceiling rather than confirm that depth 3 works. Measured
+2026-09-09: it does not blow up, on the real graph or at depth 100, because a
+real call graph saturates by depth 5. See
+`docs/measurements/M2-recursive-cte-at-depth.md` for the tables and the reopen
+condition.
 
 **M3. Ingest isolation.** codebase retire becomes a multi-statement transaction
 rather than a single atomic statement, so its isolation level is now a choice
