@@ -35,7 +35,17 @@ fn socket_dir() -> Option<String> {
     std::path::Path::new(&sock).exists().then_some(dir)
 }
 
+/// Temp bytes written by this database, the spill signal. The counter is
+/// cumulative and database-wide, so it is read as a difference across one
+/// query and it would count a concurrent session's spill as this query's.
+/// The benchmark runs against a dev cluster with one caller, and the flush
+/// is forced first because the statistics are buffered per backend and an
+/// unflushed read would report zero spill for a query that spilled.
 async fn temp_bytes(owner: &Client) -> i64 {
+    owner
+        .execute("SELECT pg_stat_force_next_flush()", &[])
+        .await
+        .unwrap();
     owner
         .query_one(
             "SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database()",
@@ -129,6 +139,12 @@ async fn m2_recursive_ctes_at_depth_on_the_real_graph() {
         facts.get::<_, i64>(3)
     );
     let hubs = hubs(&owner, g).await;
+    if hubs.is_empty() {
+        // Not a failure: a graph with no calls edges has nothing for a
+        // walk to grow through, which is the finding for that corpus.
+        println!("== no calls edges in {graph}, nothing to walk ==");
+        return;
+    }
     println!("== hubs by calls out-degree ==");
     for (k, d) in &hubs {
         println!("  {k} ({d})");
@@ -177,8 +193,10 @@ async fn m2_recursive_ctes_at_depth_on_the_real_graph() {
                     depth,
                     limit: D7_CAP,
                 });
-                // Once to warm, once to measure.
-                session.call(&req).await;
+                // Once to warm, once to measure, so the number is the
+                // query and not the cache filling.
+                let warm = session.call(&req).await;
+                assert!(warm.success, "traverse failed: {:?}", warm.error);
                 let before = temp_bytes(&owner).await;
                 let t = Instant::now();
                 let env = session.call(&req).await;
@@ -216,6 +234,14 @@ async fn m2_recursive_ctes_at_depth_on_the_real_graph() {
                 .unwrap()
                 .get(0);
             for depth in REF_DEPTHS {
+                // Warmed the same way the D7 side is, so the two columns
+                // of timings mean the same thing.
+                let _ = owner
+                    .query_one(
+                        REFERENCE_SQL,
+                        &[&start, &g, &depth, &relations, &REF_ROW_LIMIT],
+                    )
+                    .await;
                 let before = temp_bytes(&owner).await;
                 let t = Instant::now();
                 let result = owner

@@ -9,6 +9,14 @@ census graph as a second, call-sparse data point. The benchmark is
 `crates/yeomna-verbs/tests/m2_benchmark.rs`, run with `--ignored`, and
 `YEOMNA_M2_GRAPH` selects the graph.
 
+Spill is read as a difference in `pg_stat_database.temp_bytes` across
+each measured query, with `pg_stat_force_next_flush()` called first,
+because those statistics are buffered per backend and an unflushed read
+reports zero for a query that spilled. The zeros below survived turning
+the flush on, so they are measurements rather than lag. The counter is
+database-wide, so the numbers hold for a cluster with one caller, which
+is what the dev cluster is.
+
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually.
 
@@ -25,7 +33,7 @@ synthetic graph: 2.1 million rows and 430 MB spilled at depth 20 on
 
 | | |
 |---|---|
-| Corpus | 1976 nodes, 3533 edges, 1325 `calls` (rust-analyzer resolved), **one** two-cycle on `calls` |
+| Corpus | 1976 nodes, 3533 edges, 1325 `calls`, **one** two-cycle on `calls` |
 | Hubs by `calls` out-degree | `Session::dispatch` (31), `semantic_lsp_pass` (18), `write_edges` (14) |
 | Cycle evidence | no hub returns to itself within depth 20 |
 
@@ -98,6 +106,17 @@ reachable sets in the thousands, could still move these tables. The
 WeaverTools graph with its semantic pass run (PR 5 in R21's order,
 which resolves its Rust `calls` through rust-analyzer) is the next
 such corpus, and the benchmark re-runs against it in one second.
+
+## What the local review left standing
+
+The benchmark measures three hubs by `calls` out-degree, which is where
+a walk has the most room to grow, and not the whole graph. A corpus
+whose growth lives somewhere other than its busiest callers would need
+its starts chosen differently, and the instrument takes that as an
+argument rather than a rewrite. The second run's starts are Python
+experiment scripts because the census ingest ran without the semantic
+pass, which is the caveat above and the reason PR 5 in R21's order is
+the better second corpus.
 
 ## Disposition
 
