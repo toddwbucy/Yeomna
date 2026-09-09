@@ -18,6 +18,7 @@
 //! - **Presentation stays out.** The captured CLI's `format` and `verbose`
 //!   flags are rendering concerns and do not exist here.
 
+pub mod actor;
 mod audit;
 mod database;
 mod envelope;

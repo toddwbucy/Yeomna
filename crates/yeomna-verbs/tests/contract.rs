@@ -4,6 +4,10 @@
 use serde_json::json;
 use yeomna_verbs::*;
 
+// The R4 table lives in the library now (spec 017), so `yeomna verbs`
+// prints the contract rather than a copy of it, and this test checks
+// the one list everything else reads.
+
 /// One example of every verb. `Verb::wire_name`'s exhaustive match forces
 /// an edit there when a variant is added, and the comment there points
 /// here: extend this list and the count below in the same change.
@@ -164,53 +168,6 @@ fn all_examples() -> Vec<Verb> {
         }),
     ]
 }
-
-/// The R4 table, as the test sees it, extended by R18 (spec 014): the
-/// two edge verbs land at the end so every earlier position is stable.
-const WIRE_NAMES: [&str; 42] = [
-    "orient",
-    "status",
-    "health",
-    "check",
-    "stats",
-    "codebase.stats",
-    "query",
-    "get",
-    "list",
-    "count",
-    "recent",
-    "insert",
-    "update",
-    "delete",
-    "purge",
-    "graph.traverse",
-    "graph.neighbors",
-    "graph.shortest-path",
-    "graph.list",
-    "graph.create",
-    "graph.drop",
-    "graph.materialize",
-    "schema.apply",
-    "schema.list",
-    "schema.show",
-    "schema.version",
-    "database.list",
-    "database.create",
-    "database.drop",
-    "sql",
-    "embed.text",
-    "graph-embed.embed",
-    "graph-embed.neighbors",
-    "graph-embed.update",
-    "ingest",
-    "codebase.ingest",
-    "codebase.retire",
-    "codebase.prune",
-    "codebase.drift",
-    "codebase.validate",
-    "edge.assert",
-    "edge.retract",
-];
 
 #[test]
 fn every_verb_round_trips_and_names_match_the_r4_table() {

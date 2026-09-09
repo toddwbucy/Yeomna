@@ -308,3 +308,43 @@ async fn a_verb_does_not_run_when_the_log_refuses_the_attempt() {
     assert!(msg.starts_with("internal"), "{msg}");
     assert!(msg.contains("audit"), "it says why: {msg}");
 }
+
+/// V3 end to end: a session built with the kernel's actor writes that
+/// actor, and nothing in the environment changes it. Lives here because
+/// reading the audit log is SQL, and this is one of the two crates that
+/// may write it.
+#[tokio::test]
+async fn the_kernel_s_actor_is_what_the_row_carries() {
+    let actor = yeomna_verbs::actor::from_kernel();
+    let Some((owner, _)) = fixtures(&actor).await else {
+        return;
+    };
+    let Some(dir) = socket_dir() else { return };
+    let app = yeomna_store::connect(&dir, PORT, "yeomna_app", "yeomna")
+        .await
+        .expect("yeomna_app connects");
+    owner
+        .execute("DELETE FROM audit_log WHERE actor = $1", &[&actor])
+        .await
+        .unwrap();
+
+    // The environment is not consulted, which the CLI suite proves at
+    // process level with a hostile USER. Mutating it here would be a
+    // process-wide change in a binary whose tests run in parallel, so
+    // this test asserts the derivation and leaves the environment alone.
+    let session = Session::new(app, yeomna_verbs::actor::from_kernel());
+    let env = session.call(&Verb::Health(Empty {})).await;
+    assert!(env.success, "{:?}", env.error);
+
+    let rows = rows_for(&owner, "health", &actor).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "the call is audited under the kernel's actor"
+    );
+    assert_eq!(rows[0].1.as_deref(), Some("ok"));
+    assert!(
+        !actor.is_empty() && actor != "impostor" && actor != "unknown",
+        "the kernel named the caller: {actor:?}"
+    );
+}
