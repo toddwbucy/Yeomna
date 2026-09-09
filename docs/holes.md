@@ -67,7 +67,7 @@ ported: the excluded reference code is not consulted.
 | Includes | Q3 renames of ArangoDB-vocabulary command names, the audit table wiring, peercred policy |
 | Progress | **Phase 4 of 7 done.** Phase 4 (spec 014, PR #36, issue #35, merged 2026-09-09): seven verbs including R18's `edge.assert` and `edge.retract`, the audit transaction proven by a crash-shaped test, the scoped `sql` verb under R17/R17a, R16's client inside the call lock. Phase 3 (spec 013, PR #34): the graph answers, traversal pruning proven at the verb level, the first destructive verb, the kg pattern stamped from the template under `yeomna_provision` (R13/R13a), materialize refusing under R14, the session retiring itself on unproven role resets. Earlier: Phase 1 (spec 010, PR #27): the closed 40-verb contract, R4 closed, the audit outcome column. Phase 2 (spec 012, PR #32): eleven read verbs, the session, the exhaustive dispatch, and the audit write, with G1 as a permanent test over every implemented verb. The schema version is a compiled-in constant, ruled rather than stored |
 | Still false | **T3.** The destructive paths are Phase 4 and Phase 6, so the charter's thesis stays false until they land and the CLI is repointed at Phase 7 |
-| Next | **R21's order, #36 merged**: the spec 015 document graph, the M2 benchmark, `yeomna call`, the daemon with its config file, the WeaverTools KG stand-up, Phase 6 in two halves (T3 goes true with retire and prune), the CLI tree with H8, the embedder, hybrid query |
+| Next | **R21's order, #36 merged, 015 built and in review**: the M2 benchmark, `yeomna call`, the daemon with its config file, the WeaverTools KG stand-up, Phase 6 in two halves (T3 goes true with retire and prune), the CLI tree with H8, the embedder, hybrid query |
 | The client surface | **Re-scoped 2026-09-09 under R20 into epic #37.** PR #19 (the capture) closed unmerged, branch kept: its contract role passed to spec 010's table, its census role to compile-time completeness from the closed enum, its code to reference material. The epic parts out the daemon (Phase 5), `yeomna call` (the agent surface, embedded mode first), the contract-born per-verb CLI tree (Phase 7), H8's tools commands, and H10's config file, with the capture's five findings carried as do-not-reproduce items |
 
 ## H3. The ingest orchestrator. FILLED 2026-08-15
@@ -128,6 +128,14 @@ the PDF path ships, run against the Rust engine directly, with
 pip-installed docling as the side-by-side if one is wanted. Spec 015
 also carries the `conforms:` doc-to-code resolver, the linkage that
 makes the WeaverTools graph semantic.
+
+**Spec 015 built 2026-09-09 (issue #38), in review.** The first census
+over the WeaverTools corpus: 100 documents, 1518 chunks, 388 graph
+blocks with zero refusals, 474 declared nodes, 649 declared edges
+carrying all twelve of the corpus's relations, and all 492 `conforms:`
+headers resolved to declared claims with zero unresolved. One graph,
+5147 edges, 18 seconds. The docling pin held against a crate that
+published five versions on the build day.
 
 The original R5 reasoning, kept for the record:
 
