@@ -29,7 +29,14 @@ reported by the operation as the spec requires.
 
 The census found one more block and 13 `seam` edges where the 2026-09-09
 survey's grep counted 387 and 12: the parser reads fences the grep's
-line anchors missed. The corpus line that reads `kind: the SPU still
+line anchors missed. Re-run after CodeRabbit round one, against a
+corpus that had grown in the meantime (WeaverTools merged #529 at
+13:57): 101 documents, 1546 chunks, 393 blocks with zero refusals, 480
+declared nodes, 652 declared edges, and 498 headers deduplicated to
+466 unique file-to-claim edges, the difference being item-level
+restatements of a file-level header. 5238 edges. The corpus is a
+moving target, which is the point of a graph that is grown rather than
+dumped. The corpus line that reads `kind: the SPU still
 decides nothing about what matters` sits outside any graph block, so
 nothing was refused, and EC-7 is proven by the unit test that plants
 the same line inside one.
@@ -79,6 +86,23 @@ operation walks, converts, chunks, and writes on its own, reusing
 `chunk_doc` so the chunk contract is byte-identical. `Pipeline` gained
 the trait seam (generic over `Extractor`, default the socket client)
 and nothing else, which is FR1.
+
+**7. Skipped for writing, never for declaration (CodeRabbit round
+one).** The first cut wrote the content hash with the document and only
+then drew its declarations, so a run interrupted between the two, or
+an edge the sink rejected, would have hidden behind the hash on the
+next run. The fix mirrors the codebase orchestrator's rule that an
+unchanged file still contributes its symbols: every file's graph blocks
+are read before the hash-skip and re-declared on every run. Nodes
+upsert with identical payloads and R8 keeps the history quiet, edges
+upsert on their identity, and a missing declaration repairs itself on
+the next run. The integration test deletes an edge between runs and
+watches it return. Round one also refused reserved stanza keys as
+extras (a missing blank line can no longer fold an edge into a node
+silently), deduplicated restated nodes, edges, and headers with the
+first in sorted order winning, gave the converter task its own
+`Backend` error, and kept spec 005's `PipelineError::Extraction`
+variant beside the seam's new one.
 
 ## What landed
 
