@@ -10,7 +10,7 @@ words genuinely, honestly, or actually.
 
 Code, documents, and links into one scratch graph, 18 seconds. This
 table is the first run, at build time, with the corpus at WeaverTools
-#528. The second run, after review round one and against the corpus
+PR 528. The second run, after review round one and against the corpus
 as it had grown, follows the table.
 
 | | |
@@ -33,8 +33,8 @@ reported by the operation as the spec requires.
 The census found one more block and 13 `seam` edges where the 2026-09-09
 survey's grep counted 387 and 12: the parser reads fences the grep's
 line anchors missed. Re-run after CodeRabbit round one, against a
-corpus that had grown in the meantime (WeaverTools merged #529 at
-13:57): 101 documents, 1546 chunks, 393 blocks with zero refusals, 480
+corpus that had grown in the meantime (WeaverTools merged its PR 529
+at 13:57): 101 documents, 1546 chunks, 393 blocks with zero refusals, 480
 declared nodes, 652 declared edges, and 498 headers deduplicated to
 466 unique file-to-claim edges, the difference being item-level
 restatements of a file-level header. 5238 edges. The corpus is a
