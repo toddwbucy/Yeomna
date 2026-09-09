@@ -9,7 +9,7 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and specs at `docs/specs/NNN-slug/spec.md` with review notes alongside.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, nine crates, 310 tests. **The Rust side of the
+`rust-toolchain.toml`, nine crates, 327 tests. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
 and merged. **The store exists and holes-ledger H1 is filled** (specs 008
@@ -43,8 +43,8 @@ first destructive verb, and the database lifecycle under the fourth role,
 `yeomna_provision`, with kg-pattern databases stamped from
 `yeomna_template` because pgvector is not a trusted extension. The session
 serializes calls and retires itself if a role escalation cannot prove its
-reset. M2 has its instrument and still needs its benchmark run. Next is
-Phase 4: write verbs, the audit transaction, and the scoped `sql` verb.
+reset. M2 has its instrument and still needs its benchmark run (R21 D8:
+report-only, queued right after spec 015). Phase 4 followed, below.
 
 **The hold ended 2026-09-09.** Resume verification passed: cluster up,
 data intact, seal held, hugepages sufficient (4246 needed, measured the
@@ -57,13 +57,16 @@ on a logout (2026-08-28), and the server limped a week before dying on
 applied 2026-09-09. The deployment-era fix is a dedicated system user
 for the unit, which is immune by category.
 
-**The resumption driver is a WeaverTools knowledge graph**: databases,
-services, agents, and the edges between them, written through the verbs.
-That makes WeaverTools the verb layer's first customer and puts Phase 4
-(spec 014, drafted) and Phase 5 (the daemon socket it connects to) on
-the critical path. Spec 014 also proposes R18, a contract amendment
-adding `edge.assert` and `edge.retract`, because a deployment graph is
-mostly edges and the 40-verb contract could write nodes but not edges.
+**The resumption driver is a semantic KG over the WeaverTools codebase**:
+its code, documents, databases, services, and agents, and the edges
+between them. The boundary is ruled (D9): Yeomna is an external RAG
+appliance, never a part of the WeaverTools architecture, and its first
+caller is Claude Code itself, using the graph as the RAG for building
+these projects. **Phase 4 is built** (spec 014, PR #36 in review): seven
+verbs including R18's `edge.assert` and `edge.retract`, the contract at
+42 wire names, and the audit transaction proven by a crash-shaped test.
+Next per R21's ten-PR order: the spec 015 document graph, the M2
+benchmark, then the `yeomna call` client and the daemon (epic #37).
 
 **H3 is filled and this repository is a graph** (spec 011, merged
 2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the
@@ -124,15 +127,31 @@ a reason to skip it.
 
 1. A GitHub Issue documenting the move (source paths, LOC, coupling, review
    notes).
-2. A branch and a **draft PR**. The first commit is the verbatim move,
-   diffable against the reference. Todd takes the PR out of draft manually,
-   which triggers CodeRabbit review.
+2. A branch and a PR. For a lift the first commit is the verbatim move,
+   diffable against the reference. For a build the first commits are the
+   spec and the implementation. The PR opens ready for review rather than
+   as a draft (amended 2026-09-09, so CodeRabbit starts without waiting on
+   a hand), and it triggers CodeRabbit review.
 3. CodeRabbit findings are addressed as **separate commits on the same PR**,
    never squashed into the move commit. The move commit is the only surviving
    record of what the reference did, since the reference cannot run.
 4. Once all CodeRabbit comments are addressed, e2e testing on the crate
    confirms functionality.
-5. Then, and only then, merge to main.
+5. **The merge rule, ruled 2026-09-09.** CodeRabbit gets at most three
+   exchanges. One exchange is a review with findings, then a push of fixes
+   as separate commits, each finding either fixed and verified or declined
+   with its reason on the PR. If the review is clear within three exchanges
+   and the workspace gate is green three times with cluster tests running,
+   the PR merges without waiting on Todd. If the fourth review still finds a
+   problem, work stops there and Todd and Claude investigate together.
+   Docs-only commits that trigger incremental reviews do not count as
+   exchanges. The stop also applies at any round to a finding that needs a
+   ruling: a design decision, a spec contradiction beyond a recorded
+   build-finding amendment, a repeated finding Claude keeps declining, or
+   anything reaching the machine outside the branch and the dev cluster's
+   documented rebuild. After every merge, epic #21, the ledger, this file,
+   and a hub report are updated, which is how Todd catches up
+   asynchronously while working elsewhere.
 
 This amends the lift PRD's R1: defects found in transit are fixed on the PR in
 follow-up commits rather than deferred, but never inside the move commit
