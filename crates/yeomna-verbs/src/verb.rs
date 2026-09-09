@@ -504,6 +504,57 @@ fn default_row_cap() -> u32 {
     10_000
 }
 
+/// Every wire name in the contract, in the R4 table's order.
+///
+/// Public because a caller that cannot enumerate the vocabulary
+/// cannot discover it, and a copy of this list somewhere else would
+/// be a second contract. `wire_name`'s exhaustive match forces an
+/// edit there when a variant is added, and its comment points here.
+pub const WIRE_NAMES: [&str; 42] = [
+    "orient",
+    "status",
+    "health",
+    "check",
+    "stats",
+    "codebase.stats",
+    "query",
+    "get",
+    "list",
+    "count",
+    "recent",
+    "insert",
+    "update",
+    "delete",
+    "purge",
+    "graph.traverse",
+    "graph.neighbors",
+    "graph.shortest-path",
+    "graph.list",
+    "graph.create",
+    "graph.drop",
+    "graph.materialize",
+    "schema.apply",
+    "schema.list",
+    "schema.show",
+    "schema.version",
+    "database.list",
+    "database.create",
+    "database.drop",
+    "sql",
+    "embed.text",
+    "graph-embed.embed",
+    "graph-embed.neighbors",
+    "graph-embed.update",
+    "ingest",
+    "codebase.ingest",
+    "codebase.retire",
+    "codebase.prune",
+    "codebase.drift",
+    "codebase.validate",
+    "edge.assert",
+    "edge.retract",
+];
+
 impl Verb {
     /// The wire name, exactly as the R4 table binds it. Also the
     /// `command` field of the envelope and the `verb` column of the

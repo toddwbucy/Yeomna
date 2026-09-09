@@ -1,0 +1,22 @@
+# The appliance's config file (R3, R21 D4). Ships at
+# /etc/yeomna/yeomna.toml, and YEOMNA_CONFIG names another path for
+# development. Every key has a default, so a machine without this file
+# still runs, and a file that exists and will not parse is an error
+# rather than a silent fallback.
+#
+# What belongs here is where the store is. What a verb does is the
+# contract's business and never a config key.
+
+# The directory holding the Postgres socket. Defaults to
+# $HOME/.local/share/yeomna/run, which is the dev cluster's.
+socket_dir = "/run/yeomna"
+
+# Defaults to 5433, the dev cluster's port.
+port = 5433
+
+# Defaults to "yeomna", the primary database.
+database = "yeomna"
+
+# The graph a session starts scoped to when the caller names none.
+# Absent by default, which several verbs refuse and several do not.
+# graph = "yeomna_self"

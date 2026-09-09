@@ -263,18 +263,24 @@ capability is rebuilt against the Postgres graph when its era arrives.
 | CLI holes it fills | 3 (`graph-embed` tree) |
 | Feeds | the two replay axes of charter 8.3 (differential provenance, model-version replay) |
 
-## H10. The config layer
+## H10. The config layer. FILLED 2026-09-09
 
 The appliance ships a config file, not a scatter of env vars (the
-`postgresql.conf` precedent). Every service currently carries env surfaces
-under Yeomna names as interim.
+`postgresql.conf` precedent). Spec 017 wrote it: TOML at
+`/etc/yeomna/yeomna.toml`, `YEOMNA_CONFIG` naming another path for
+development, a documented default for every key so a machine without
+the file still runs, and a file that exists and will not parse refused
+rather than fallen back from, since falling back would run the
+appliance against a store the operator did not name.
+`docs/yeomna.toml.example` is the shipped shape. What it says is where
+the store is, never what a verb does.
 
 | | |
 |---|---|
-| Owner | R3 ruled 2026-08-14, then small work in each consumer |
+| Owner | R3 ruled 2026-08-14, written by spec 017 |
 | Product surface today | one variable, `YEOMNA_TOOLS_DIR` (`yeomna-code`, `managed_tools_dir`). The embedder endpoint, CLI `--db` resolution, and daemon socket paths were listed here before they existed and still do not |
 | Not in scope | test and development knobs, which stay environment variables: `YEOMNA_TEST_DB`, `YEOMNA_CUDA_FIXTURE`, `YEOMNA_RA_BIN`. `HOME` and `CARGO_MANIFEST_DIR` are facts of the OS and the build, not configuration |
-| Lands with | its first real consumer, the daemon, inside epic #37 (R20). Building a config crate before one exists would be vocabulary ahead of its consumer |
+| Landed with | `yeomna call` (spec 017), its first real consumer, which is the condition this row set. The daemon inherits the file at Phase 5 rather than inventing a second one. Still outside it, and still environment variables, are the test and development knobs above |
 
 ## H11. Review follow-up ledgers
 
