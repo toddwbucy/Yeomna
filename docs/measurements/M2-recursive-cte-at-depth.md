@@ -9,13 +9,21 @@ census graph as a second, call-sparse data point. The benchmark is
 `crates/yeomna-verbs/tests/m2_benchmark.rs`, run with `--ignored`, and
 `YEOMNA_M2_GRAPH` selects the graph.
 
-Spill is read as a difference in `pg_stat_database.temp_bytes` across
-each measured query, with `pg_stat_force_next_flush()` called first,
-because those statistics are buffered per backend and an unflushed read
-reports zero for a query that spilled. The zeros below survived turning
-the flush on, so they are measurements rather than lag. The counter is
-database-wide, so the numbers hold for a cluster with one caller, which
-is what the dev cluster is.
+**How spill is measured, and how far to trust it.** The signal is
+`pg_stat_database.temp_bytes`, read as a difference. Two limits are
+worth stating. The counter is database-wide, so it holds for a cluster
+with one caller, which the dev cluster is. And
+`pg_stat_force_next_flush()` flushes only the calling backend, so a
+per-query read on the owner connection cannot make the `yeomna_app`
+backend that ran a D7 walk publish its pending statistics yet.
+
+So the run reports three things rather than one. The **instrument
+check** runs first: a sort forced past a 64kB `work_mem`, which spilled
+**17,498,112 bytes**, so the counter is live and a zero means no spill
+rather than no measurement. The **per-query columns** below are
+indicative under the flush caveat. And the **total across the whole
+run**, taken after every backend has finished and settled, is the
+authoritative number: **0 bytes**.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually.

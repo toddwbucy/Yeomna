@@ -35,12 +35,19 @@ fn socket_dir() -> Option<String> {
     std::path::Path::new(&sock).exists().then_some(dir)
 }
 
-/// Temp bytes written by this database, the spill signal. The counter is
-/// cumulative and database-wide, so it is read as a difference across one
-/// query and it would count a concurrent session's spill as this query's.
-/// The benchmark runs against a dev cluster with one caller, and the flush
-/// is forced first because the statistics are buffered per backend and an
-/// unflushed read would report zero spill for a query that spilled.
+/// Temp bytes written by this database, the spill signal.
+///
+/// Two limits, both stated, because a spill number nobody trusts is
+/// worse than none. The counter is cumulative and database-wide, so it
+/// is read as a difference and would count a concurrent session's spill
+/// as this query's, which holds on a dev cluster with one caller. And
+/// `pg_stat_force_next_flush` flushes only the calling backend, so a
+/// read taken here cannot make the `yeomna_app` backend that ran a D7
+/// walk publish its pending statistics yet. The per-query columns are
+/// therefore indicative, the total at the end of the run is the
+/// authoritative number (taken once every backend has gone idle and
+/// settled), and `prove_the_counter_moves` shows the instrument reports
+/// spill when spill happens rather than being dead.
 async fn temp_bytes(owner: &Client) -> i64 {
     owner
         .execute("SELECT pg_stat_force_next_flush()", &[])
@@ -114,6 +121,9 @@ async fn m2_recursive_ctes_at_depth_on_the_real_graph() {
         .await
         .expect("yeomna_app connects");
     let session = Session::new(app, "m2-benchmark").with_graph(graph.clone());
+
+    prove_the_counter_moves(&owner).await;
+    let run_started_at = temp_bytes(&owner).await;
 
     // -- Corpus facts ------------------------------------------------------
     let facts = owner
@@ -281,4 +291,39 @@ async fn m2_recursive_ctes_at_depth_on_the_real_graph() {
         .batch_execute("RESET statement_timeout")
         .await
         .unwrap();
+
+    // The authoritative spill number. Every backend has finished and gone
+    // idle, so a settle plus a flush publishes whatever any of them held
+    // pending, and this difference covers the whole run rather than one
+    // query whose backend may not have reported yet.
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let total = temp_bytes(&owner).await - run_started_at;
+    println!("== total spill across the run: {total} bytes ==");
+}
+
+/// The instrument, checked before it is trusted: force a sort that cannot
+/// fit in `work_mem` and watch the counter move. A benchmark whose spill
+/// column is all zeros has either measured no spill or measured nothing,
+/// and this is what tells the two apart.
+async fn prove_the_counter_moves(owner: &Client) {
+    let before = temp_bytes(owner).await;
+    owner.batch_execute("SET work_mem = '64kB'").await.unwrap();
+    let _ = owner
+        .query_one(
+            "SELECT count(*) FROM (
+               SELECT n.natural_key FROM nodes n, generate_series(1, 40) s
+               ORDER BY n.natural_key || s::text
+             ) t",
+            &[],
+        )
+        .await
+        .unwrap();
+    owner.batch_execute("RESET work_mem").await.unwrap();
+    let spilled = temp_bytes(owner).await - before;
+    println!("== instrument check: a forced sort spilled {spilled} bytes ==");
+    assert!(
+        spilled > 0,
+        "the spill counter did not move on a query built to spill, so every \
+         zero below would mean nothing"
+    );
 }

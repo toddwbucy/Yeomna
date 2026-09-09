@@ -96,7 +96,7 @@ costs 12 ms at depth 100 with zero spill.
 | Owner | store PRD Phases 4 and 7, spec 011 |
 | Filled | R7 as R12 (`edge_basis` stays text), FR 2's enrichment protocol, the first dogfood ingest |
 | CLI holes it fills | 9 (`codebase` tree, `ingest`), still waiting on H2 Phases 6 and 7 for their verbs |
-| Still open | M3's concurrency window, Python call edges wired but unexercised (M2 measured 2026-09-09, reopens on a corpus whose hubs do not saturate by depth 20) |
+| Still open | M3's concurrency window, Python call edges wired but unexercised (M2 measured 2026-09-09, reopens on a corpus whose hubs do not saturate by depth 20, or on any spill at all in a D7 walk) |
 
 ## H4. The embedder backend
 

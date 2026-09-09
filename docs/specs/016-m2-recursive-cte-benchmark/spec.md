@@ -21,7 +21,7 @@ cycle behavior and row growth at depth on a real graph, and the
 charter's instruction is to try to blow up the depth-20 ceiling rather
 than confirm that depth 3 works.
 
-The corpus exists (`yeomna_self`, the dogfood graph, 1276 `calls`
+The corpus exists (`yeomna_self`, the dogfood graph, 1325 `calls`
 edges after the 2026-09-09 re-ingest, call chains reaching the depth
 cap). The instrument exists (`graph.traverse`, D7's `UNION (node,
 depth)` walk). What is missing is the run and the report, and the store

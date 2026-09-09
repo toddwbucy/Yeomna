@@ -68,7 +68,7 @@ caller is Claude Code itself, using the graph as the RAG for building
 these projects. **Phase 4 is merged** (spec 014, PR #36, 2026-09-09): seven
 verbs including R18's `edge.assert` and `edge.retract`, the contract at
 42 wire names, and the audit transaction proven by a crash-shaped test.
-**Spec 015 followed the same day** (issue #38, in review): extraction
+**Spec 015 followed the same day** (issue #38, PR #39, merged): extraction
 went native for declarative formats through an `Extractor` trait, the
 socket client unchanged behind it and the pinned `docling` converter
 beside it, and documents joined the graph. The first census over the
@@ -77,8 +77,8 @@ WeaverTools corpus put 100 documents, 388 corpus-declared graph blocks
 492 `conforms:` headers into one graph of 5147 edges in 18 seconds,
 with zero refusals and zero unresolved. Schema 1.2.0: the declared
 partition speaks the source's own words, kebab included. Next per
-R21's order: the M2 benchmark, then the `yeomna call` client and the
-daemon (epic #37).
+R21's order: the `yeomna call` client and the daemon (epic #37). M2 is
+measured, above.
 
 **H3 is filled and this repository is a graph** (spec 011, merged
 2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the
