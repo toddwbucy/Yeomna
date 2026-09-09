@@ -167,7 +167,26 @@ async fn sql_refuses_the_footing_by_name() {
     let Some((_dir, _owner, s)) = fixtures("sqlv-footing").await else {
         return;
     };
-    for name in ["yeomna", "postgres", "yeomna_template"] {
+    // A cluster without the template answers not-found for it, which is
+    // true and not the refusal under test, so the name joins the list
+    // only where it exists to be refused.
+    let template: bool = _owner
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'yeomna_template')",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let mut names = vec!["yeomna", "postgres"];
+    if template {
+        names.push("yeomna_template");
+    } else {
+        eprintln!(
+            "SKIP: yeomna_template is not provisioned, the footing check covers the named databases only"
+        );
+    }
+    for name in names {
         let env = s
             .call(&Verb::Sql(SqlRequest {
                 database: name.to_string(),

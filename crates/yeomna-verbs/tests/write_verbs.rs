@@ -553,9 +553,9 @@ async fn concurrent_updates_keep_the_log_sequence_sound() {
             }
         }
     }
-    let seqs: Vec<i32> = owner
+    let entries: Vec<(i32, serde_json::Value)> = owner
         .query(
-            "SELECT l.seq FROM node_log l JOIN nodes n ON n.id = l.node_id
+            "SELECT l.seq, l.diff::text FROM node_log l JOIN nodes n ON n.id = l.node_id
              JOIN graphs g ON g.id = n.graph_id
              WHERE g.name = $1 AND n.natural_key = 'contended' ORDER BY l.seq",
             &[&G],
@@ -563,8 +563,25 @@ async fn concurrent_updates_keep_the_log_sequence_sound() {
         .await
         .unwrap()
         .iter()
-        .map(|r| r.get(0))
+        .map(|r| {
+            (
+                r.get(0),
+                serde_json::from_str(&r.get::<_, String>(1)).unwrap(),
+            )
+        })
         .collect();
+    let seqs: Vec<i32> = entries.iter().map(|(s, _)| *s).collect();
     let expect: Vec<i32> = (1..=changed as i32).collect();
     assert_eq!(seqs, expect, "seqs are dense and distinct");
+    // The history is a chain: every update's `from` is the previous
+    // entry's `to`. Without the head-row lock a racing writer could log
+    // a `from` the head never held, and density alone would not notice.
+    for pair in entries.windows(2) {
+        let (prev, next) = (&pair[0].1, &pair[1].1);
+        assert_eq!(
+            next["from"], prev["to"],
+            "seq {} must continue from seq {}",
+            pair[1].0, pair[0].0
+        );
+    }
 }

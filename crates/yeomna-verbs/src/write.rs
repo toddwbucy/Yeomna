@@ -159,10 +159,15 @@ pub async fn update(
     let t = client.transaction().await.map_err(db)?;
     let g = graph_id(&t, graph_name).await?;
     let payload = r.payload.to_string();
+    // FOR UPDATE: under READ COMMITTED an unlocked read can see a payload
+    // that another transaction is about to replace, and the log entry
+    // would then carry a stale `from`, a transition the history never
+    // made. The lock serializes the read-modify-write on the head row.
     let row = t
         .query_opt(
             "SELECT id, payload::text, (payload IS DISTINCT FROM $4::text::jsonb)
-             FROM nodes WHERE graph_id = $1 AND natural_key = $2 AND kind = $3",
+             FROM nodes WHERE graph_id = $1 AND natural_key = $2 AND kind = $3
+             FOR UPDATE",
             &[&g, &r.key, &r.kind, &payload],
         )
         .await
