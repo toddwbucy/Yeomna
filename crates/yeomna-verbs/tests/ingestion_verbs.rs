@@ -239,7 +239,7 @@ async fn ingest_carries_documents_and_their_conforms_links() {
             overwrite: true,
         }))
         .await;
-    assert!(env.success, "{:?}", env.error);
+    assert!(env.success, "the seeding ingest: {:?}", env.error);
 
     let env = s
         .call(&Verb::Ingest(IngestRequest {
@@ -286,12 +286,14 @@ async fn drift_reports_what_moved_and_changes_nothing() {
     assert_eq!(d["missing"], json!([]));
     assert_eq!(counts(&owner, G).await, (0, 0, 0), "drift wrote nothing");
 
-    s.call(&Verb::CodebaseIngest(IngestRequest {
-        path: path.clone(),
-        graph: G.into(),
-        overwrite: true,
-    }))
-    .await;
+    let seed = s
+        .call(&Verb::CodebaseIngest(IngestRequest {
+            path: path.clone(),
+            graph: G.into(),
+            overwrite: true,
+        }))
+        .await;
+    assert!(seed.success, "the seeding ingest: {:?}", seed.error);
     let before = counts(&owner, G).await;
 
     // Clean right after an ingest.
@@ -350,12 +352,14 @@ async fn validate_finds_what_the_constraints_cannot_express() {
     assert_eq!(data(&env)["ok"], true, "EC-6: an empty graph is clean");
 
     let root = tree();
-    s.call(&Verb::CodebaseIngest(IngestRequest {
-        path: root.path().to_string_lossy().to_string(),
-        graph: G.into(),
-        overwrite: true,
-    }))
-    .await;
+    let seed = s
+        .call(&Verb::CodebaseIngest(IngestRequest {
+            path: root.path().to_string_lossy().to_string(),
+            graph: G.into(),
+            overwrite: true,
+        }))
+        .await;
+    assert!(seed.success, "the seeding ingest: {:?}", seed.error);
     let env = s.call(&check).await;
     assert_eq!(
         data(&env)["ok"],
@@ -447,4 +451,85 @@ fn a_call_is_spawnable() {
         require_send(s.call(v));
     }
     let _ = guard;
+}
+
+/// The finding this test exists for: a file the walk offered and could
+/// not assess is present, not absent, and reporting it as `missing`
+/// would tell `retire` to sweep a node whose source is right there.
+///
+/// Both skip paths are exercised: over the size limit, and unreadable
+/// as text. Each leaves `missing` empty, lands in `unassessed`, and
+/// makes `clean` false, because a drift that could not read a file
+/// cannot answer yes.
+#[tokio::test]
+async fn a_file_the_walk_cannot_assess_is_not_reported_missing() {
+    const G: &str = "iv_unassessed";
+    let Some((owner, s)) = fixtures(G, "iv-unassessed").await else {
+        return;
+    };
+    let root = TempDir::new().unwrap();
+    std::fs::write(root.path().join("small.rs"), "pub fn a() {}\n").unwrap();
+    std::fs::write(root.path().join("big.rs"), "pub fn b() {}\n").unwrap();
+    let path = root.path().to_string_lossy().to_string();
+
+    // Ingest both while they are readable and small, so the graph holds
+    // a node for each.
+    let seed = s
+        .call(&Verb::CodebaseIngest(IngestRequest {
+            path: path.clone(),
+            graph: G.into(),
+            overwrite: true,
+        }))
+        .await;
+    assert!(seed.success, "the seeding ingest: {:?}", seed.error);
+    assert_eq!(data(&seed)["files_written"], 2);
+    let before = counts(&owner, G).await;
+
+    // Now make one oversized and one unreadable as text, without
+    // removing either from the tree.
+    let big = "pub fn b() {}\n".repeat(100_000);
+    assert!(big.len() > 1024 * 1024, "the fixture must exceed the limit");
+    std::fs::write(root.path().join("big.rs"), &big).unwrap();
+    std::fs::write(root.path().join("small.rs"), [0xff, 0xfe, 0x00, 0x01]).unwrap();
+
+    let env = s
+        .call(&Verb::CodebaseDrift(DriftRequest {
+            graph: G.into(),
+            path: path.clone(),
+        }))
+        .await;
+    assert!(env.success, "{:?}", env.error);
+    let d = data(&env);
+    assert_eq!(
+        d["missing"],
+        json!([]),
+        "both files are present, so neither is missing: {d}"
+    );
+    assert_eq!(d["changed"], json!([]));
+    assert_eq!(d["new"], json!([]));
+    assert_eq!(d["files_seen"], 2, "the walk saw both: {d}");
+    let unassessed: Vec<String> = d["unassessed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(unassessed.len(), 2, "{unassessed:?}");
+    assert!(
+        unassessed
+            .iter()
+            .any(|u| u.starts_with("big.rs: over the size limit")),
+        "{unassessed:?}"
+    );
+    assert!(
+        unassessed
+            .iter()
+            .any(|u| u.starts_with("small.rs: could not be read")),
+        "{unassessed:?}"
+    );
+    assert_eq!(
+        d["clean"], false,
+        "a drift that could not read a file does not answer yes"
+    );
+    assert_eq!(counts(&owner, G).await, before, "drift still wrote nothing");
 }

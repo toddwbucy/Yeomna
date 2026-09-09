@@ -208,7 +208,7 @@ pub async fn codebase_drift(
         "changed": summary.changed,
         "new": summary.new,
         "missing": summary.missing,
-        "unreadable": summary.unreadable,
+        "unassessed": summary.unassessed,
     }))
 }
 

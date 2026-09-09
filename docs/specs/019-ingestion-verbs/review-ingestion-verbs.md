@@ -79,12 +79,33 @@ was built for, answering about the work that built it.
 
 ## Test inventory
 
-`crates/yeomna-verbs/tests/ingestion_verbs.rs` (8): FR1 through FR7 and
-EC-1 through EC-7. The two that matter most are drift proving it wrote
+`crates/yeomna-verbs/tests/ingestion_verbs.rs` (9): FR1 through FR7 and
+EC-1 through EC-8. The two that matter most are drift proving it wrote
 nothing (node, edge, and log counts identical across a drift that
 reported changes) and validate finding a planted cross-graph edge.
 `tests/audit.rs` grew four refusal-shaped entries so G1 stays total,
 and `read_verbs.rs`'s shrinking guard now names Phase 6b alone.
+
+## CodeRabbit round one
+
+**A present file that could not be assessed was reported as missing,
+and `missing` is what `retire` will act on.** `walk_and_analyze` skips
+a file on three paths (over the size limit, unreadable, unparseable)
+and none of them reached the list it returns, so drift's
+`missing` (stored keys minus analyzed keys) included files that were
+sitting right there in the tree. Phase 6b would then have swept their
+nodes. The walk now reports what it skipped, drift counts those keys as
+seen, and they land in a new `unassessed` list with the reason rather
+than in `missing`. `clean` is false when anything went unassessed,
+because a drift that could not read a file does not answer yes.
+
+The new test covers both skip paths and would have failed before the
+fix: `seen_keys` would have been empty, both present files would have
+been reported missing, and `files_seen` would have read zero.
+
+Also applied: the seeding ingests in three tests now assert their
+envelopes, so a failed setup reports itself rather than surfacing as a
+confusing assertion three lines later.
 
 ## Riding items
 

@@ -50,7 +50,13 @@ crash-shaped ingest leaves the same NULL outcome any other verb would.
   the links are what make them reachable.
 - `codebase.drift` (D2): re-walk and re-analyze the tree, compare each
   file's `symbol_hash` against what the graph holds, and report
-  `changed`, `new`, and `missing` with the paths. **Writes nothing.**
+  `changed`, `new`, `missing`, and `unassessed` with the paths.
+  **Writes nothing.** A file the walk offered and could not assess
+  (over the size limit, unreadable, unparseable) is `unassessed` and
+  never `missing`, because it is present and only unverifiable, and
+  `missing` is the list `retire` acts on. An `unassessed` file makes
+  `clean` false: a drift that could not read a file does not answer
+  yes.
 - `codebase.validate`: the runtime checks the schema's constraints
   cannot express, chief among them **an edge whose endpoints live in a
   different graph than the edge itself**, which the foreign keys admit
@@ -105,9 +111,10 @@ crash-shaped ingest leaves the same NULL outcome any other verb would.
   reporting both summaries under one envelope.
 - **FR3** A path that is not a readable directory is `InvalidArgs`
   naming it, before any connection is opened.
-- **FR4** `codebase.drift` reports `changed`, `new`, and `missing` with
-  their paths and writes nothing, proven by a test that drifts a graph
-  and then finds the graph unchanged.
+- **FR4** `codebase.drift` reports `changed`, `new`, `missing`, and
+  `unassessed` with their paths and writes nothing, proven by a test
+  that drifts a graph and then finds the graph unchanged. A present
+  file the walk could not assess never appears in `missing`.
 - **FR5** `codebase.validate` reports the cross-graph edge count and
   the other checks below, with zero meaning clean, and it writes
   nothing.
@@ -146,6 +153,10 @@ sees what to look at rather than only that something is wrong.
   is `new`, nothing is `missing`, and that is the honest answer.
 - **EC-5** `drift` after a file is deleted from the tree: that file is
   `missing`, which is exactly what `retire` will act on in Phase 6b.
+- **EC-8** `drift` over a file that is present and cannot be assessed:
+  `unassessed` with its reason, absent from `missing`, and `clean` is
+  false. Both skip paths are covered, over the size limit and
+  unreadable as text.
 - **EC-6** `validate` on an empty graph: all zeros, success.
 - **EC-7** A session with no endpoint configured: `Internal` naming the
   gap, the same refusal `sql` gives, because an ingesting verb needs
