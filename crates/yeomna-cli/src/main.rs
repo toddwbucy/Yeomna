@@ -41,6 +41,10 @@ USAGE:
 OPTIONS:
     --graph <name>           scope the session to this graph,
                              overriding the config file's default
+    --daemon                 send the request to yeomnad over its
+                             socket instead of linking the verb layer.
+                             Same JSON, same envelope, and the actor
+                             comes from the kernel either way.
 
 CONFIG:
     YEOMNA_CONFIG names a TOML file, otherwise /etc/yeomna/yeomna.toml
@@ -59,6 +63,7 @@ fn fail(message: impl std::fmt::Display) -> ExitCode {
 async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut graph: Option<String> = None;
+    let mut daemon = false;
     let mut positional: Vec<String> = Vec::new();
     let mut rest = args.iter();
     while let Some(a) = rest.next() {
@@ -67,6 +72,7 @@ async fn main() -> ExitCode {
                 Some(g) => graph = Some(g.clone()),
                 None => return fail("--graph needs a name"),
             },
+            "--daemon" => daemon = true,
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return ExitCode::from(OK);
@@ -83,7 +89,13 @@ async fn main() -> ExitCode {
             ExitCode::from(OK)
         }
         Some("call") => match read_request(&positional) {
-            Ok(verb) => run(verb, graph).await,
+            Ok(verb) => {
+                if daemon {
+                    through_daemon(verb).await
+                } else {
+                    embedded(verb, graph).await
+                }
+            }
             Err(code) => code,
         },
         Some(other) => fail(format!("unknown command {other:?}\n\n{USAGE}")),
@@ -117,7 +129,7 @@ fn read_request(positional: &[String]) -> Result<Verb, ExitCode> {
     serde_json::from_str(&text).map_err(|e| fail(format!("not a verb request: {e}")))
 }
 
-async fn run(verb: Verb, graph: Option<String>) -> ExitCode {
+async fn embedded(verb: Verb, graph: Option<String>) -> ExitCode {
     let config = match config::load() {
         Ok(c) => c,
         Err(e) => return fail(e),
@@ -154,6 +166,47 @@ async fn run(verb: Verb, graph: Option<String>) -> ExitCode {
         // The verb ran and its answer will not serialize, which is this
         // crate's fault and not the caller's, so it does not masquerade
         // as a verb failure.
+        Err(e) => return fail(format!("cannot render the envelope: {e}")),
+    }
+    ExitCode::from(code)
+}
+
+/// FR8: the same request over the daemon's socket. The transport is a
+/// deployment choice and the contract does not notice: the caller sends
+/// the JSON it would have sent, and the daemon names it from the kernel
+/// exactly as embedded mode does, so `--graph` belongs to the daemon's
+/// configuration rather than to a frame.
+async fn through_daemon(verb: Verb) -> ExitCode {
+    use tokio::net::UnixStream;
+    use yeomna_verbs::frame;
+
+    let config = match config::load() {
+        Ok(c) => c,
+        Err(e) => return fail(e),
+    };
+    let path = config.daemon_socket();
+    let mut stream = match UnixStream::connect(&path).await {
+        Ok(s) => s,
+        Err(e) => return fail(format!("cannot reach the daemon at {path}: {e}")),
+    };
+    let body = match serde_json::to_vec(&verb) {
+        Ok(b) => b,
+        Err(e) => return fail(format!("cannot render the request: {e}")),
+    };
+    if let Err(e) = frame::write(&mut stream, &body).await {
+        return fail(format!("cannot send the request: {e}"));
+    }
+    let response = match frame::read(&mut stream).await {
+        Ok(r) => r,
+        Err(e) => return fail(format!("no answer from the daemon: {e}")),
+    };
+    let envelope: yeomna_verbs::Envelope = match serde_json::from_slice(&response) {
+        Ok(e) => e,
+        Err(e) => return fail(format!("the daemon's answer is not an envelope: {e}")),
+    };
+    let code = if envelope.success { OK } else { VERB_FAILED };
+    match serde_json::to_string_pretty(&envelope) {
+        Ok(text) => println!("{text}"),
         Err(e) => return fail(format!("cannot render the envelope: {e}")),
     }
     ExitCode::from(code)

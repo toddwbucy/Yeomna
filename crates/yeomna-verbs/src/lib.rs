@@ -24,6 +24,7 @@ mod database;
 mod envelope;
 mod error;
 mod execute;
+pub mod frame;
 mod graph;
 mod read;
 mod sql;

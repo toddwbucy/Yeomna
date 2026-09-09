@@ -172,6 +172,10 @@ pub async fn status(s: &Exec<'_>) -> Result<Value, VerbError> {
         // The role this session is executing as, which is how a test, or
         // an operator, proves an escalation did not outlive its verb.
         "role": row.get::<_, String>(2),
+        // Who the appliance thinks is calling (V3). The kernel supplied
+        // it, no request can change it, and this is where a caller can
+        // see it: the audit log records it and no verb reads that.
+        "actor": s.actor(),
         "schema_version": yeomna_store::SCHEMA_VERSION,
         "session_graph": s.graph(),
     }))

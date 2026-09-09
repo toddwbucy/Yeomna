@@ -29,6 +29,20 @@ pub struct Config {
     /// several do not.
     #[serde(default)]
     pub graph: Option<String>,
+    /// Where the daemon listens (spec 018). Beside the store's socket
+    /// by default, which is a directory the appliance already keeps at
+    /// 0700. Only `--daemon` reads it.
+    #[serde(default)]
+    pub socket_path: Option<String>,
+}
+
+impl Config {
+    /// The daemon's socket, named or derived.
+    pub fn daemon_socket(&self) -> String {
+        self.socket_path
+            .clone()
+            .unwrap_or_else(|| format!("{}/yeomna.sock", self.socket_dir))
+    }
 }
 
 fn default_socket_dir() -> String {
@@ -53,6 +67,7 @@ impl Default for Config {
             port: default_port(),
             database: default_database(),
             graph: None,
+            socket_path: None,
         }
     }
 }
@@ -174,6 +189,7 @@ mod tests {
                 port: 6000,
                 database: "other".into(),
                 graph: Some("g".into()),
+                socket_path: None,
             }
         );
     }

@@ -321,3 +321,81 @@ fn a_hostile_environment_does_not_change_who_is_calling() {
         "the environment does not name the caller"
     );
 }
+
+/// FR8 (spec 018): the same JSON over the daemon's socket, the same
+/// envelope back. The transport is a deployment choice and the contract
+/// does not notice.
+#[tokio::test]
+async fn the_daemon_transport_answers_like_the_embedded_one() {
+    let Some(dir) = socket_dir() else {
+        eprintln!("SKIP: no cluster socket");
+        return;
+    };
+    let sockets = TempDir::new().unwrap();
+    let daemon_socket = sockets.path().join("yeomna.sock");
+    let listener = yeomna_daemon::server::bind(&daemon_socket).expect("binds");
+    let task = tokio::spawn(yeomna_daemon::server::serve(
+        listener,
+        yeomna_daemon::server::Settings {
+            socket_dir: dir.clone(),
+            port: PORT,
+            database: "yeomna".to_string(),
+            graph: None,
+        },
+    ));
+
+    let d = TempDir::new().unwrap();
+    let config_path = d.path().join("yeomna.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "socket_dir = \"{dir}\"\nport = {PORT}\ndatabase = \"yeomna\"\nsocket_path = \"{}\"\n",
+            daemon_socket.display()
+        ),
+    )
+    .unwrap();
+    let config = config_path.to_string_lossy().to_string();
+    let request = r#"{"verb":"status","args":{}}"#;
+
+    // The child runs on the blocking pool. Waiting on a process from a
+    // worker thread would occupy the runtime the daemon task needs, and
+    // the two would wait on each other.
+    let framed = {
+        let c = config.clone();
+        tokio::task::spawn_blocking(move || run(Some(&c), &["--daemon", "call", request], None))
+            .await
+            .unwrap()
+    };
+    let embedded = {
+        let c = config.clone();
+        tokio::task::spawn_blocking(move || run(Some(&c), &["call", request], None))
+            .await
+            .unwrap()
+    };
+    task.abort();
+
+    assert_eq!(framed.code, 0, "{}", framed.stderr);
+    assert_eq!(embedded.code, 0, "{}", embedded.stderr);
+    let a: serde_json::Value = serde_json::from_str(&framed.stdout).unwrap();
+    let b: serde_json::Value = serde_json::from_str(&embedded.stdout).unwrap();
+    assert_eq!(a["command"], b["command"]);
+    assert_eq!(a["data"]["role"], b["data"]["role"]);
+    assert_eq!(
+        a["data"]["actor"], b["data"]["actor"],
+        "both transports name the caller from the kernel"
+    );
+}
+
+/// The daemon is not running, and the message says where it looked.
+#[test]
+fn an_absent_daemon_names_the_socket_it_tried() {
+    let (_d, config) = config_for("/tmp", None);
+    let r = run(
+        Some(&config),
+        &["--daemon", "call", r#"{"verb":"status","args":{}}"#],
+        None,
+    );
+    assert_eq!(r.code, 2);
+    assert!(r.stderr.contains("cannot reach the daemon"), "{}", r.stderr);
+    assert!(r.stderr.contains("/tmp/yeomna.sock"), "{}", r.stderr);
+}

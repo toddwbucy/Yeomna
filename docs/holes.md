@@ -217,15 +217,30 @@ final branch already sends unknown extensions to docling, so a DOCX may
 land today undeclared rather than unsupported, which a test would
 settle in an afternoon.
 
-## H6. The daemon and transports
+## H6. The daemon and transports. FILLED 2026-09-09
 
-The socket server the CLI's `daemon` command awaits. Rewritten against the
-verb layer, carrying the peercred trust boundary.
+The socket server, built as spec 018 (PRD Phase 5). Length-prefixed JSON
+frames, one verb request in and one envelope out, with the calling uid
+read from the kernel at accept and written into every audit row for that
+connection. D6 holds: a uid this machine cannot name is refused rather
+than admitted under a synthetic one. One `Session` per connection, so
+the session's serialization and its retirement retire one client rather
+than the appliance. The unit ships at `deploy/yeomna-daemon.service`
+with `RestrictAddressFamilies=AF_UNIX`, which makes charter 5.2's
+default-deny a property of the service rather than a promise in a
+config file.
+
+Transport and nothing else: the crate holds no verb decision and emits
+no SQL, in deliberate contrast to the reference's 7.9k-line dispatch
+file. `yeomna call --daemon` sends the same JSON the embedded mode
+takes, so the transport is a deployment choice and the contract does
+not notice.
 
 | | |
 |---|---|
-| Owner | the verb-layer PRD (H2) |
-| Contract in hand | charter 5.2 (default-deny, openings named), the captured daemon CLI surface (MCP flags dropped, parked) |
+| Owner | the verb-layer PRD (H2), built as spec 018 |
+| Contract in hand | charter 5.2 (default-deny, openings named), R21 D5 (the frames and the unit), D6 (an unresolvable peer uid is refused) |
+| Filled | the socket, the codec, peercred as the actor, the unit, and the CLI's framed transport |
 
 ## H7. The schema manager
 
