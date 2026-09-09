@@ -32,4 +32,22 @@ pub trait IngestProbe: Send + Sync {
         &self,
         file_keys: &[String],
     ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send;
+
+    /// The `content_hash` recorded for a document node, the document
+    /// ingest's hash-skip (spec 015), or `None` when it was never
+    /// ingested into this graph.
+    fn stored_document_hash(
+        &self,
+        natural_key: &str,
+    ) -> impl std::future::Future<Output = Result<Option<String>, Self::Error>> + Send;
+
+    /// The kind of the node under this key, or `None` when there is
+    /// none. The document ingest asks before writing a corpus-declared
+    /// node, so a declaration that names an existing code node fuses
+    /// onto it rather than overwriting it, and before creating a
+    /// placeholder, so an endpoint that exists in any form is left alone.
+    fn stored_kind(
+        &self,
+        natural_key: &str,
+    ) -> impl std::future::Future<Output = Result<Option<String>, Self::Error>> + Send;
 }

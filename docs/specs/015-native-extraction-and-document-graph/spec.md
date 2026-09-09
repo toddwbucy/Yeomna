@@ -3,8 +3,11 @@
 Owner: H5 (the holes ledger), under the pipeline-libraries PRD's
 document flow. Ruled by R19 (2026-09-09, revising R5) and R19a, both
 recorded below.
-Status: draft, 2026-09-09. R19 agreed by Todd. R19a ruled the same
-day in its v2 form after the dig into the corpus's own graph notation.
+Status: built 2026-09-09 (issue #38), in review. R19 agreed by Todd,
+R19a ruled the same day in its v2 form after the dig into the corpus's
+own graph notation, R19b closed #17. The build's findings, the census
+over the WeaverTools corpus, and one refinement (kebab admitted on the
+open partitions) are in `review-native-extraction.md` alongside.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually. These govern prose. Rust and

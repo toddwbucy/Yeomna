@@ -31,7 +31,13 @@ pub const SCHEMA_SQL: &str = include_str!("../schema.sql");
 /// identifier-shaped on asserted. A 1.0.0 database refuses asserted
 /// relations outside the old closed list, which is drift, so the bump
 /// costs the drop and re-ingest the header promises.
-pub const SCHEMA_VERSION: &str = "1.1.0";
+///
+/// 1.2.0 (spec 015, R19a): the declared partition opens to identifier
+/// shape too, hyphen admitted on both open partitions, because declared
+/// edges carry the source's own words and the first corpus speaks
+/// kebab. Structural stays closed. Same cost, same path: re-stamp the
+/// template, recreate, re-ingest.
+pub const SCHEMA_VERSION: &str = "1.2.0";
 
 /// Error type for store operations.
 #[derive(Debug, thiserror::Error)]

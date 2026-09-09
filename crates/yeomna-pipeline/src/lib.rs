@@ -13,12 +13,19 @@
 //! discussion.
 
 pub mod codebase;
+pub mod document_graph;
+pub mod documents;
+pub mod extract;
 mod orchestrator;
 pub mod probe;
 pub mod profile;
 pub mod sink;
 
 pub use codebase::{CodebaseConfig, CodebaseSummary, ingest_codebase};
+pub use documents::{
+    ConformsSummary, DocumentsConfig, DocumentsSummary, ingest_documents, link_conforms,
+};
+pub use extract::{ExtractError, Extractor, NativeExtractor};
 pub use orchestrator::{DocumentResult, Pipeline, PipelineConfig, PipelineError, PipelineSummary};
 pub use probe::IngestProbe;
 pub use sink::{IngestSink, InsertOutcome};

@@ -63,11 +63,20 @@ its code, documents, databases, services, and agents, and the edges
 between them. The boundary is ruled (D9): Yeomna is an external RAG
 appliance, never a part of the WeaverTools architecture, and its first
 caller is Claude Code itself, using the graph as the RAG for building
-these projects. **Phase 4 is built** (spec 014, PR #36 in review): seven
+these projects. **Phase 4 is merged** (spec 014, PR #36, 2026-09-09): seven
 verbs including R18's `edge.assert` and `edge.retract`, the contract at
 42 wire names, and the audit transaction proven by a crash-shaped test.
-Next per R21's ten-PR order: the spec 015 document graph, the M2
-benchmark, then the `yeomna call` client and the daemon (epic #37).
+**Spec 015 followed the same day** (issue #38, in review): extraction
+went native for declarative formats through an `Extractor` trait, the
+socket client unchanged behind it and the pinned `docling` converter
+beside it, and documents joined the graph. The first census over the
+WeaverTools corpus put 100 documents, 388 corpus-declared graph blocks
+(474 nodes, 649 edges in the corpus's own twelve relations), and all
+492 `conforms:` headers into one graph of 5147 edges in 18 seconds,
+with zero refusals and zero unresolved. Schema 1.2.0: the declared
+partition speaks the source's own words, kebab included. Next per
+R21's order: the M2 benchmark, then the `yeomna call` client and the
+daemon (epic #37).
 
 **H3 is filled and this repository is a graph** (spec 011, merged
 2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the
@@ -124,39 +133,50 @@ posture section say the move is mechanically small. They do not license skipping
 the review, and a low coupling count is a reason the review is cheap rather than
 a reason to skip it.
 
-**Per-crate lift workflow, ruled 2026-08-10.** Every crate brought over gets:
+**The PR workflow.** Ruled 2026-08-10 as the per-crate lift workflow, and
+rewritten 2026-09-09 as one execution-ordered list for every PR, lift or
+build, when the local review and the merge rule arrived. Every PR gets:
 
-1. A GitHub Issue documenting the move (source paths, LOC, coupling, review
-   notes).
-2. A branch and a PR. For a lift the first commit is the verbatim move,
-   diffable against the reference. For a build the first commits are the
-   spec and the implementation. The PR opens ready for review rather than
-   as a draft (amended 2026-09-09, so CodeRabbit starts without waiting on
-   a hand), and it triggers CodeRabbit review.
-3. CodeRabbit findings are addressed as **separate commits on the same PR**,
-   never squashed into the move commit. The move commit is the only surviving
-   record of what the reference did, since the reference cannot run.
-4. Once all CodeRabbit comments are addressed, e2e testing on the crate
-   confirms functionality.
-5. **The merge rule, ruled 2026-09-09.** CodeRabbit gets at most three
-   exchanges. One exchange is a review with findings, then a push of fixes
-   as separate commits, each finding either fixed and verified or declined
-   with its reason on the PR. If the review is clear within three exchanges
-   and the workspace gate is green three times with cluster tests running,
-   the PR merges without waiting on Todd. If the fourth review still finds a
-   problem, work stops there and Todd and Claude investigate together.
-   Docs-only commits that trigger incremental reviews do not count as
-   exchanges. The stop also applies at any round to a finding that needs a
+1. A GitHub Issue documenting the work: for a lift the source paths, LOC,
+   and coupling, and for a build the spec it builds.
+2. A branch. For a lift the first commit is the verbatim move, diffable
+   against the reference and the only surviving record of what the
+   reference did, since the reference cannot run. For a build the first
+   commits are the spec and the implementation.
+3. **The local review.** Before the PR opens, the branch's diff against
+   main goes through `/code-review <branch or PR> high`. Findings are
+   fixed in follow-up commits on the branch or declined, and both are
+   recorded in the spec's review notes (`docs/specs/NNN-slug/review-*.md`,
+   or the PR description for a branch with no spec). A re-run after fixes
+   scans the increment since the last pass. The point is throughput:
+   CodeRabbit's allowance is throttled and every exchange costs a wait,
+   so what it would catch is caught here first. PR #39 opened before this
+   step existed and took the review mid-flight instead.
+4. The PR opens ready for review, not as a draft, which triggers
+   CodeRabbit.
+5. CodeRabbit findings are addressed as **separate commits on the same
+   PR**, never inside the move commit, each fixed and verified or declined
+   with its reason on the PR. One push per exchange, fixes batched, since
+   every push spends a throttled review.
+6. **The merge rule.** CodeRabbit gets at most three exchanges, an
+   exchange being a review with findings and the one push that answers
+   it. When the review is clear within three exchanges, the workspace gate
+   is green three times with cluster tests running, and the crate's
+   end-to-end check confirms functionality, the PR merges without waiting
+   on Todd. A fourth review that still finds a problem stops work for
+   joint investigation, and so does, at any round, a finding that needs a
    ruling: a design decision, a spec contradiction beyond a recorded
    build-finding amendment, a repeated finding Claude keeps declining, or
    anything reaching the machine outside the branch and the dev cluster's
-   documented rebuild. After every merge, epic #21, the ledger, this file,
-   and a hub report are updated, which is how Todd catches up
-   asynchronously while working elsewhere.
+   documented rebuild. Docs-only commits that trigger incremental reviews
+   do not count as exchanges.
+7. After every merge: epic #21, the ledger, this file, the spec's review
+   notes, and a hub report, which is how Todd catches up asynchronously
+   while working elsewhere.
 
-This amends the lift PRD's R1: defects found in transit are fixed on the PR in
-follow-up commits rather than deferred, but never inside the move commit
-itself.
+This amends the lift PRD's R1: defects found in transit are fixed in
+follow-up commits on the branch, before or on the PR, but never inside the
+move commit itself.
 
 **Current focus: PRDs and specs for the Postgres end.** The rest waits until that
 is done. Charter section 14 names the first target, which is a technical spec
