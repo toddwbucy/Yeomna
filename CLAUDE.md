@@ -46,11 +46,24 @@ serializes calls and retires itself if a role escalation cannot prove its
 reset. M2 has its instrument and still needs its benchmark run. Next is
 Phase 4: write verbs, the audit transaction, and the scoped `sql` verb.
 
-**The project is on hold as of 2026-08-17**, expected about a week, for
-WeaverTools frontend work on this machine. The cluster may be stopped
-during the hold (`sudo systemctl start yeomna-postgres` to resume, then
-the workspace gate to confirm). The hub's parking report carries the full
-resume state.
+**The hold ended 2026-09-09.** Resume verification passed: cluster up,
+data intact, seal held, hugepages sufficient (4246 needed, measured the
+ask-Postgres way), gate 310 green with cluster tests running. One
+incident was found and fixed during the hold window: systemd-logind's
+`RemoveIPC=yes` deleted the todd-owned Postgres shared memory segments
+on a logout (2026-08-28), and the server limped a week before dying on
+2026-09-04 with no data loss. The fix is
+`/etc/systemd/logind.conf.d/50-remove-ipc.conf` setting `RemoveIPC=no`,
+applied 2026-09-09. The deployment-era fix is a dedicated system user
+for the unit, which is immune by category.
+
+**The resumption driver is a WeaverTools knowledge graph**: databases,
+services, agents, and the edges between them, written through the verbs.
+That makes WeaverTools the verb layer's first customer and puts Phase 4
+(spec 014, drafted) and Phase 5 (the daemon socket it connects to) on
+the critical path. Spec 014 also proposes R18, a contract amendment
+adding `edge.assert` and `edge.retract`, because a deployment graph is
+mostly edges and the 40-verb contract could write nodes but not edges.
 
 **H3 is filled and this repository is a graph** (spec 011, merged
 2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the
@@ -162,9 +175,12 @@ sudo systemctl start yeomna-postgres
 psql -h "$HOME/.local/share/yeomna/run" -p 5433 -U yeomna_owner -d yeomna
 ```
 
-**The system `postgresql.service` is disabled**, because it bound
-`127.0.0.1:5432` and a bare `psql` would land there instead of here. The package
-stays installed, since this cluster runs its `/usr/bin/postgres`.
+**The system `postgresql.service` is active again as of the 2026-08
+hold**: it is WeaverTools' database now, on `127.0.0.1:5432`, run by the
+`postgres` system user. Yeomna's seal is unaffected (nothing listens on
+5433), but the old hazard is live again: a bare `psql` lands on 5432 and
+the wrong project. Always connect with the socket path and port shown
+above.
 
 The seal is held at three layers, all verified 2026-08-10:
 
@@ -199,6 +215,12 @@ Updates are a deployment concern and get revisited when development is done.
 This is also charter section 5's tradeoff arriving early: stock Postgres means
 upstream's binary and upstream's cadence, and at development time the pin is how
 that cadence gets refused.
+
+R15 (ruled 2026-09-09) keeps the pin through the PostgreSQL 19 cycle.
+The SQL/PGQ property-graph feature was reverted from 19 before GA, so
+19 offers this project nothing decisive, and D7's recursive CTEs never
+assumed it. Revisit at PG 20 if SQL/PGQ lands there, and even then only
+as an internal rewrite of traversal SQL behind unchanged verbs.
 
 The dataset is dedicated so it can be snapshotted independently, which is what
 charter section 8.3 needs for copy-on-write checkpoint versioning. It carries

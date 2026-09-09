@@ -1,8 +1,12 @@
 # The Holes Ledger
 
-Status: v1.8, 2026-08-17. H1 and H3 retired, H2 three phases in.
-**Project on hold as of 2026-08-17** for about a week (WeaverTools
-frontend work). Resume at H2 Phase 4. The hole-mapping step of the severance sequence
+Status: v1.9, 2026-09-09. H1 and H3 retired, H2 three phases in.
+The 2026-08-17 hold ended 2026-09-09 with the cluster verified and the
+gate green (310, cluster tests running). The resumption has a driver:
+**WeaverTools needs a knowledge graph** for its databases, services,
+and agents, which makes it the verb layer's first customer and puts
+Phase 4 and Phase 5 on the critical path. Spec 014 is drafted.
+The hole-mapping step of the severance sequence
 (PRD-pipeline-libraries v0.2). This is the map of everything Yeomna needs and
 does not yet have, each hole named, owned, and sourced. The executable form
 is `yeomna-cli`: 56 commands, every one a self-reporting hole with a census
@@ -56,6 +60,7 @@ ported: the excluded reference code is not consulted.
 | Includes | Q3 renames of ArangoDB-vocabulary command names, the audit table wiring, peercred policy |
 | Progress | **Phase 3 of 7 done.** Phase 3 (spec 013, PR #34): the graph answers, traversal pruning proven at the verb level, the first destructive verb, the kg pattern stamped from the template under `yeomna_provision` (R13/R13a), materialize refusing under R14, the session retiring itself on unproven role resets. Earlier: Phase 1 (spec 010, PR #27): the closed 40-verb contract, R4 closed, the audit outcome column. Phase 2 (spec 012, PR #32): eleven read verbs, the session, the exhaustive dispatch, and the audit write, with G1 as a permanent test over every implemented verb. The schema version is a compiled-in constant, ruled rather than stored |
 | Still false | **T3.** The destructive paths are Phase 4 and Phase 6, so the charter's thesis stays false until they land and the CLI is repointed at Phase 7 |
+| Next | **Phase 4, spec 014 drafted 2026-09-09**: the write verbs, the audit transaction (ok outcome durable if and only if the mutation is, crash-shaped test), the scoped `sql` verb under R17/R17a, and the R18 edge verbs the WeaverTools graph needs. Phase 5 follows immediately, since the daemon socket is what WeaverTools connects to |
 | Waiting in Phase 7 | Draft PR #19, deliberately held 2026-08-15 rather than merged and fixed twice, since Phase 7 rewrites these commands into daemon clients anyway. It carries, and Phase 7 inherits: (1) the daemon `--mcp-*` flags, which the capture declares while its own record says they were dropped, plus a reference to a `--mcp-token-file` that does not exist, (2) `output.rs` printing table headers to stderr while rows go to stdout, so redirecting stdout loses the header, (3) awaits-distribution counts in the review notes that reach 56 by double-counting six commands, and (4) the R4 reconciliation: nine captured commands (`Create`, `Collections`, `Databases`, `CreateDatabase`, `Truncate`, `DropCollection`, `Export`, `CreateIndex`, `IndexStatus`) that spec 010 has since removed or absorbed, so the census counts 56 holes where roughly 40 become verbs. Trial-merged 2026-08-15 against main: conflicts are `Cargo.toml` and `Cargo.lock` only, and the crate builds, passes its census, and clears the no-SQL lint |
 
 ## H3. The ingest orchestrator. FILLED 2026-08-15
@@ -66,7 +71,7 @@ living in `yeomna-pipeline` beside the document flow. It replaced the
 excluded `codebase_ingest.rs` without consulting it.
 
 Every language reaches the resolver built for it, chosen by the analyzer
-that actually ran rather than by file extension: syn plus rust-analyzer
+that ran rather than by file extension: syn plus rust-analyzer
 for Rust, the rustpython AST for Python, libclang for C++, gopls for Go,
 and tree-sitter for anything that fell back. The language-server pass is
 opt-in, gated per crate or module, and degrades to the structural graph
@@ -121,7 +126,7 @@ The reasoning, and the correction that came with it:
   is an appliance-packaging problem under charter section 5, and it is
   the same problem on either side of this choice.
 
-**Revisit when** a document corpus actually needs ingesting, which is
+**Revisit when** a document corpus needs ingesting, which is
 when H5 starts blocking something, or when the engine's release cadence
 settles. At that point the measurement to run is named below rather
 than rediscovered.
@@ -134,7 +139,7 @@ than rediscovered.
 | Unverified, and what a spike would settle | whether table and figure captions survive, whether formula extraction behaves (ours carries a fallback because `doc.equations` was unreliable, and the Rust side puts formulas behind enrichment that is off by default), and whether the engine's own byte-for-byte parity claim holds on our documents |
 | Riding this hole | the skipped server-architecture findings from the PR #17 review, service-level tests |
 
-### The scope this hole actually has, ruled 2026-08-15
+### The scope this hole has, ruled 2026-08-15
 
 Two things were tangled together here and are now separated.
 
@@ -270,6 +275,8 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R5 | Extraction direction | **Ruled 2026-08-15: not now.** The Rust engine is real and official but young and fast-moving, and no document ingest is blocked, so the Python service stays interim and PR #17 stays in draft. Revisit when a corpus needs ingesting. The ledger's old `docling-rs` name pointed at a third-party Docling Serve client, not the engine |
 | R6 | Edge identity | **Ruled 2026-08-13 (spec 009): an edge is (graph_id, src_id, dst_id, relation, basis)**, analyzer and status and payload are attributes. `edges_identity` unique index, claim 8 |
 | R7 | `edge_basis` Rust mapping | **Ruled 2026-08-15 as R12 (spec 011): text at the boundary**, cast in SQL, no second enum to drift from the DDL |
+| R15 | PostgreSQL major version | **Ruled 2026-09-09: stay pinned at 18.x.** PG 19 is still in beta, the repos carry 18.6, and the feature that would have mattered, SQL/PGQ property graphs, was reverted from 19 on 2026-09-07 for design issues. D7's recursive CTEs never depended on it. Revisit at PG 20 GA (expected late 2027) if SQL/PGQ returns, as an internal traversal rewrite behind unchanged verbs |
+| R16-R18 | Session ownership, the `sql` verb's role and detection, the edge verbs | **Agreed 2026-09-09 and built (spec 014)**. R16: the client lives inside the call lock. R17/R17a: `sql` runs as the provision role on a per-call connection, kg pattern detected structurally. R18 amends the contract (40 to 42 verbs, `edge.assert` and `edge.retract`), exposed by the first customer: a deployment graph is mostly edges and the contract could not write one. The build moved the relation CHECK into the partitions (SCHEMA_VERSION 1.1.0) and let the store PRD's inherited cascade rule delete and purge, both recorded in the 014 review notes |
 
 ## The fill order, as the dependencies read
 
