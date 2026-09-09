@@ -441,6 +441,11 @@ pub struct ConformsSummary {
     /// beforehand means the file node itself is missing: the code was
     /// not ingested into this graph.
     pub edges_rejected: usize,
+    /// Source files the walk offered and this pass did not read, over
+    /// the size limit or unreadable. Counted rather than skipped in
+    /// silence, so the conforms census and the code ingest's file set
+    /// can be compared.
+    pub files_skipped: usize,
     /// Slugs no node carries, each named once. A header pointing at a
     /// retired claim is a finding the graph owes its operator (EC-2).
     pub unresolved: Vec<String>,
@@ -489,10 +494,19 @@ where
 
     for (rel_path, path, len) in files {
         if len > config.max_file_bytes {
+            summary.files_skipped += 1;
+            summary
+                .refusals
+                .push(format!("{rel_path}: over the size limit, not scanned"));
             continue;
         }
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            continue;
+        let source = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                summary.files_skipped += 1;
+                summary.refusals.push(format!("{rel_path}: {e}"));
+                continue;
+            }
         };
         summary.files_scanned += 1;
         let scan = scan_conforms(&source);

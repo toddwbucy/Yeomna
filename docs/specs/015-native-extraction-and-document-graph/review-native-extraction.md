@@ -8,7 +8,10 @@ words genuinely, honestly, or actually.
 
 ## The census (FR6), first run against the WeaverTools corpus
 
-Code, documents, and links into one scratch graph, 18 seconds:
+Code, documents, and links into one scratch graph, 18 seconds. This
+table is the first run, at build time, with the corpus at WeaverTools
+#528. The second run, after review round one and against the corpus
+as it had grown, follows the table.
 
 | | |
 |---|---|
@@ -128,6 +131,47 @@ variant beside the seam's new one.
   followed by the conforms link in one graph.
 - The FR6 census runs with `cargo test -p yeomna-store --test
   document_ingest -- --ignored` when the corpus is present.
+
+## The local review, and what it left standing
+
+The pre-PR local review arrived as a workflow step after this PR opened,
+so 015 took it mid-flight. Three findings were applied: the conforms
+pass counted oversize and unreadable files instead of skipping them in
+silence, the two `PipelineError` extraction variants got distinct
+display strings, and the relation shape gained the test that makes its
+four copies agree (the store test reads the regex out of the shipped
+schema, proves both open partitions carry the same one, and has
+Postgres evaluate it over the same sample the verb layer's unit test
+pins). Three were recorded rather than applied, with reasons:
+
+**A declaration that names a code node loses its payload if the
+documents land first.** `write_declared` fuses onto an existing
+non-document node and drops the block's `kind` and `tag`, and the code
+ingest's upsert replaces a declared node's payload wholesale, so the
+corpus's claim about a crate survives only when the code is ingested
+first. On the census corpus this never fires (`nodes_fused` is zero,
+because the corpus's node keys are crate names and claim slugs while
+code keys are path-derived), which is why it is recorded rather than
+rushed. The fix worth making is to stop storing the corpus's claim in a
+payload another writer owns: a `declares` edge from the document to the
+node carries the same information, needs no schema change now that
+declared relations are open, and is order-independent. That is its own
+small spec.
+
+**The fuse pre-read, the placeholder's `overwrite: false`, and
+promotion are three call-site policies over one sink upsert.** The rule
+that a document writer must not clobber a code node lives in this
+caller and nothing enforces it at the sink, so Phase 6's retire and
+prune, and any later `node.insert`, inherit nothing. The general form
+is a sink-level declare mode whose `ON CONFLICT` refuses to lower a
+node's kind. Recorded for whoever writes the next document-kind writer.
+
+**Re-declaring every file's blocks on every run is a repair loop.** It
+is what makes an interrupted run self-heal, and it costs a read and an
+upsert per declared node and edge on a run that changed nothing. The
+alternative is ordering the writes so the content hash commits last and
+gating it on zero rejections, which is cheaper and more fragile. The
+loop stays until a corpus makes the cost visible.
 
 ## Riding items
 

@@ -477,6 +477,21 @@ pub async fn edge_retract(
 mod tests {
     use super::*;
 
+    /// The verb layer's copy of the relation shape, pinned on the same
+    /// sample the store's schema-agreement test runs against the
+    /// partition CHECK itself. Both lists must move together.
+    #[test]
+    fn the_relation_shape_matches_the_open_partitions() {
+        for good in ["asserts", "floor-link", "depends_on", "a", "conforms"] {
+            assert!(check_relation(good).is_ok(), "{good:?}");
+        }
+        for bad in ["Asserts", "has space", "9lives", "-leading", ""] {
+            assert!(check_relation(bad).is_err(), "{bad:?}");
+        }
+        assert!(check_relation(&"a".repeat(63)).is_ok());
+        assert!(check_relation(&"a".repeat(64)).is_err());
+    }
+
     const PORT: u16 = 5433;
 
     fn socket_dir() -> Option<String> {

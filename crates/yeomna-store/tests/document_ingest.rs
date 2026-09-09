@@ -510,6 +510,68 @@ async fn the_declared_partition_speaks_the_sources_words() {
     );
 }
 
+/// The relation shape is written in four places (both open partition
+/// CHECKs, the verb layer's `check_relation`, the parser's
+/// `is_relation`), and nothing but this test makes them agree. It reads
+/// the regex out of the shipped schema, proves both open partitions
+/// carry the same one, and then asks Postgres itself to evaluate it
+/// over a sample the Rust predicate also judges, so a divergence fails
+/// here rather than in a corpus that writes an unexpected relation.
+#[tokio::test]
+async fn the_rust_relation_shape_agrees_with_the_shipped_schema() {
+    let patterns: Vec<&str> = yeomna_store::SCHEMA_SQL
+        .match_indices("relation ~ '")
+        .map(|(i, m)| {
+            let rest = &yeomna_store::SCHEMA_SQL[i + m.len()..];
+            &rest[..rest.find('\'').expect("the literal closes")]
+        })
+        .collect();
+    assert_eq!(
+        patterns.len(),
+        2,
+        "the declared and asserted partitions each carry one shape"
+    );
+    assert_eq!(
+        patterns[0], patterns[1],
+        "the two open partitions must agree with each other"
+    );
+    let pattern = patterns[0];
+
+    let samples = [
+        "asserts",
+        "floor-link",
+        "depends_on",
+        "a",
+        "conforms",
+        "Asserts",
+        "has space",
+        "9lives",
+        "-leading",
+        "trailing-",
+        "",
+    ];
+    let Some(dir) = socket_dir() else {
+        eprintln!("SKIP: no cluster socket, the Rust side alone proves nothing");
+        return;
+    };
+    let Ok(owner) = connect(&dir, PORT, "yeomna_owner", "yeomna").await else {
+        eprintln!("SKIP: cannot connect as yeomna_owner");
+        return;
+    };
+    for s in samples {
+        let engine: bool = owner
+            .query_one("SELECT $1::text ~ $2::text", &[&s, &pattern])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            yeomna_pipeline::document_graph::is_relation(s),
+            engine,
+            "the parser and the partition CHECK disagree about {s:?}"
+        );
+    }
+}
+
 /// The FR6 acceptance run: the WeaverTools corpus, code and documents
 /// and links, into a scratch graph, census printed. Needs the corpus at
 /// /opt/weavertools/WeaverTools and a minute of patience.

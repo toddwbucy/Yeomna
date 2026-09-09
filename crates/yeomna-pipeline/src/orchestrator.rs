@@ -45,8 +45,11 @@ impl Default for PipelineConfig {
 #[derive(Debug, thiserror::Error)]
 pub enum PipelineError {
     /// The service client's error, kept as the lifted API's variant (spec
-    /// 005) for callers that reach the client directly.
-    #[error("extraction failed: {0}")]
+    /// 005) for callers that reach the client directly. Nothing in this
+    /// crate constructs it now that the pipeline goes through the trait,
+    /// and it stays because deleting a public variant breaks callers that
+    /// use `ExtractionClient::extract_file` with `?`.
+    #[error("extraction service failed: {0}")]
     Extraction(#[from] ExtractionError),
 
     /// The extraction seam's error (spec 015), which is what the pipeline
