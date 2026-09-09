@@ -91,17 +91,38 @@ impl std::fmt::Display for ConfigError {
 /// since falling back would run the appliance against a store the
 /// operator did not name.
 pub fn load() -> Result<Config, ConfigError> {
-    let named = std::env::var("YEOMNA_CONFIG")
-        .ok()
-        .filter(|p| !p.is_empty());
+    load_from(
+        std::env::var("YEOMNA_CONFIG")
+            .ok()
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from),
+    )
+}
+
+/// The same resolution with the named path passed in, so a test can
+/// exercise it without mutating the environment of a binary whose tests
+/// run in parallel.
+pub fn load_from(named: Option<PathBuf>) -> Result<Config, ConfigError> {
     let path = match named {
-        Some(p) => PathBuf::from(p),
+        Some(p) => p,
         None => {
             let shipped = PathBuf::from(DEFAULT_PATH);
-            if !shipped.exists() {
-                return Ok(Config::default());
+            // `exists()` answers false for a file that is there and
+            // unreadable, which would fall back to the defaults and run
+            // the appliance against a store the operator did not name.
+            // Only a genuine absence is a fallback.
+            match std::fs::metadata(&shipped) {
+                Ok(_) => shipped,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Config::default());
+                }
+                Err(source) => {
+                    return Err(ConfigError::Unreadable {
+                        path: shipped,
+                        source,
+                    });
+                }
             }
-            shipped
         }
     };
     let text = std::fs::read_to_string(&path).map_err(|source| ConfigError::Unreadable {
@@ -154,6 +175,29 @@ mod tests {
                 database: "other".into(),
                 graph: Some("g".into()),
             }
+        );
+    }
+
+    /// An unreadable named file is an error, not a fallback. The
+    /// shipped path's own case is the same code and cannot be tested
+    /// without writing to /etc, so this covers the branch that decides.
+    #[test]
+    fn an_unreadable_file_is_refused_rather_than_fallen_back_from() {
+        let d = tempfile::TempDir::new().unwrap();
+        let path = d.path().join("locked.toml");
+        std::fs::write(&path, "port = 5433\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads anything, so a machine running tests as root would
+        // see this succeed and prove nothing.
+        if std::fs::read_to_string(&path).is_ok() {
+            eprintln!("SKIP: this user can read a 0000 file");
+            return;
+        }
+        let e = load_from(Some(path)).expect_err("an unreadable file is an error");
+        assert!(
+            matches!(e, ConfigError::Unreadable { .. }),
+            "got {e}, which reads as a parse failure rather than an access one"
         );
     }
 

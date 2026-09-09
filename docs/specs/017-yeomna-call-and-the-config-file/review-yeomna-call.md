@@ -88,7 +88,27 @@ graph describing its own code through the surface this spec added. That
 is the loop D9 named: the first caller is a session building this
 project, and from here it can ask.
 
+## CodeRabbit round one
+
+**`Path::exists()` answers false for a file that is there and
+unreadable**, so an `/etc/yeomna/yeomna.toml` the process cannot read
+would have fallen back to the defaults and run the appliance against a
+store the operator did not name, which is the exact failure FR4 exists
+to prevent. Only a genuine `NotFound` is a fallback now, and every
+other access error is `ConfigError::Unreadable` naming the path. The
+resolution split into `load` (which reads the environment) and
+`load_from` (which does not), so the test proves it without mutating
+the environment of a binary whose tests run in parallel, the discipline
+this spec's own notes argued for. The test skips when the user can read
+a 0000 file, since running as root would prove nothing.
+
 ## Riding items
+
+- The daemon (spec 018) carries a second reader of this file format,
+  and it inherited this same defect and the same fix. Two readers of one
+  format is a duplication worth retiring when Phase 7's CLI tree makes
+  it a third, and the natural shape is a small shared crate rather than
+  either binary depending on the other.
 
 - The framed daemon transport (Phase 5) lands behind this same command,
   which is why the surface takes JSON rather than per-verb flags.
