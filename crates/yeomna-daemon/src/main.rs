@@ -58,10 +58,17 @@ fn load() -> Result<Config, String> {
         Some(p) => PathBuf::from(p),
         None => {
             let shipped = PathBuf::from("/etc/yeomna/yeomna.toml");
-            if !shipped.exists() {
-                return Ok(toml::from_str("").expect("an empty config is all defaults"));
+            // Same rule the CLI's loader carries: `exists()` answers
+            // false for a file that is there and unreadable, and falling
+            // back would serve a store the operator did not name. Only a
+            // genuine absence is a fallback.
+            match std::fs::metadata(&shipped) {
+                Ok(_) => shipped,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(toml::from_str("").expect("an empty config is all defaults"));
+                }
+                Err(e) => return Err(format!("cannot read {}: {e}", shipped.display())),
             }
-            shipped
         }
     };
     let text = std::fs::read_to_string(&path)

@@ -86,6 +86,18 @@ will carry.
 - `yeomna-cli/tests/cli.rs` (2 new): FR8 comparing both transports
   answer for answer, and an absent daemon naming the socket it tried.
 
+## Carried from PR #43's round one
+
+The CLI's config loader used `Path::exists()`, which answers false for
+a file that is there and unreadable, so an unreadable
+`/etc/yeomna/yeomna.toml` would have fallen back to the defaults. The
+daemon carries a second reader of the same format and had the same
+defect, fixed here the same way: only a genuine `NotFound` is a
+fallback and every other access error names the path. Two readers of
+one format is the duplication to retire when Phase 7's CLI tree makes
+it a third, and the natural shape is a small shared crate rather than
+either binary depending on the other.
+
 ## Riding items
 
 - EC-3 (a verb that takes minutes) is D1's blocking rule and has no
