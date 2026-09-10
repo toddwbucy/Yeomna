@@ -9,7 +9,7 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and specs at `docs/specs/NNN-slug/spec.md` with review notes alongside.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, eleven crates, 377 tests. **The Rust side of the
+`rust-toolchain.toml`, eleven crates, 390 tests. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
 and merged. **The store exists and holes-ledger H1 is filled** (specs 008
@@ -90,7 +90,7 @@ a file that exists and will not parse is refused rather than fallen
 back from. `status` reports the session's actor, which is how a caller
 sees who the appliance thinks it is, since no verb reads the audit log.
 
-**Phase 6 is built** (specs 019 and 020). Ingestion is a verb: `ingest`,
+**Phase 6 is merged** (specs 019 and 020, PRs #47 and #49). Ingestion is a verb: `ingest`,
 `codebase.ingest`, `codebase.drift` (which writes nothing and reports
 what moved), `codebase.validate` (which finds the one invariant the
 constraints cannot express, an edge whose endpoints live in another
@@ -102,8 +102,15 @@ is capability rather than surface, and R22 asks separately whether the
 record is rich enough. The charter's T3 paragraph and section 6 now say
 what changed and what did not.
 
-What remains on R21's order: the WeaverTools KG stand-up, the CLI tree
-with H8, the native embedder, and hybrid query.
+R23 was accepted by merging #49: `RetireRequest` carries a required
+`path`, so retire sweeps only what the source truly lacks. **R22 stays
+open**, and it is the third time the audit log's surfaces have come up:
+the row records who asked and that it succeeded, not the substance of
+what a destructive verb swept.
+
+What remains on R21's order: **Phase 7**, the contract-born per-verb CLI
+tree with H8's tools commands, then the WeaverTools KG stand-up, the
+native embedder (H4), and hybrid query.
 
 **H3 is filled and this repository is a graph** (spec 011, merged
 2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the
