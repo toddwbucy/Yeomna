@@ -9,7 +9,7 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and specs at `docs/specs/NNN-slug/spec.md` with review notes alongside.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, eleven crates, 390 tests. **The Rust side of the
+`rust-toolchain.toml`, eleven crates, 406 tests. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
 and merged. **The store exists and holes-ledger H1 is filled** (specs 008
@@ -108,9 +108,22 @@ open**, and it is the third time the audit log's surfaces have come up:
 the row records who asked and that it succeeded, not the substance of
 what a destructive verb swept.
 
-What remains on R21's order: **Phase 7**, the contract-born per-verb CLI
-tree with H8's tools commands, then the WeaverTools KG stand-up, the
-native embedder (H4), and hybrid query.
+**Phase 7 finishes the verb layer** (spec 021), and H8 lands with it.
+The CLI tree is born from the contract: every subcommand path is a wire
+name with its dots as spaces (`yeomna graph neighbors`), and the request
+is built by deserializing into the closed enum, so no verb has
+hand-written argument code and a verb added to `Verb` is reachable the
+same day. `--graph` means one thing and the contract decides whether it
+is a request field or the session's scope. A table by default, `--json`
+for the envelope, both entirely on stdout. `yeomna tools status` probes
+the analyzers through the same resolver the ingest preflight uses, and
+`tools install` places a binary the operator supplies rather than
+fetching one (R24).
+
+All seven of H2's phases are done. What remains on R21's order, as Todd
+reordered it 2026-09-10: the native embedder (H4), hybrid query, and
+**the WeaverTools KG stand-up last**, since it touches their repository
+and deployment and wants a WeaverTools session in the loop.
 
 **H3 is filled and this repository is a graph** (spec 011, merged
 2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the

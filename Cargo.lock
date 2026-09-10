@@ -3335,6 +3335,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "yeomna-code",
  "yeomna-daemon",
  "yeomna-store",
  "yeomna-verbs",

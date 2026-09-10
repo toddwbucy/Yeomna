@@ -18,9 +18,13 @@
 //! framed transport lands with Phase 5 behind this same command.
 
 mod config;
+mod render;
+mod tools;
 
 use std::io::Read;
 use std::process::ExitCode;
+
+use serde_json::Value;
 
 use yeomna_verbs::{Session, Verb, WIRE_NAMES, actor};
 
@@ -34,13 +38,26 @@ const USAGE: &str = "\
 yeomna, the sealed knowledge-graph appliance
 
 USAGE:
+    yeomna <verb...> [--key value]   run a verb by name, print a table
     yeomna call <json>       run one verb, print its envelope
     yeomna call -            the same, reading the request from stdin
     yeomna verbs             print every wire name in the contract
+    yeomna tools status      what each analyzer resolves to
+    yeomna tools install <analyzer> --from <path>
+
+A verb's command is its wire name with the dots as spaces, so
+`graph.traverse` is `yeomna graph traverse`. Arguments are the request's
+own field names. `yeomna verbs` lists them all.
+
+    yeomna graph neighbors --graph yeomna_self --key foo --direction in
+    yeomna list --kind callable --limit 5
 
 OPTIONS:
     --graph <name>           scope the session to this graph,
                              overriding the config file's default
+    --json                   print the envelope verbatim instead of a
+                             table. `call` always does this, since its
+                             caller is a program
     --daemon                 send the request to yeomnad over its
                              socket instead of linking the verb layer.
                              Same JSON, same envelope, and the actor
@@ -64,18 +81,39 @@ async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut graph: Option<String> = None;
     let mut daemon = false;
+    let mut raw_json = false;
     let mut positional: Vec<String> = Vec::new();
+    let mut flags: Vec<(String, Option<String>)> = Vec::new();
     let mut rest = args.iter();
     while let Some(a) = rest.next() {
         match a.as_str() {
             "--graph" => match rest.next() {
-                Some(g) => graph = Some(g.clone()),
+                Some(g) => {
+                    graph = Some(g.clone());
+                    // Also offered to the verb, because a request may
+                    // carry `graph` as a field. Which of the two it
+                    // means is the contract's to say, not a table kept
+                    // here (see `verb_from_path`).
+                    flags.push(("graph".to_string(), Some(g.clone())));
+                }
                 None => return fail("--graph needs a name"),
             },
             "--daemon" => daemon = true,
+            "--json" => raw_json = true,
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return ExitCode::from(OK);
+            }
+            // Any other `--key` belongs to the verb being called, and
+            // its value is the next argument unless the next argument is
+            // another flag, in which case this one is a bare true (EC-2).
+            other if other.starts_with("--") => {
+                let key = other.trim_start_matches('-').to_string();
+                let value = match rest.clone().next() {
+                    Some(v) if !v.starts_with("--") => rest.next().cloned(),
+                    _ => None,
+                };
+                flags.push((key, value));
             }
             other => positional.push(other.to_string()),
         }
@@ -91,14 +129,30 @@ async fn main() -> ExitCode {
         Some("call") => match read_request(&positional) {
             Ok(verb) => {
                 if daemon {
-                    through_daemon(verb).await
+                    // `call` is the program's surface, so it prints the
+                    // envelope whatever else was asked for.
+                    through_daemon(verb, true).await
                 } else {
-                    embedded(verb, graph).await
+                    embedded(verb, graph, true).await
                 }
             }
             Err(code) => code,
         },
-        Some(other) => fail(format!("unknown command {other:?}\n\n{USAGE}")),
+        Some("tools") => tools_command(&positional, &flags),
+        // Everything else is a verb path: the wire name with its dots as
+        // spaces (D10). The tree is derived from the contract rather
+        // than written beside it, so a verb added to `Verb` gets its
+        // command the same day and the two cannot drift.
+        Some(_) => match verb_from_path(&positional, &flags) {
+            Ok(verb) => {
+                if daemon {
+                    through_daemon(verb, raw_json).await
+                } else {
+                    embedded(verb, graph, raw_json).await
+                }
+            }
+            Err(code) => code,
+        },
         None => {
             eprint!("{USAGE}");
             ExitCode::from(USAGE_ERROR)
@@ -129,7 +183,7 @@ fn read_request(positional: &[String]) -> Result<Verb, ExitCode> {
     serde_json::from_str(&text).map_err(|e| fail(format!("not a verb request: {e}")))
 }
 
-async fn embedded(verb: Verb, graph: Option<String>) -> ExitCode {
+async fn embedded(verb: Verb, graph: Option<String>, raw_json: bool) -> ExitCode {
     let config = match config::load() {
         Ok(c) => c,
         Err(e) => return fail(e),
@@ -160,13 +214,24 @@ async fn embedded(verb: Verb, graph: Option<String>) -> ExitCode {
     }
 
     let envelope = session.call(&verb).await;
+    emit(&envelope, raw_json)
+}
+
+/// One envelope out, either verbatim for a program or as text for a
+/// person. Both views render the same envelope, so they cannot disagree
+/// about the answer, and both go entirely to stdout.
+fn emit(envelope: &yeomna_verbs::Envelope, raw_json: bool) -> ExitCode {
     let code = if envelope.success { OK } else { VERB_FAILED };
-    match serde_json::to_string_pretty(&envelope) {
-        Ok(text) => println!("{text}"),
-        // The verb ran and its answer will not serialize, which is this
-        // crate's fault and not the caller's, so it does not masquerade
-        // as a verb failure.
-        Err(e) => return fail(format!("cannot render the envelope: {e}")),
+    if raw_json {
+        match serde_json::to_string_pretty(envelope) {
+            Ok(text) => println!("{text}"),
+            // The verb ran and its answer will not serialize, which is
+            // this crate's fault and not the caller's, so it does not
+            // masquerade as a verb failure.
+            Err(e) => return fail(format!("cannot render the envelope: {e}")),
+        }
+    } else {
+        print!("{}", render::envelope(envelope));
     }
     ExitCode::from(code)
 }
@@ -176,7 +241,7 @@ async fn embedded(verb: Verb, graph: Option<String>) -> ExitCode {
 /// the JSON it would have sent, and the daemon names it from the kernel
 /// exactly as embedded mode does, so `--graph` belongs to the daemon's
 /// configuration rather than to a frame.
-async fn through_daemon(verb: Verb) -> ExitCode {
+async fn through_daemon(verb: Verb, raw_json: bool) -> ExitCode {
     use tokio::net::UnixStream;
     use yeomna_verbs::frame;
 
@@ -204,10 +269,137 @@ async fn through_daemon(verb: Verb) -> ExitCode {
         Ok(e) => e,
         Err(e) => return fail(format!("the daemon's answer is not an envelope: {e}")),
     };
-    let code = if envelope.success { OK } else { VERB_FAILED };
-    match serde_json::to_string_pretty(&envelope) {
-        Ok(text) => println!("{text}"),
-        Err(e) => return fail(format!("cannot render the envelope: {e}")),
+    emit(&envelope, raw_json)
+}
+
+/// A verb path plus its flags, turned into a `Verb`.
+///
+/// No per-verb parsing code exists, and that is the design. The path is
+/// a wire name with spaces for dots (D10), the flags become a JSON
+/// object, and the closed enum does every check: an unknown verb name,
+/// an unknown field, a missing required field, and a value of the wrong
+/// type are all deserialization errors naming what was wrong. A verb
+/// added to the contract is therefore reachable immediately, which is
+/// stronger than a hand-written tree that has to be remembered.
+fn verb_from_path(
+    positional: &[String],
+    flags: &[(String, Option<String>)],
+) -> Result<Verb, ExitCode> {
+    // Longest match first, so `graph.shortest-path` wins over `graph`.
+    let mut name: Option<&str> = None;
+    for candidate in WIRE_NAMES {
+        let parts: Vec<&str> = candidate.split('.').collect();
+        if parts.len() <= positional.len()
+            && parts
+                .iter()
+                .zip(positional)
+                .all(|(p, given)| *p == given.as_str())
+            && parts.len() == positional.len()
+        {
+            name = Some(candidate);
+            break;
+        }
     }
-    ExitCode::from(code)
+    let Some(name) = name else {
+        return Err(fail(format!(
+            "unknown command {:?}{}\n\nRun `yeomna verbs` for the whole list.",
+            positional.join(" "),
+            nearest(positional)
+        )));
+    };
+
+    let mut args = serde_json::Map::new();
+    for (key, value) in flags {
+        args.insert(key.clone(), json_value(value.as_deref()));
+    }
+    let build = |args: &serde_json::Map<String, Value>| {
+        serde_json::from_value::<Verb>(
+            serde_json::json!({"verb": name, "args": Value::Object(args.clone())}),
+        )
+    };
+    match build(&args) {
+        Ok(verb) => Ok(verb),
+        Err(e) if e.to_string().contains("unknown field `graph`") => {
+            // The verb takes its graph from the session rather than from
+            // a field, so `--graph` scoped the session and does not
+            // belong in the args. The contract said which, which is why
+            // no list of graph-carrying verbs is kept here.
+            args.remove("graph");
+            build(&args).map_err(|e| {
+                fail(format!(
+                    "{}: {e}\n\nThe arguments are the request's own field names.",
+                    positional.join(" ")
+                ))
+            })
+        }
+        Err(e) => Err(fail(format!(
+            "{}: {e}\n\nThe arguments are the request's own field names.",
+            positional.join(" ")
+        ))),
+    }
+}
+
+/// A flag's value, typed. Parsed as JSON first so numbers, booleans, and
+/// arrays arrive as themselves, and falling back to a string when that
+/// fails, which is what a bare word is. A flag with no value is `true`,
+/// which is what a flag means (EC-2).
+fn json_value(raw: Option<&str>) -> Value {
+    match raw {
+        None => Value::Bool(true),
+        Some(text) => {
+            serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_string()))
+        }
+    }
+}
+
+/// Commands sharing the first word the caller typed, so a near miss gets
+/// a short list rather than the whole contract (EC-1).
+fn nearest(positional: &[String]) -> String {
+    let Some(first) = positional.first() else {
+        return String::new();
+    };
+    let close: Vec<String> = WIRE_NAMES
+        .iter()
+        .filter(|n| n.starts_with(first.as_str()) || n.split('.').next() == Some(first.as_str()))
+        .map(|n| format!("  yeomna {}", n.replace('.', " ")))
+        .collect();
+    if close.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nDid you mean:\n{}", close.join("\n"))
+    }
+}
+
+/// `yeomna tools ...` (H8). Not a verb: it touches the operator's
+/// filesystem and the analyzers the ingest spawns, never the store.
+fn tools_command(positional: &[String], flags: &[(String, Option<String>)]) -> ExitCode {
+    match positional.get(1).map(String::as_str) {
+        Some("status") => {
+            print!("{}", tools::status());
+            ExitCode::from(OK)
+        }
+        Some("install") => {
+            let Some(analyzer) = positional.get(2) else {
+                return fail(format!(
+                    "tools install needs an analyzer: {}",
+                    tools::known().join(", ")
+                ));
+            };
+            let from = flags
+                .iter()
+                .find(|(k, _)| k == "from")
+                .and_then(|(_, v)| v.clone());
+            match tools::install(analyzer, from.as_deref()) {
+                Ok(said) => {
+                    print!("{said}");
+                    ExitCode::from(OK)
+                }
+                Err(e) => fail(e),
+            }
+        }
+        other => fail(format!(
+            "tools takes status or install, not {:?}",
+            other.unwrap_or("nothing")
+        )),
+    }
 }
