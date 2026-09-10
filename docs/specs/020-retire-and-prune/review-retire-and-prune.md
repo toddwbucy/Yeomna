@@ -100,6 +100,32 @@ clean graph, planted orphan class, and second run finding nothing; and
 the destructive-record test that T3 rests on. `audit.rs` covers both
 new verbs. `read_verbs.rs`'s guard names holes.
 
+## CodeRabbit round one
+
+**Declined, with a demonstration: widening prune's parent lookup across
+graphs.** The finding asked for `f.graph_id = n.graph_id` to come out of
+both `NOT EXISTS` predicates. It cannot. `file_key` is derived from the
+path alone (`rel_path.replace(['.', '/'], "_")`), so two graphs over the
+same tree hold identical file keys, and a cross-graph lookup lets each
+graph's file nodes mask the other's orphans. That is not hypothetical
+even on the dev cluster, where several test graphs ingest a tree
+containing `helper.rs`. Applied as proposed, the planted-orphan test
+swept zero instead of one, which is the demonstration. An orphan is
+judged inside its own graph, EC-5 in the spec said the opposite and was
+the thing that was wrong, and it is corrected.
+
+**Applied: the sample now comes from the DELETE.** It was a read taken
+before the delete, so it named what was there a moment earlier rather
+than what went. `RETURNING natural_key` inside the same statement, with
+the bound applied in SQL, makes the sample the same snapshot the counts
+already shared.
+
+**Applied: the ledger's phase rows.** They had accumulated rather than
+been consolidated, so Progress still read "Phase 4 of 7" beside a
+separate note saying five, beside rows for 6a and 6b, and Next still
+listed Phase 6 as future work. One Progress row now, phases newest
+first, and Next names Phase 7 alone.
+
 ## Riding items
 
 - R22, above.

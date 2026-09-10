@@ -443,25 +443,16 @@ pub async fn codebase_prune(s: &Exec<'_>, r: &DropScoped) -> Result<Value, VerbE
         .map(|row| row.get(0))
         .ok_or_else(|| VerbError::NotFound(format!("no graph named {:?}", r.graph)))?;
 
-    let sample: Vec<String> = s
-        .client()
-        .query(
-            "SELECT natural_key FROM nodes n
-             WHERE n.graph_id = $1
-               AND n.payload ? 'file_key'
-               AND NOT EXISTS (
-                 SELECT 1 FROM nodes f
-                 WHERE f.graph_id = n.graph_id
-                   AND f.natural_key = n.payload->>'file_key')
-             ORDER BY 1 LIMIT $2",
-            &[&g, &SAMPLE],
-        )
-        .await
-        .map_err(db)?
-        .iter()
-        .map(|row| row.get(0))
-        .collect();
-
+    // An orphan is judged inside its own graph. Widening the parent
+    // lookup across graphs would let a file node anywhere mask a real
+    // orphan here, and that is not hypothetical: `file_key` is derived
+    // from the path alone, so two graphs over the same tree hold the
+    // same keys and each would hide the other's orphans.
+    //
+    // The sample comes from the DELETE's own RETURNING rather than a
+    // read taken beforehand, so it names what went rather than what was
+    // there a moment earlier, which is the same snapshot discipline the
+    // counts follow.
     let counts = s
         .client()
         .query_one(
@@ -485,16 +476,25 @@ pub async fn codebase_prune(s: &Exec<'_>, r: &DropScoped) -> Result<Value, VerbE
                  (SELECT count(*) FROM node_log l
                     WHERE l.node_id IN (SELECT id FROM orphans)) AS log_entries
              ),
-             deleted AS (DELETE FROM nodes WHERE id IN (SELECT id FROM orphans))
-             SELECT nodes, edges, chunks, log_entries FROM measured",
-            &[&g],
+             deleted AS (
+               DELETE FROM nodes WHERE id IN (SELECT id FROM orphans)
+               RETURNING natural_key
+             )
+             SELECT m.nodes, m.edges, m.chunks, m.log_entries,
+                    COALESCE(
+                      (SELECT array_agg(k) FROM
+                         (SELECT natural_key AS k FROM deleted ORDER BY 1 LIMIT $2) s),
+                      '{}'
+                    ) AS sample
+             FROM measured m",
+            &[&g, &SAMPLE],
         )
         .await
         .map_err(db)?;
     Ok(json!({
         "graph": r.graph,
         "sample_limit": SAMPLE,
-        "sample": sample,
+        "sample": counts.get::<_, Vec<String>>(4),
         "swept": {
             "nodes": counts.get::<_, i64>(0),
             "edges": counts.get::<_, i64>(1),

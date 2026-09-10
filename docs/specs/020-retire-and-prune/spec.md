@@ -158,9 +158,13 @@ and stays open.
 - **EC-3** `prune` on a clean graph: zero swept, success.
 - **EC-4** `prune` after a `retire` that swept a family: nothing left to
   prune, because retire took the symbols with the file.
-- **EC-5** A symbol node whose `file_key` names a file node in another
-  graph: not an orphan in this graph and not swept, which is the
-  cross-graph discipline `validate` already reports on.
+- **EC-5** A symbol node whose `file_key` names no file node **in its own
+  graph** is an orphan and is swept, even when some other graph holds a
+  node under that key. The parent lookup is graph-scoped on purpose:
+  `file_key` is derived from the path alone, so two graphs over the same
+  tree hold identical keys, and a cross-graph lookup would let each hide
+  the other's orphans. Proven by removing the scope and watching the
+  planted-orphan test sweep nothing.
 - **EC-6** `retire` with a prefix that is not a path prefix of anything,
   including an empty string: an empty string would mean the whole graph,
   so it is `InvalidArgs`. A destructive verb does not accept a wildcard
