@@ -311,23 +311,45 @@ async fn query_ranks_with_ts_rank_cd_and_refuses_what_it_cannot_do() {
     assert_eq!(hits[0]["key"], "docA");
 
     // A requested ranking mode that cannot run is refused, not ignored.
-    // `hybrid` waits on the fusion, which is PRD-embedder Phase 3, not on
-    // H4: the embedder is filled. `structural` still waits on H9.
-    for (hybrid, structural, waits_for) in [(true, false, "Phase 3"), (false, true, "H9")] {
-        let env = s
-            .call(&Verb::Query(QueryRequest {
-                search_text: "parser".into(),
-                limit: 10,
-                kind: None,
-                hybrid,
-                structural,
-            }))
-            .await;
-        assert!(!env.success);
-        let msg = env.error.unwrap();
-        assert!(msg.starts_with("unimplemented"), "{msg}");
-        assert!(msg.contains(waits_for), "it names what it waits for: {msg}");
-    }
+    // **`hybrid` is implemented as of spec 023**, so it is no longer in
+    // this list: its behavior lives in `hybrid_query.rs`, which needs the
+    // embedder as well as the cluster. What is asserted here is that this
+    // graph, which has chunks and no vectors, gets a refusal naming that
+    // rather than a quiet fall back to the keyword ranking above.
+    // `structural` still waits on H9.
+    let env = s
+        .call(&Verb::Query(QueryRequest {
+            search_text: "parser".into(),
+            limit: 10,
+            kind: None,
+            hybrid: true,
+            structural: false,
+        }))
+        .await;
+    assert!(!env.success);
+    let msg = env.error.unwrap();
+    assert!(
+        msg.contains("no embeddings"),
+        "a graph with no vectors says so rather than ranking by keyword alone: {msg}"
+    );
+    assert!(
+        !msg.starts_with("unimplemented"),
+        "hybrid is implemented, so this is not a hole: {msg}"
+    );
+
+    let env = s
+        .call(&Verb::Query(QueryRequest {
+            search_text: "parser".into(),
+            limit: 10,
+            kind: None,
+            hybrid: false,
+            structural: true,
+        }))
+        .await;
+    assert!(!env.success);
+    let msg = env.error.unwrap();
+    assert!(msg.starts_with("unimplemented"), "{msg}");
+    assert!(msg.contains("H9"), "it names what it waits for: {msg}");
 
     let env = s
         .call(&Verb::Query(QueryRequest {

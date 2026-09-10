@@ -57,6 +57,16 @@ before touching the embedding path:
   tail out of vector search while leaving it in keyword search with
   nothing saying so.
 
+**Hybrid query is built** (spec 023), so `query --hybrid` fuses keyword
+and vector ranking by reciprocal rank fusion in one statement, which is
+the claim the store PRD has carried since it was drafted. The query
+vector is computed inside the verb at the task that pairs with the
+corpus's, read off the rows, and is never accepted from the caller: a
+`vector` field on the request would be a way to reach vector search
+without calling `embed.text`, which is a side door around a verb. A graph
+with no vectors, or with more than one cohort, is a refusal rather than a
+quiet fall back to keyword ranking.
+
 The history below is kept because the reasoning in it is still load
 bearing.
 

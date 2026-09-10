@@ -14,8 +14,11 @@ named by the kernel. The resumption's driver is a semantic KG over the
 WeaverTools codebase, and the boundary is ruled (D9): Yeomna is an
 external RAG appliance whose **first caller is Claude Code itself**,
 using the graph as the RAG for building these projects, with weaver
-agents and buyers behind it. What remains on R21's order: hybrid query,
-then the WeaverTools KG stand-up last. **The severance is complete**: R19b and R20 closed the
+agents and buyers behind it. What remains on R21's order: **the WeaverTools KG stand-up alone**,
+which is last by Todd's order because it touches their repository and
+their deployment. Hybrid query is built (spec 023), which retires the
+last refusal in the verb layer that named a capability rather than a
+future era. **The severance is complete**: R19b and R20 closed the
 last two held drafts unmerged (branches kept as records), so nothing
 of the reference remains in flight.
 The hole-mapping step of the severance sequence
