@@ -107,6 +107,7 @@ async fn fixtures(graph: &str) -> Option<(Client, Session)> {
         .get(0);
 
     let info = client.info().clone();
+    let _ = LIVE_MODEL.set((info.model.clone(), info.model_revision.clone()));
     for (i, text) in [LEXICAL, SEMANTIC, UNRELATED].into_iter().enumerate() {
         let chunk: i64 = owner
             .query_one(
@@ -155,6 +156,10 @@ async fn fixtures(graph: &str) -> Option<(Client, Session)> {
             .with_embedder(sock),
     ))
 }
+
+/// The model and revision the live service serves, recorded by `fixtures`
+/// so a test that rewrites a stored cohort can put the real one back.
+static LIVE_MODEL: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
 
 fn data(e: &Envelope) -> &Value {
     e.data.as_ref().expect("an envelope with data")
@@ -628,4 +633,75 @@ async fn an_embedder_still_loading_refuses_before_the_fusion() {
         msg.contains("loading its weights"),
         "it says what is happening rather than that something failed: {msg}"
     );
+}
+
+/// A corpus embedded by another model, or another snapshot of the same
+/// model, is refused rather than ranked.
+///
+/// A cohort is three things and the first cut checked one of them. The
+/// service is swappable and its weights are pinned by configuration, so
+/// this is a state an operator reaches by restarting one unit: the corpus
+/// keeps the model and revision it was written with, the embedder serves
+/// whatever it now loads, and a query vector from the second geometry ranks
+/// the first into plausible nonsense with nothing in the result saying so.
+///
+/// Driven by rewriting the stored cohort, which is the cheap direction: the
+/// alternative is loading a second 7 GB model onto the card.
+#[tokio::test]
+async fn a_corpus_from_another_cohort_is_refused_rather_than_ranked() {
+    let Some((owner, s)) = fixtures("hq_othermodel").await else {
+        return;
+    };
+
+    for (column, value, wanted) in [
+        ("model", "someone-else/embeddings-v9", "someone-else"),
+        (
+            "model_revision",
+            "0000000000000000000000000000000000000000",
+            "0000000",
+        ),
+    ] {
+        owner
+            .execute(
+                &format!(
+                    "UPDATE embeddings e SET {column} = $1
+                     FROM chunks c, nodes n, graphs g
+                     WHERE e.chunk_id = c.id AND c.node_id = n.id AND n.graph_id = g.id
+                       AND g.name = 'hq_othermodel'"
+                ),
+                &[&value],
+            )
+            .await
+            .unwrap();
+
+        let env = s.call(&ask(true)).await;
+        assert!(!env.success, "{column} mismatch must refuse");
+        let msg = env.error.unwrap();
+        assert!(msg.starts_with("internal"), "{msg}");
+        assert!(
+            msg.contains(wanted),
+            "the refusal names what the corpus was embedded by: {msg}"
+        );
+        assert!(
+            msg.contains("plausible nonsense"),
+            "and says why it is not merely a mismatch: {msg}"
+        );
+
+        // Put it back, so the second pass tests its own column alone.
+        owner
+            .execute(
+                "UPDATE embeddings e SET model = $1, model_revision = $2
+                 FROM chunks c, nodes n, graphs g
+                 WHERE e.chunk_id = c.id AND c.node_id = n.id AND n.graph_id = g.id
+                   AND g.name = 'hq_othermodel'",
+                &[&LIVE_MODEL.get().unwrap().0, &LIVE_MODEL.get().unwrap().1],
+            )
+            .await
+            .unwrap();
+    }
+
+    // And with the cohort restored it answers, so the refusal is about the
+    // mismatch rather than about the graph.
+    let env = s.call(&ask(true)).await;
+    assert!(env.success, "{:?}", env.error);
 }

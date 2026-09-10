@@ -490,24 +490,17 @@ fn pieces_from_late_chunks(
     chunks: Vec<EmbeddedChunk>,
     rel_path: &str,
 ) -> Result<Vec<Piece>, String> {
-    chunks
+    let (chunks, vectors) = crate::embed::late_pieces(source, chunks, rel_path)?;
+    Ok(chunks
         .into_iter()
-        .map(|c| {
-            let text = c.slice(source).ok_or_else(|| {
-                format!(
-                    "{rel_path}: chunk {} spans bytes {}..{} which do not slice the file. \
-                     The embedder's offset conversion is wrong",
-                    c.chunk_index, c.start_byte, c.end_byte
-                )
-            })?;
-            Ok(Piece {
-                text: text.to_string(),
-                start_char: c.start_byte,
-                end_char: c.end_byte,
-                vector: Some(c.vector),
-            })
+        .zip(vectors)
+        .map(|(c, vector)| Piece {
+            text: c.text,
+            start_char: c.start_char,
+            end_char: c.end_char,
+            vector: Some(vector),
         })
-        .collect()
+        .collect())
 }
 
 /// Chunks, their symbol linkage, and optionally their embeddings.

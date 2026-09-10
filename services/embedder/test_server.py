@@ -647,18 +647,28 @@ def test_a_silent_client_cannot_hold_the_only_worker(served):
     worker until it disconnects, and the unit does not restart. The
     handler's `timeout` is what bounds it.
     """
-    assert server.Handler.timeout is not None
-    assert server.Handler.timeout <= 30, "a deadline a person would wait for"
+    shipped = server.Handler.timeout
+    assert shipped is not None
+    assert shipped <= 30, "a deadline a person would wait for"
 
-    # Connect, send nothing, and leave it open. The next request must still
-    # be answered rather than queueing behind the silent one.
-    silent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    silent.connect(str(served.path))
+    # Shortened for the test, and set before the connection so the handler
+    # that serves it reads the short one. What is under test is that a
+    # deadline exists and releases the worker, not how long the shipped one
+    # is, and waiting the shipped ten seconds to prove it costs the suite
+    # ten seconds every run.
+    server.Handler.timeout = 1
     try:
-        status, body = served.request("GET", "/v1/info")
-        assert status == 200, body
+        # Connect, send nothing, and leave it open. The next request must
+        # still be answered rather than queueing behind the silent one.
+        silent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        silent.connect(str(served.path))
+        try:
+            status, body = served.request("GET", "/v1/info")
+            assert status == 200, body
+        finally:
+            silent.close()
     finally:
-        silent.close()
+        server.Handler.timeout = shipped
 
 
 def test_the_hidden_width_is_checked_not_assumed():

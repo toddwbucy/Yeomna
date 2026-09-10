@@ -676,7 +676,14 @@ async fn hybrid(s: &Exec<'_>, r: &QueryRequest, limit: i64) -> Result<Value, Ver
         ));
     };
     let cohort = corpus_cohort(s, graph, r.kind.as_ref()).await?;
-    let vector = crate::embed::query_vector_literal(s, &r.search_text, &cohort.task).await?;
+    let vector = crate::embed::query_vector_literal(
+        s,
+        &r.search_text,
+        &cohort.model,
+        &cohort.revision,
+        &cohort.task,
+    )
+    .await?;
     let depth = candidate_depth(limit);
 
     // `keyword` ranks by ts_rank_cd exactly as the non-hybrid path does, so
@@ -702,34 +709,43 @@ async fn hybrid(s: &Exec<'_>, r: &QueryRequest, limit: i64) -> Result<Value, Ver
     // The full outer join keeps a chunk that appeared in only one source,
     // which is the case fusion exists for, and COALESCE on the key is what
     // makes the join's own row identity work.
+    // Each rank window orders by the key its subquery ordered on. An empty
+    // `OVER ()` numbers rows in whatever order they arrive, which happens
+    // to be the subquery's today and is not promised to be, and a rank is
+    // what the fusion score is built from, so it cannot rest on a plan
+    // detail. The re-sort is over at most `candidate_depth` rows.
     let rows = s
         .client()
         .query(
             "WITH keyword AS (
-                 SELECT chunk_id, row_number() OVER () AS rank
+                 SELECT chunk_id,
+                        row_number() OVER (ORDER BY score DESC, chunk_id) AS rank
                  FROM (
-                     SELECT c.id AS chunk_id
+                     SELECT c.id AS chunk_id,
+                            ts_rank_cd(c.tsv, websearch_to_tsquery('english', $1)) AS score
                      FROM chunks c
                      JOIN nodes n ON n.id = c.node_id
                      JOIN graphs g ON g.id = n.graph_id
                      WHERE g.name = $2
                        AND ($3::text IS NULL OR n.kind = $3)
                        AND c.tsv @@ websearch_to_tsquery('english', $1)
-                     ORDER BY ts_rank_cd(c.tsv, websearch_to_tsquery('english', $1)) DESC, c.id
+                     ORDER BY score DESC, c.id
                      LIMIT $4
                  ) ranked
              ),
              vector AS (
-                 SELECT chunk_id, row_number() OVER () AS rank
+                 SELECT chunk_id,
+                        row_number() OVER (ORDER BY distance, chunk_id) AS rank
                  FROM (
-                     SELECT c.id AS chunk_id
+                     SELECT c.id AS chunk_id,
+                            e.vec <=> $5::text::halfvec AS distance
                      FROM embeddings e
                      JOIN chunks c ON c.id = e.chunk_id
                      JOIN nodes n ON n.id = c.node_id
                      JOIN graphs g ON g.id = n.graph_id
                      WHERE g.name = $2
                        AND ($3::text IS NULL OR n.kind = $3)
-                     ORDER BY e.vec <=> $5::text::halfvec, c.id
+                     ORDER BY distance, c.id
                      LIMIT $4
                  ) nearest
              ),

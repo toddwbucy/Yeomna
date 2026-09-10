@@ -104,6 +104,8 @@ pub(crate) fn query_task_for(corpus_task: &str) -> Option<&'static str> {
 pub(crate) async fn query_vector_literal(
     s: &Exec<'_>,
     search_text: &str,
+    corpus_model: &str,
+    corpus_revision: &str,
     corpus_task: &str,
 ) -> Result<String, VerbError> {
     let Some(task) = query_task_for(corpus_task) else {
@@ -118,6 +120,23 @@ pub(crate) async fn query_vector_literal(
         return Err(VerbError::Internal(format!(
             "the embedder at {} is still loading its weights. Ask again in a moment",
             client.endpoint()
+        )));
+    }
+    // A cohort is three things, and checking one of them is checking none.
+    // The corpus records its model and its revision beside its task (R26)
+    // for exactly this comparison: a query embedded by another model, or by
+    // another snapshot of the same model, lands in a different geometry and
+    // ranks the corpus into plausible nonsense with nothing in the result
+    // saying so. The service is swappable and the weights are pinned by
+    // configuration, so this is a state an operator can reach by restarting
+    // one unit.
+    if info.model != corpus_model || info.model_revision != corpus_revision {
+        return Err(VerbError::Internal(format!(
+            "the corpus was embedded by {corpus_model} at {corpus_revision} and the embedder is \
+             serving {} at {}. A query vector from another cohort ranks this corpus into \
+             plausible nonsense, so it is refused. Re-ingest the graph under the running model, \
+             or query without hybrid",
+            info.model, info.model_revision
         )));
     }
     if !info.tasks.iter().any(|t| t == task) {

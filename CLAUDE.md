@@ -11,13 +11,15 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and review notes alongside each.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, eleven crates, 460 tests, plus one Python service
-at `services/embedder/`. **The count is every test the workspace
-defines, and the gate is run with the cluster and the embedder up.**
-Cluster-gated and service-gated tests pass by returning early with a
-named skip when their dependency is absent, so the number does not
-move on a machine without one and it means less there. A gate run that
-matters is one where the skip lines are absent. **The Rust side of the
+`rust-toolchain.toml`, eleven crates, and two suites. **461 is what
+`cargo test --workspace` reports passing** with the cluster and the
+embedder up, which is the gate. It counts every Rust test the workspace
+defines, because cluster-gated and service-gated tests pass by returning
+early with a named skip when their dependency is absent: the number does
+not move on a machine without one and it means less there, so a gate run
+that matters is one where the skip lines are absent. The Python suite is
+separate, `uv run pytest` in `services/embedder/`, and reports 59 with a
+GPU and 54 without. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
 and merged. **The store exists and holes-ledger H1 is filled** (specs 008

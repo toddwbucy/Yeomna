@@ -20,14 +20,14 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
-use yeomna_chunking::{ChunkingStrategy, TextChunk};
+use yeomna_chunking::ChunkingStrategy;
 use yeomna_code::Language;
 use yeomna_embed::embedding::EmbeddingError;
 use yeomna_embed::extraction::ExtractOptions;
 use yeomna_keys as keys;
 
 use crate::document_graph::{GraphEdge, GraphNode, parse_graph_blocks, scan_conforms};
-use crate::embed::Embedder;
+use crate::embed::{Embedder, late_pieces};
 use crate::extract::Extractor;
 use crate::orchestrator::{PipelineError, chunk_doc, embedding_doc};
 use crate::probe::IngestProbe;
@@ -670,37 +670,4 @@ where
     summary.unresolved.sort();
     info!(?summary, "conforms pass complete");
     Ok(summary)
-}
-
-/// Turn late chunks into `TextChunk`s and their vectors, checking the one
-/// thing the contract promises and this code relies on: that a chunk's
-/// byte span slices the text it came from. A failure is this document's
-/// refusal rather than the batch's, which is how every other per-file
-/// fault is handled here.
-fn late_pieces(
-    text: &str,
-    late: Vec<yeomna_embed::embedding::EmbeddedChunk>,
-    rel_path: &str,
-) -> Result<(Vec<TextChunk>, Vec<Vec<f32>>), String> {
-    let total = late.len();
-    let mut chunks = Vec::with_capacity(total);
-    let mut vectors = Vec::with_capacity(total);
-    for (i, c) in late.into_iter().enumerate() {
-        let slice = c.slice(text).ok_or_else(|| {
-            format!(
-                "{rel_path}: chunk {i} spans bytes {}..{} which do not slice the document. \
-                 The embedder's offset conversion is wrong",
-                c.start_byte, c.end_byte
-            )
-        })?;
-        chunks.push(TextChunk {
-            text: slice.to_string(),
-            start_char: c.start_byte,
-            end_char: c.end_byte,
-            chunk_index: i,
-            total_chunks: total,
-        });
-        vectors.push(c.vector);
-    }
-    Ok((chunks, vectors))
 }

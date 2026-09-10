@@ -5,7 +5,7 @@ PRD's Phase 5 sentence "Hybrid is one statement", which has been a claim
 since that PRD was drafted and is now either true or not.
 Owner: the `hybrid` flag on `query`, which has refused since spec 012.
 The tenth and last PR in R21's order.
-Status: draft, 2026-09-10. Stacked on spec 022, which supplies the vector.
+Status: built, 2026-09-10. Stacked on spec 022, which supplies the vector.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually. These govern prose. Rust and SQL

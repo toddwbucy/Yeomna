@@ -340,27 +340,7 @@ impl<S: IngestSink, X: Extractor, E: Embedder> Pipeline<S, X, E> {
 
         let (chunks, vectors) = match late {
             Some(late) => {
-                let total = late.len();
-                let mut chunks = Vec::with_capacity(total);
-                let mut vectors = Vec::with_capacity(total);
-                for (i, c) in late.into_iter().enumerate() {
-                    let slice = c.slice(text).ok_or_else(|| {
-                        PipelineError::Other(format!(
-                            "{doc_key}: chunk {i} spans bytes {}..{} which do not slice the \
-                             document. The embedder's offset conversion is wrong",
-                            c.start_byte, c.end_byte
-                        ))
-                    })?;
-                    chunks.push(TextChunk {
-                        text: slice.to_string(),
-                        start_char: c.start_byte,
-                        end_char: c.end_byte,
-                        chunk_index: i,
-                        total_chunks: total,
-                    });
-                    vectors.push(c.vector);
-                }
-                (chunks, vectors)
+                crate::embed::late_pieces(text, late, doc_key).map_err(PipelineError::Other)?
             }
             None => (chunker.chunk(text), Vec::new()),
         };
