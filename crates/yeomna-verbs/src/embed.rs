@@ -146,3 +146,40 @@ pub(crate) async fn query_vector_literal(
     literal.push(']');
     Ok(literal)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// EC-5: the pairing, which is what makes a query comparable to a
+    /// corpus. A wrong pairing is the failure mode with no symptom: the
+    /// vectors are plausible, the ranking is quietly worse, and nothing
+    /// errors.
+    #[test]
+    fn every_task_the_embedder_serves_has_a_query_pairing() {
+        // The corpus half of the asymmetric pair takes the query half.
+        assert_eq!(query_task_for("retrieval.passage"), Some("retrieval.query"));
+        // A corpus embedded as queries is odd and still answerable.
+        assert_eq!(query_task_for("retrieval.query"), Some("retrieval.query"));
+        // Symmetric by construction: the model forces the query prompt for
+        // this one whatever it is asked, so both halves are one name.
+        assert_eq!(query_task_for("text-matching"), Some("text-matching"));
+        // R28's provisional answer. If code turns out to be asymmetric this
+        // line changes and the contract grows code.passage and code.query.
+        assert_eq!(query_task_for("code"), Some("code"));
+        // Anything else has no pairing, which is a refusal rather than a
+        // guess, because guessing produces a ranking that looks fine.
+        for unknown in ["retrieval", "classification", "", "Retrieval.Passage"] {
+            assert_eq!(query_task_for(unknown), None, "{unknown:?}");
+        }
+    }
+
+    /// The default a bare `embed.text` gets is the query half, not the
+    /// corpus half. A query embedded as a passage is the silent failure the
+    /// reference's own contract warned about.
+    #[test]
+    fn the_default_task_is_a_query() {
+        assert_eq!(DEFAULT_TASK, "retrieval.query");
+        assert_eq!(query_task_for("retrieval.passage"), Some(DEFAULT_TASK));
+    }
+}

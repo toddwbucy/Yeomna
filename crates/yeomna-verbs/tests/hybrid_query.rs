@@ -61,7 +61,10 @@ async fn fixtures(graph: &str) -> Option<(Client, Session)> {
         return None;
     };
     let Some(sock) = embedder_socket() else {
-        eprintln!("SKIP: no embedder socket (start yeomna-embedder.service)");
+        eprintln!(
+            "SKIP: no embedder socket at the default path. Start the service: \
+             cd services/embedder && uv run python server.py"
+        );
         return None;
     };
     let Ok(owner) = yeomna_store::connect(&dir, PORT, "yeomna_owner", "yeomna").await else {
@@ -215,6 +218,28 @@ async fn fusion_finds_what_meaning_finds_and_prefers_agreement() {
         "fusion found the chunk that matches by meaning: {hits:?}"
     );
 
+    // And the vector half ranked it *for the right reason*. Being present
+    // is not enough: with three chunks and a candidate depth of fifty, the
+    // vector CTE returns all three whatever the vector is, so every other
+    // assertion here passes against a random query vector. Measured live,
+    // the real distances are 0.397 for the lexical chunk, 0.480 for the
+    // semantic one, and 0.685 for the unrelated one, so this ordering is
+    // the claim that the vector half understood the query.
+    let unrelated = by_index[&2];
+    let semantic = by_index[&1];
+    let sem_v = semantic["vector_rank"]
+        .as_i64()
+        .expect("the vector half saw it");
+    let unr_v = unrelated["vector_rank"]
+        .as_i64()
+        .expect("and saw this one too");
+    assert!(
+        sem_v < unr_v,
+        "the chunk about parsing outranks the one about preserved lemons, \
+         which is the vector half doing its job rather than returning rows: \
+         semantic at {sem_v}, unrelated at {unr_v}"
+    );
+
     // EC-2: the lexical chunk appears once, carrying both ranks, and
     // outscores a chunk that only one source found.
     let lexical = by_index[&0];
@@ -227,7 +252,6 @@ async fn fusion_finds_what_meaning_finds_and_prefers_agreement() {
         1,
         "and appears once rather than once per source"
     );
-    let semantic = by_index[&1];
     assert!(
         lexical["rank"].as_f64().unwrap() > semantic["rank"].as_f64().unwrap(),
         "agreement between the two sources outscores one strong signal: {lexical} vs {semantic}"
@@ -341,6 +365,7 @@ async fn hybrid_without_an_embedder_names_the_config_key() {
     // The same session without the embedder it was given.
     let dir = socket_dir().expect("fixtures proved it");
     let Ok(app) = yeomna_store::connect(&dir, PORT, "yeomna_app", "yeomna").await else {
+        eprintln!("SKIP: cannot connect as yeomna_app");
         return;
     };
     let bare = Session::new(app, "hybrid-no-embedder").with_graph("hq_noembedder");
@@ -378,10 +403,17 @@ async fn structural_still_names_h9() {
     );
 }
 
-/// EC-1. Nothing matches lexically and nothing is near the query vector
-/// either, which is an empty result rather than an error.
+/// EC-1 as the build settled it. A query matching nothing lexically still
+/// returns the graph's nearest vectors, because a nearest search has no
+/// distance threshold and always has a nearest.
+///
+/// The spec first said this should be an empty list. It cannot be, short of
+/// a distance cutoff, and a cutoff is a retrieval-quality decision with a
+/// number in it that M1 has not measured. What is asserted instead is the
+/// part that matters: nonsense contributes nothing to the keyword half, so
+/// every hit is the vector half's and says so.
 #[tokio::test]
-async fn nothing_found_is_an_empty_list() {
+async fn a_query_matching_no_term_is_ranked_by_the_vector_half_alone() {
     let Some((_owner, s)) = fixtures("hq_empty").await else {
         return;
     };
@@ -396,10 +428,12 @@ async fn nothing_found_is_an_empty_list() {
         .await,
     )
     .clone();
-    // The vector half always returns its nearest rows, so a hit list is not
-    // necessarily empty. What matters is that it answered rather than
-    // errored, and that the keyword half contributed nothing.
-    for h in d["hits"].as_array().unwrap() {
+    let hits = d["hits"].as_array().unwrap();
+    assert!(
+        !hits.is_empty(),
+        "a nearest search always has a nearest, so this is not empty: {d}"
+    );
+    for h in hits {
         assert!(
             h["text_rank"].is_null(),
             "no keyword match for nonsense: {h}"
@@ -424,4 +458,174 @@ fn the_fusion_constant_is_not_a_request_field() {
     // And a caller-supplied vector has no field to arrive in, which is
     // PRD-embedder D7: reaching vector search without `embed.text` would be
     // a side door around a verb.
+}
+
+/// The vector half really contributes the candidate depth it reports.
+///
+/// An HNSW scan returns at most `hnsw.ef_search` rows, which defaults to 40.
+/// Measured on this cluster: the index returned 40 when asked for 50,
+/// silently. Without the settings the fusion applies, the depth in the
+/// response would be a number nothing honored and the vector half would
+/// contribute a fraction of what the fusion asked for.
+///
+/// Asserted the only way that is not a lie about the plan: force the planner
+/// onto the index, ask for more candidates than the default `ef_search`, and
+/// count what comes back. The seeded graph is small, so this uses the
+/// dogfood corpus when it is present.
+#[tokio::test]
+async fn the_index_returns_the_candidate_depth_that_was_asked_for() {
+    let Some(dir) = socket_dir() else { return };
+    let Some(sock) = embedder_socket() else {
+        return;
+    };
+    let Ok(owner) = yeomna_store::connect(&dir, PORT, "yeomna_owner", "yeomna").await else {
+        return;
+    };
+    let vectors: i64 = owner
+        .query_one("SELECT count(*) FROM embeddings", &[])
+        .await
+        .unwrap()
+        .get(0);
+    // The default ef_search is 40, so proving anything needs more rows than
+    // that plus room above the ask.
+    if vectors < 200 {
+        eprintln!("SKIP: only {vectors} vectors on this cluster, too few to out-rank ef_search");
+        return;
+    }
+    let client = match EmbeddingClient::connect_at(&sock).await {
+        Ok(c) if c.info().loaded => c,
+        _ => {
+            eprintln!("SKIP: the embedder is not serving");
+            return;
+        }
+    };
+    let vector = client
+        .embed_one("a query for the candidate depth", "retrieval.query")
+        .await
+        .expect("embeds");
+    let literal = format!(
+        "[{}]",
+        vector
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    // Without the settings, on the index: capped at the default ef_search.
+    owner
+        .batch_execute("BEGIN; SET LOCAL enable_seqscan = off;")
+        .await
+        .unwrap();
+    let capped: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM (
+                 SELECT chunk_id FROM embeddings
+                 ORDER BY vec <=> $1::text::halfvec LIMIT 150
+             ) t",
+            &[&literal],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    owner.batch_execute("ROLLBACK").await.unwrap();
+
+    // With them: the full ask.
+    owner
+        .batch_execute(
+            "BEGIN; SET LOCAL enable_seqscan = off; SET LOCAL hnsw.ef_search = 150; \
+             SET LOCAL hnsw.iterative_scan = strict_order;",
+        )
+        .await
+        .unwrap();
+    let honored: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM (
+                 SELECT chunk_id FROM embeddings
+                 ORDER BY vec <=> $1::text::halfvec LIMIT 150
+             ) t",
+            &[&literal],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    owner.batch_execute("ROLLBACK").await.unwrap();
+
+    assert!(
+        capped < 150,
+        "the default ef_search caps an index scan, which is the whole reason \
+         the fusion sets it: got {capped} of 150"
+    );
+    assert_eq!(
+        honored, 150,
+        "and with ef_search at the candidate depth the index returns it"
+    );
+}
+
+/// EC-6. An embedder that answers and has not loaded its weights, which is
+/// what the first seconds after a start look like.
+///
+/// Served by a socket this test owns rather than by the real service, since
+/// the real one is loaded by the time a suite reaches it and the branch
+/// would otherwise be unreachable from the gate. Sixty lines of canned
+/// HTTP is cheaper than an untested refusal.
+#[tokio::test]
+async fn an_embedder_still_loading_refuses_before_the_fusion() {
+    let Some((_owner, _s)) = fixtures("hq_loading").await else {
+        return;
+    };
+    let dir = socket_dir().expect("fixtures proved it");
+    let temp = tempfile::TempDir::new().unwrap();
+    let fake = temp.path().join("embedder.sock");
+
+    // A service that answers /v1/info with loaded: false and nothing else.
+    let listener = tokio::net::UnixListener::bind(&fake).expect("binds");
+    let serving = tokio::spawn(async move {
+        let body = serde_json::json!({
+            "model": "jinaai/jina-embeddings-v4",
+            "model_revision": "853c867b65b749f3c3c72a06868140d842e04f06",
+            "dimension": 2048,
+            "max_tokens": 16384,
+            "tasks": ["retrieval.passage", "retrieval.query"],
+            "device": "cuda:2",
+            "loaded": false,
+        })
+        .to_string();
+        // Two connections: one for the client's connect-time /v1/info, and
+        // one spare so a retry does not hang the test.
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        }
+    });
+
+    let Ok(app) = yeomna_store::connect(&dir, PORT, "yeomna_app", "yeomna").await else {
+        eprintln!("SKIP: cannot connect as yeomna_app");
+        return;
+    };
+    let s = Session::new(app, "hybrid-loading")
+        .with_graph("hq_loading")
+        .with_embedder(fake.display().to_string());
+    let env = s.call(&ask(true)).await;
+    serving.abort();
+
+    assert!(!env.success);
+    let msg = env.error.unwrap();
+    assert!(msg.starts_with("internal"), "{msg}");
+    assert!(
+        msg.contains("loading its weights"),
+        "it says what is happening rather than that something failed: {msg}"
+    );
 }

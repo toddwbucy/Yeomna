@@ -170,10 +170,11 @@ the analyzers through the same resolver the ingest preflight uses, and
 `tools install` places a binary the operator supplies rather than
 fetching one (R24).
 
-All seven of H2's phases are done. What remains on R21's order, as Todd
-reordered it 2026-09-10: the native embedder (H4), hybrid query, and
-**the WeaverTools KG stand-up last**, since it touches their repository
-and deployment and wants a WeaverTools session in the loop.
+All seven of H2's phases are done. What remains on R21's order:
+**the WeaverTools KG stand-up alone.** H4 filled in spec 022 and hybrid
+query landed in spec 023, so the stand-up is the last of the ten and it
+is last by Todd's order, since it touches their repository and their
+deployment and wants a WeaverTools session in the loop.
 
 **H3 is filled and this repository is a graph** (spec 011, merged
 2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the

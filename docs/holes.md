@@ -361,6 +361,36 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R27 | The embedder backend is Python behind the contract | **Proposed in spec 022, implemented as proposed.** jina-v4 ships custom modeling code, a Qwen2.5-VL backbone, and LoRA adapters selected per task, so reimplementing it in Candle is new construction whose only deliverable is the same vectors, and inherit-do-not-author points the other way. The service is replaceable because the contract is narrow: three operations, one of which exists only for a test. Recorded cost: Python in the box is a supply chain, seven packages and a committed lockfile, and `PrivateNetwork=yes` is what makes that supply chain unable to act at run time. The HTTP server is the standard library, because fastapi and uvicorn would be four more packages for a service the GPU already serializes |
 | R28 | Does the `code` task need a query and passage split | **Open, raised by spec 022's build.** The model's snapshot fixes two prompt prefixes and forces the query one for `text-matching` whatever it is asked. For `code` it fixes nothing, so the service uses the query prompt for both halves and says so. Whether that is right is a retrieval-quality question about whether ingested code is a passage: if it is, the contract grows `code.passage` and `code.query`, the pairing table gains one line, and every code corpus embedded under the old answer is a re-ingest away from the new one. Cheap to hold open, because R26 put the task on every embeddings row, so whichever way it is ruled a reader can tell which corpora were embedded under which answer |
 
+## Two open items that spec 023 opened
+
+**M5. Hybrid fusion does not use the vector index.** Measured 2026-09-10,
+reported at `docs/measurements/M5-hybrid-fusion-and-the-unused-index.md`.
+The ranking is exact and the cost is linear in the graph's embedding
+count. `embeddings` carries no column the graph filter can be expressed
+in, so the planner drives from the graph side and the vector index cannot
+supply the ordering, and forcing every alternative plan off still does not
+produce an index scan. Measured at 4.8 ms and 9,541 buffers over 1,275
+embedded chunks, against 0.28 ms and 368 buffers for the same nearest
+search with no graph filter, where the index does run. The fix is a
+`graph_id` on `embeddings` plus `hnsw.ef_search` and
+`hnsw.iterative_scan`, which is a schema version and a re-ingest, so it
+wants its own spec. **The charter's own comparison is what makes this
+worth naming**: `halfvec` is mandatory because `vector(2048)` refuses an
+HNSW index, and an index nothing reaches is the same outcome by a
+different route.
+
+**The editorial backlog.** The rules in the charter's header have been
+binding since the charter and were being checked by hand. A mechanical
+scan was written during spec 023, run, and taken back out: it found **125
+violations across 27 files**, nearly all of them em-dashes and arrows in
+doc comments on the crates lifted from the reference, plus three uses of
+a banned word. The scan belongs in the tree and the sweep belongs in its
+own commit, because 125 mechanical edits are reviewable as a sweep and
+unreviewable underneath a feature. `crates/yeomna-verbs/tests/message_lint.rs`
+carries the half that did land, which catches a message whose line
+continuation collapsed, and its header records why the other half is not
+there yet.
+
 ## The fill order, as the dependencies read
 
 1. R1 and R2 rule, then the store schema spec (H1 begins). Done, spec 008.

@@ -14,6 +14,14 @@
 //!
 //! SQL is exempt. Statement text is indented inside its literal on
 //! purpose, and it is not prose a person reads as a sentence.
+//!
+//! **The editorial rules are not checked here, and they should be.** They are
+//! just as mechanical, and a banned word reached a comment in this very
+//! branch. A scan for them was written, run, and taken back out: it found 125
+//! violations across 27 files, nearly all of them em-dashes and arrows in
+//! doc comments on the crates lifted from the reference. That sweep is
+//! reviewable as a sweep and unreviewable underneath a retrieval feature, so
+//! it is recorded in the holes ledger and left for its own commit.
 
 use std::path::{Path, PathBuf};
 

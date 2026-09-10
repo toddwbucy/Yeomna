@@ -72,7 +72,12 @@ corpus's rather than at a fixed one.
 - `crates/yeomna-verbs/src/read.rs`: `query` gains the hybrid path.
 - `crates/yeomna-verbs/src/embed.rs`: the pairing table, since it is about
   tasks and that is where the task default lives.
-- `crates/yeomna-verbs/tests/read_verbs.rs`: the tests.
+- `crates/yeomna-verbs/tests/hybrid_query.rs` (new): the tests. A separate
+  file rather than `read_verbs.rs`, because these need the embedder as well
+  as the cluster and a run missing either should say which.
+- `crates/yeomna-verbs/tests/read_verbs.rs`: its hybrid assertion, which
+  asserted the refusal this spec removes.
+- `docs/measurements/M5-hybrid-fusion-and-the-unused-index.md` (new).
 - `docs/holes.md`, `CLAUDE.md`, `docs/PRD-embedder.md` (Phase 3 built).
 
 ## Files to Reference
@@ -121,8 +126,12 @@ corpus's rather than at a fixed one.
 
 ## Edge Cases
 
-- **EC-1** A term that matches no chunk at all and a vector far from
-  everything: an empty hit list, not an error.
+- **EC-1** A term that matches no chunk at all. The keyword half
+  contributes nothing and every hit is the vector half's, which says so
+  through a null `text_rank`. **Not an empty list**, as this first read:
+  a nearest search has no distance threshold and always has a nearest, and
+  adding a cutoff is a retrieval-quality decision with a number in it that
+  M1 has not measured. Corrected during the build.
 - **EC-2** A chunk that ranks in both sources appears once, with both
   ranks, and scores higher than either source alone would put it. This is
   the whole point of fusion and it is the assertion worth making.
@@ -166,7 +175,9 @@ DON'T:
 ## Success Criteria
 
 1. `query --hybrid` answers over a real graph, and a document findable
-   only by meaning comes back.
+   only by meaning comes back. The test asserts the vector half ranked it
+   above an unrelated chunk, because with a small fixture every other
+   assertion passes against a random query vector.
 2. One statement, one round trip.
 3. Every refusal in FR5 through FR8 has a test.
 4. The verb layer's last refusal that names a filled hole is gone.
@@ -176,6 +187,36 @@ DON'T:
 
 - `cargo build`, `cargo test` (3x, cluster and embedder up), `cargo clippy
   --all-targets`, `cargo fmt --check`, all clean.
-- Tests cover FR1 through FR9 and EC-1 through EC-6.
+- Tests cover FR1 through FR9 and EC-1 through EC-6, with EC-1 as this
+  document's Edge Cases now state it rather than as first drafted. Two
+  are covered by tests written after the local review pass said they were
+  claimed and absent: EC-5's pairing table has a unit test, and EC-6 is
+  driven by a socket the test serves itself, since the real embedder is
+  loaded by the time a suite reaches it.
 - The no-SQL lint passes with its allowlist unchanged.
 - The editorial sweep is clean.
+
+## What the build found that this spec did not anticipate
+
+**The vector index is not used, and M5 says so.** The graph filter reaches
+`embeddings` only through `chunks -> nodes -> graphs`, so the planner
+drives from the graph side and the vector index cannot supply the
+ordering. Four shapes were tried and forcing every alternative plan off
+still produces no index scan. The fix is a filter column on `embeddings`,
+which is a schema change and a re-ingest, so it is measured and named
+rather than folded in here. `docs/measurements/M5-hybrid-fusion-and-the-unused-index.md`
+carries the plans and the numbers.
+
+**The cohort check is scoped by kind, not only by graph.** Both halves of
+the fusion filter by `kind`, so a graph whose documents are embedded at one
+task and whose files are embedded at another holds two cohorts while a
+query naming one kind is asking about one of them. Checking the whole graph
+would refuse an answerable query, and worse, a graph where only the
+unqueried kind is embedded would pass the check and then fuse against an
+empty vector half.
+
+**The response reports coverage.** A graph is often partly embedded,
+because a document over the ceiling is chunked and not embedded. Without
+`coverage`, a chunk whose `vector_rank` is null because it has no vector is
+indistinguishable from one that ranked below the candidate depth. Measured
+on the live corpus: 1,480 chunks and 1,275 embedded.
