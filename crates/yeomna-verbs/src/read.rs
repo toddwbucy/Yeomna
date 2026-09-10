@@ -812,10 +812,12 @@ async fn hybrid(s: &Exec<'_>, r: &QueryRequest, limit: i64) -> Result<Value, Ver
             "chunks": cohort.chunks,
             "embedded": cohort.embedded,
         },
-        // `candidate_depth` is what each source really contributed, which
-        // is why `hnsw.ef_search` is set to it rather than left at its
-        // default: a depth in the response that the index did not honor
-        // would be worse than no depth at all.
+        // `candidate_depth` is the LIMIT each source was given before the
+        // fusion, so a reader can tell a chunk that ranked below it from one
+        // that was never a candidate. Nothing here sets `hnsw.ef_search`: the
+        // vector half does not reach the index at all (M5), so a setting for
+        // a plan this query cannot produce would be a claim the code does
+        // not honor.
         "fusion": { "method": "rrf", "k": RRF_K, "candidate_depth": depth },
         "hits": rows.iter().map(|row| json!({
             "graph": row.get::<_, String>(0),

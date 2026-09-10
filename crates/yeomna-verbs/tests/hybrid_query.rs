@@ -465,20 +465,23 @@ fn the_fusion_constant_is_not_a_request_field() {
     // a side door around a verb.
 }
 
-/// The vector half really contributes the candidate depth it reports.
+/// `hnsw.ef_search` caps what an index scan returns, measured.
 ///
-/// An HNSW scan returns at most `hnsw.ef_search` rows, which defaults to 40.
-/// Measured on this cluster: the index returned 40 when asked for 50,
-/// silently. Without the settings the fusion applies, the depth in the
-/// response would be a number nothing honored and the vector half would
-/// contribute a fraction of what the fusion asked for.
+/// **This is not a property of the verb.** The fusion's vector half does
+/// not reach the index at all, because the graph filter arrives through
+/// `chunks -> nodes -> graphs` and the planner drives from the graph side
+/// (M5). What this measures is pgvector itself, through a raw unfiltered
+/// query with the planner forced onto the index, and it is here as evidence
+/// for the fix M5 describes rather than as a claim about what `query
+/// --hybrid` does today.
 ///
-/// Asserted the only way that is not a lie about the plan: force the planner
-/// onto the index, ask for more candidates than the default `ef_search`, and
-/// count what comes back. The seeded graph is small, so this uses the
-/// dogfood corpus when it is present.
+/// The measurement: an HNSW scan returns at most `hnsw.ef_search` rows,
+/// which defaults to 40, so asking the index for 150 candidates returns 40
+/// and says nothing about it. Whoever gives `embeddings` a filter column
+/// needs `ef_search` and `iterative_scan` in the same change, or the
+/// candidate depth becomes a number the index does not honor.
 #[tokio::test]
-async fn the_index_returns_the_candidate_depth_that_was_asked_for() {
+async fn the_default_ef_search_caps_an_index_scan() {
     let Some(dir) = socket_dir() else { return };
     let Some(sock) = embedder_socket() else {
         return;
