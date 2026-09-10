@@ -272,11 +272,12 @@ impl Session {
             }
             Verb::CodebaseValidate(r) => ingest::codebase_validate(&self.exec(client), r).await,
 
-            // The destructive half, whose audit args carry the sentence
-            // T3's truth rests on.
-            Verb::CodebaseRetire(_) | Verb::CodebasePrune(_) => {
-                Err(unimplemented_in("Phase 6b", verb))
+            // -- Phase 6b, spec 020. The last destructive paths, and
+            // what answers T3's falsifying clause.
+            Verb::CodebaseRetire(r) => {
+                ingest::codebase_retire(&self.exec(client), self.endpoint(), r).await
             }
+            Verb::CodebasePrune(r) => ingest::codebase_prune(&self.exec(client), r).await,
         }
     }
 }

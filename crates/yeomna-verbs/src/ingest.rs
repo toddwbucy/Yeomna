@@ -28,7 +28,7 @@ use yeomna_store::PgSink;
 
 use crate::error::VerbError;
 use crate::execute::Exec;
-use crate::verb::{DriftRequest, GraphScoped, IngestRequest};
+use crate::verb::{DriftRequest, DropScoped, GraphScoped, IngestRequest, RetireRequest};
 
 fn db(e: tokio_postgres::Error) -> VerbError {
     VerbError::Internal(format!("store error: {e}"))
@@ -319,5 +319,187 @@ pub async fn codebase_validate(s: &Exec<'_>, r: &GraphScoped) -> Result<Value, V
         "chunks_naming_foreign_symbols": stray,
         "embedding_models": models,
         "file_nodes_missing_path_or_hash": incomplete,
+    }))
+}
+
+/// `codebase.retire`: sweep what the source no longer has (D3).
+///
+/// The first destructive ingestion verb, and the one the charter names
+/// when it says T3 is false. What makes it safe is that it does not
+/// decide for itself what is gone: it asks `drift`, which walks the
+/// tree the way an ingest does, and takes only what drift calls
+/// `missing`. A file drift could not assess is present as far as this
+/// verb is concerned, because deleting the graph's knowledge of source
+/// that is sitting right there is the worse error (FR3).
+pub async fn codebase_retire(
+    s: &Exec<'_>,
+    endpoint: Option<(&str, u16)>,
+    r: &RetireRequest,
+) -> Result<Value, VerbError> {
+    if !r.force {
+        return Err(VerbError::Denied(format!(
+            "retiring {:?} under prefix {:?} deletes the graph's record of files the tree no longer has, pass force to acknowledge",
+            r.graph, r.prefix
+        )));
+    }
+    // EC-6: an empty prefix would mean the whole graph. A destructive
+    // verb does not accept a wildcard by omission.
+    if r.prefix.trim().is_empty() {
+        return Err(VerbError::InvalidArgs(
+            "prefix is empty, which would name every file in the graph".into(),
+        ));
+    }
+    // EC-2: a tree that cannot be walked would make every file look
+    // gone. A missing tree is not license to empty a graph.
+    let root = readable_tree(&r.path)?;
+    let sink = sink_for(s, endpoint, &r.graph).await?;
+    let assessment = run_drift(root, &sink, &CodebaseConfig::default())
+        .await
+        .map_err(pipeline_error)?;
+
+    let gone: Vec<String> = assessment
+        .missing
+        .iter()
+        .filter(|p| p.starts_with(&r.prefix))
+        .cloned()
+        .collect();
+    if gone.is_empty() {
+        return Ok(json!({
+            "graph": r.graph,
+            "prefix": r.prefix,
+            "retired": [],
+            "swept": {"nodes": 0, "edges": 0, "chunks": 0, "embeddings": 0, "log_entries": 0},
+        }));
+    }
+
+    let keys: Vec<String> = gone.iter().map(|p| yeomna_keys::file_key(p)).collect();
+    // Measured and deleted as sub-statements of one WITH, so the counts
+    // an operator reads are the counts that went (FR6, spec 013's
+    // pattern). The family is the file node plus every node that names
+    // it as parent, since a symbol names its file by derived key rather
+    // than by foreign key and would otherwise be left standing.
+    let counts = s
+        .client()
+        .query_one(
+            "WITH family AS (
+               SELECT n.id FROM nodes n
+               JOIN graphs g ON g.id = n.graph_id
+               WHERE g.name = $1
+                 AND (n.natural_key = ANY($2) OR n.payload->>'file_key' = ANY($2))
+             ),
+             measured AS (
+               SELECT
+                 (SELECT count(*) FROM family) AS nodes,
+                 (SELECT count(*) FROM edges e
+                    WHERE e.src_id IN (SELECT id FROM family)
+                       OR e.dst_id IN (SELECT id FROM family)) AS edges,
+                 (SELECT count(*) FROM chunks c
+                    WHERE c.node_id IN (SELECT id FROM family)) AS chunks,
+                 (SELECT count(*) FROM embeddings em JOIN chunks c ON c.id = em.chunk_id
+                    WHERE c.node_id IN (SELECT id FROM family)) AS embeddings,
+                 (SELECT count(*) FROM node_log l
+                    WHERE l.node_id IN (SELECT id FROM family)) AS log_entries
+             ),
+             deleted AS (DELETE FROM nodes WHERE id IN (SELECT id FROM family))
+             SELECT nodes, edges, chunks, embeddings, log_entries FROM measured",
+            &[&r.graph, &keys],
+        )
+        .await
+        .map_err(db)?;
+    Ok(json!({
+        "graph": r.graph,
+        "prefix": r.prefix,
+        "retired": gone,
+        "swept": {
+            "nodes": counts.get::<_, i64>(0),
+            "edges": counts.get::<_, i64>(1),
+            "chunks": counts.get::<_, i64>(2),
+            "embeddings": counts.get::<_, i64>(3),
+            "log_entries": counts.get::<_, i64>(4),
+        },
+    }))
+}
+
+/// `codebase.prune`: sweep the orphans (D3).
+///
+/// Chiefly the symbol nodes whose declaring file node is absent, which
+/// is the class a half-finished retire leaves and the class a
+/// hand-written insert can create at any time. A symbol whose
+/// `file_key` names a file node in another graph is not an orphan here
+/// and is left alone (EC-5), which is the same cross-graph discipline
+/// `validate` reports on.
+pub async fn codebase_prune(s: &Exec<'_>, r: &DropScoped) -> Result<Value, VerbError> {
+    if !r.force {
+        return Err(VerbError::Denied(format!(
+            "pruning {:?} deletes nodes whose declaring file is no longer in the graph, pass force to acknowledge",
+            r.graph
+        )));
+    }
+    let g: i64 = s
+        .client()
+        .query_opt("SELECT id FROM graphs WHERE name = $1", &[&r.graph])
+        .await
+        .map_err(db)?
+        .map(|row| row.get(0))
+        .ok_or_else(|| VerbError::NotFound(format!("no graph named {:?}", r.graph)))?;
+
+    let sample: Vec<String> = s
+        .client()
+        .query(
+            "SELECT natural_key FROM nodes n
+             WHERE n.graph_id = $1
+               AND n.payload ? 'file_key'
+               AND NOT EXISTS (
+                 SELECT 1 FROM nodes f
+                 WHERE f.graph_id = n.graph_id
+                   AND f.natural_key = n.payload->>'file_key')
+             ORDER BY 1 LIMIT $2",
+            &[&g, &SAMPLE],
+        )
+        .await
+        .map_err(db)?
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+
+    let counts = s
+        .client()
+        .query_one(
+            "WITH orphans AS (
+               SELECT n.id FROM nodes n
+               WHERE n.graph_id = $1
+                 AND n.payload ? 'file_key'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM nodes f
+                   WHERE f.graph_id = n.graph_id
+                     AND f.natural_key = n.payload->>'file_key')
+             ),
+             measured AS (
+               SELECT
+                 (SELECT count(*) FROM orphans) AS nodes,
+                 (SELECT count(*) FROM edges e
+                    WHERE e.src_id IN (SELECT id FROM orphans)
+                       OR e.dst_id IN (SELECT id FROM orphans)) AS edges,
+                 (SELECT count(*) FROM chunks c
+                    WHERE c.node_id IN (SELECT id FROM orphans)) AS chunks,
+                 (SELECT count(*) FROM node_log l
+                    WHERE l.node_id IN (SELECT id FROM orphans)) AS log_entries
+             ),
+             deleted AS (DELETE FROM nodes WHERE id IN (SELECT id FROM orphans))
+             SELECT nodes, edges, chunks, log_entries FROM measured",
+            &[&g],
+        )
+        .await
+        .map_err(db)?;
+    Ok(json!({
+        "graph": r.graph,
+        "sample_limit": SAMPLE,
+        "sample": sample,
+        "swept": {
+            "nodes": counts.get::<_, i64>(0),
+            "edges": counts.get::<_, i64>(1),
+            "chunks": counts.get::<_, i64>(2),
+            "log_entries": counts.get::<_, i64>(3),
+        },
     }))
 }

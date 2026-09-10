@@ -142,6 +142,7 @@ fn all_examples() -> Vec<Verb> {
         Verb::CodebaseRetire(RetireRequest {
             graph: "yeomna".into(),
             prefix: "src/old/".into(),
+            path: ".".into(),
             force: true,
         }),
         Verb::CodebasePrune(DropScoped {

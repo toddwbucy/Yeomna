@@ -97,7 +97,22 @@ does not know or care which is on the other end. A person and an agent call the
 same verbs, are logged the same way, and are bounded the same way. There is one
 audited entry point, not two. The falsifiable part is not the intent but the
 sufficiency: that one surface can serve both without a capability gap wide enough
-to force a bypass. Section 6 records the gap as it stands today, which is what
+to force a bypass.
+
+**Tested 2026-09-09, and the clause below is answered.** Every path in this
+product that writes to or deletes from the store goes through a verb, and every
+call leaves one audit row carrying the actor the kernel named. The last two
+destructive paths, `codebase retire` and `codebase prune`, became verbs in spec
+020, which is what the sentence at the end of section 6 was waiting for. What
+stays open is capability rather than surface: `embed.text` waits on H4, the
+`schema.*` verbs on H7, and the `graph-embed.*` verbs on H9, and each refuses by
+name rather than routing around the line. If one of them ever ships as a side
+door instead of a verb, this thesis goes false again. Whether the record is rich
+enough for a regulator is a separate question, raised as R22: the audit row
+carries who, when, what was asked, and that it succeeded, while the enumerated
+sweep rides the response envelope and is not durable.
+
+Section 6 records the gap as it stood, which is what
 makes this testable rather than aspirational.
 
 **T4. The graph is a rebuildable index, not precious data.** It is derived from
@@ -251,16 +266,22 @@ the socket and never on what sits behind it, which is the same boundary the
 backend holds against the network, applied one level in. Everything below the
 line is swappable for that reason and not as a separate convenience.
 
-**The line does not exist yet and has to be built.** In the reference, six CLI
+**The line did not exist and had to be built.** In the reference, six CLI
 commands reach the store directly and never construct a verb: codebase ingest,
 retire, prune, drift, validate, and graph-embed update. Roughly 25 of 57 query
 sites sit outside the verb boundary, and they are the destructive ones. A human
-running `codebase retire` today produces no verb-layer record of what was swept.
+running `codebase retire` there produces no verb-layer record of what was swept.
 
-That last point is a requirement, not a note. T3 is false until it is fixed, and
-it is the largest single block of work in the build. It is also the reason the
-work is worth funding: it is not a portability concern, it is what the regulated
-sale rests on.
+That last point was a requirement, not a note. T3 was false until it was fixed,
+and it was the largest single block of work in the build. It is also the reason
+the work is worth funding: it is not a portability concern, it is what the
+regulated sale rests on.
+
+**Built, 2026-09-09.** Five of the six are verbs (specs 019 and 020: ingest,
+retire, prune, drift, validate), the sixth waits on H9 as a capability rather
+than a bypass, and nothing in this product reaches the store without
+constructing a verb. `codebase retire` leaves an audit row naming its actor, its
+graph, its prefix, and that force was given.
 
 ## 7. The graph, without Cypher
 

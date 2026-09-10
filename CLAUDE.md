@@ -90,10 +90,20 @@ a file that exists and will not parse is refused rather than fallen
 back from. `status` reports the session's actor, which is how a caller
 sees who the appliance thinks it is, since no verb reads the audit log.
 
-Five of H2's seven phases are merged. What remains on R21's order: the
-WeaverTools KG stand-up, Phase 6 in two halves (T3 goes true with
-retire and prune), the CLI tree with H8, the native embedder, and
-hybrid query.
+**Phase 6 is built** (specs 019 and 020). Ingestion is a verb: `ingest`,
+`codebase.ingest`, `codebase.drift` (which writes nothing and reports
+what moved), `codebase.validate` (which finds the one invariant the
+constraints cannot express, an edge whose endpoints live in another
+graph), and the two destructive ones, `codebase.retire` and
+`codebase.prune`. **T3's falsifying clause is answered**: nothing in
+this product reaches the store without constructing a verb, and every
+destructive call leaves an audit row naming its actor. What stays open
+is capability rather than surface, and R22 asks separately whether the
+record is rich enough. The charter's T3 paragraph and section 6 now say
+what changed and what did not.
+
+What remains on R21's order: the WeaverTools KG stand-up, the CLI tree
+with H8, the native embedder, and hybrid query.
 
 **H3 is filled and this repository is a graph** (spec 011, merged
 2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the
