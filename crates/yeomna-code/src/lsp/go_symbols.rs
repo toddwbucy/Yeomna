@@ -97,7 +97,12 @@ impl<'a> GoSymbolExtractor<'a> {
         parent: Option<&'b str>,
         interface_owner: Option<&'b str>,
         extraction: &'b mut FileExtraction,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'b>> {
+        // `+ Send`: without it this boxed future makes every caller
+        // non-Send, all the way up through `ingest_codebase` to the
+        // verb layer, which cannot then be spawned. Nothing noticed
+        // while the ingest was only ever awaited from a test, and the
+        // daemon spawning one connection per client is what found it.
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'b>> {
         Box::pin(async move {
             let raw_name = symbol["name"].as_str().unwrap_or("");
             if raw_name.is_empty() {

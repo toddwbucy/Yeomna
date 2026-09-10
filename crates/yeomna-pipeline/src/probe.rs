@@ -50,4 +50,12 @@ pub trait IngestProbe: Send + Sync {
         &self,
         natural_key: &str,
     ) -> impl std::future::Future<Output = Result<Option<String>, Self::Error>> + Send;
+
+    /// Every file node this graph holds, as (natural_key, path). Drift
+    /// needs it to see what the graph knows that the tree no longer
+    /// has, which is the question `retire` acts on, and asking it here
+    /// keeps the pipeline from learning SQL.
+    fn stored_file_keys(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<(String, String)>, Self::Error>> + Send;
 }

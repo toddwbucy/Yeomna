@@ -211,6 +211,11 @@ fn a_call_answers_in_an_envelope_from_the_argument_and_from_stdin() {
 
 /// EC-6: a verb this phase refuses reaches the caller as an answer,
 /// which is what the taxonomy is for.
+///
+/// `graph.materialize` rather than a phased verb: it refuses until a
+/// consumer defines what materialization means (R14), so this guard
+/// does not need repointing every time a phase lands. Spec 019
+/// implementing `ingest` is what taught that lesson.
 #[test]
 fn an_unimplemented_verb_refuses_by_name() {
     let Some(dir) = socket_dir() else { return };
@@ -219,7 +224,7 @@ fn an_unimplemented_verb_refuses_by_name() {
         Some(&config),
         &[
             "call",
-            r#"{"verb":"ingest","args":{"path":".","graph":"g"}}"#,
+            r#"{"verb":"graph.materialize","args":{"graph":"g"}}"#,
         ],
         None,
     );
@@ -228,7 +233,7 @@ fn an_unimplemented_verb_refuses_by_name() {
     let error = env["error"].as_str().unwrap();
     assert!(error.starts_with("unimplemented"), "{error}");
     assert!(
-        error.contains("Phase 6"),
+        error.contains("consumer that defines"),
         "it names what it waits for: {error}"
     );
 }

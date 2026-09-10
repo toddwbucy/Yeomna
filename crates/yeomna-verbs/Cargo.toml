@@ -16,6 +16,11 @@ tokio.workspace = true
 tokio-postgres.workspace = true
 tracing.workspace = true
 yeomna-store = { path = "../yeomna-store" }
+# The ingestion verbs wrap the orchestrators rather than reimplementing
+# them (spec 019). No cycle: the pipeline knows nothing of the verbs.
+yeomna-pipeline = { path = "../yeomna-pipeline" }
+yeomna-chunking = { path = "../yeomna-chunking" }
 
 [dev-dependencies]
 tokio.workspace = true
+tempfile.workspace = true

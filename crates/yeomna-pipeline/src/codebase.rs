@@ -128,6 +128,16 @@ pub struct CodebaseSummary {
     pub symbols_enriched: usize,
 }
 
+/// A file the walk offered and could not assess: over the size limit,
+/// unreadable, or unparseable. Its key matters to drift, because the
+/// graph may hold a node for it and that node is not stale, only
+/// unverifiable this run.
+struct Skipped {
+    rel_path: String,
+    file_key: String,
+    reason: &'static str,
+}
+
 /// One analyzed file, held until the node pass completes.
 struct Analyzed {
     rel_path: String,
@@ -156,7 +166,7 @@ where
         ));
     }
     let mut summary = CodebaseSummary::default();
-    let analyzed = walk_and_analyze(root, sink, config, &mut summary).await?;
+    let (analyzed, _skipped) = walk_and_analyze(root, sink, config, &mut summary).await?;
 
     // Pass 1: nodes. Everything the edge pass will point at must exist.
     for file in analyzed.iter().filter(|f| f.changed) {
@@ -190,17 +200,119 @@ where
     Ok(summary)
 }
 
+/// What a drift comparison found (D2). Paths rather than counts alone,
+/// because an operator asked to trust a graph wants to see which files
+/// the graph is wrong about.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DriftSummary {
+    /// Files the walk offered, whether or not they could be assessed.
+    pub files_seen: usize,
+    /// Files whose stored `symbol_hash` matches. The graph is right
+    /// about these.
+    pub unchanged: usize,
+    /// Files whose symbols hash differently than the graph holds.
+    pub changed: Vec<String>,
+    /// Files the tree has and the graph has never seen.
+    pub new: Vec<String>,
+    /// Files the graph holds and the tree no longer has. This is the
+    /// list `retire` acts on, which is why a file the walk saw and could
+    /// not assess never lands here: it is present, only unverifiable.
+    pub missing: Vec<String>,
+    /// Files the walk offered and could not assess, each with why. The
+    /// graph may be right or wrong about these and this run cannot say.
+    pub unassessed: Vec<String>,
+}
+
+impl DriftSummary {
+    /// True when the graph matches the tree and nothing went unassessed.
+    ///
+    /// An unassessed file makes this false rather than being ignored. A
+    /// caller asks `clean` to decide whether to trust an answer from the
+    /// graph, and "matches, except for the files I could not read" is not
+    /// a yes.
+    pub fn clean(&self) -> bool {
+        self.changed.is_empty()
+            && self.new.is_empty()
+            && self.missing.is_empty()
+            && self.unassessed.is_empty()
+    }
+}
+
+/// Compare a tree against what the graph holds, and write nothing (D2).
+///
+/// Shares the ingest's own walk and analysis, so the comparison is
+/// against what an ingest would write rather than against a second idea
+/// of it. That is the whole value: a drift that agreed with a different
+/// analyzer than the one that fills the graph would report drift where
+/// there is none, or miss it where there is.
+pub async fn drift<S>(
+    root: &Path,
+    sink: &S,
+    config: &CodebaseConfig,
+) -> Result<DriftSummary, PipelineError>
+where
+    S: IngestProbe,
+{
+    let mut walked = CodebaseSummary::default();
+    let (analyzed, skipped) = walk_and_analyze(root, sink, config, &mut walked).await?;
+    let mut summary = DriftSummary {
+        files_seen: analyzed.len() + skipped.len(),
+        ..Default::default()
+    };
+
+    // Every key the walk saw, assessed or not. A file it could not read
+    // is still a file the tree has, and calling it missing would tell
+    // `retire` to sweep a node whose source is right there.
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for file in &analyzed {
+        seen_keys.insert(file.file_key.clone());
+        let stored = sink
+            .stored_symbol_hash(&file.file_key)
+            .await
+            .map_err(|e| PipelineError::Sink(Box::new(e)))?;
+        match stored {
+            None => summary.new.push(file.rel_path.clone()),
+            Some(h) if h == file.analysis.symbol_hash => summary.unchanged += 1,
+            Some(_) => summary.changed.push(file.rel_path.clone()),
+        }
+    }
+    for s in &skipped {
+        seen_keys.insert(s.file_key.clone());
+        summary
+            .unassessed
+            .push(format!("{}: {}", s.rel_path, s.reason));
+    }
+
+    for (key, path) in sink
+        .stored_file_keys()
+        .await
+        .map_err(|e| PipelineError::Sink(Box::new(e)))?
+    {
+        if !seen_keys.contains(&key) {
+            summary.missing.push(path);
+        }
+    }
+
+    summary.changed.sort();
+    summary.new.sort();
+    summary.missing.sort();
+    summary.unassessed.sort();
+    info!(?summary, "drift complete");
+    Ok(summary)
+}
+
 /// Walk the tree and analyze what it offers, honoring `.gitignore`.
 async fn walk_and_analyze<S>(
     root: &Path,
     sink: &S,
     config: &CodebaseConfig,
     summary: &mut CodebaseSummary,
-) -> Result<Vec<Analyzed>, PipelineError>
+) -> Result<(Vec<Analyzed>, Vec<Skipped>), PipelineError>
 where
     S: IngestProbe,
 {
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for entry in ignore::WalkBuilder::new(root).hidden(false).build() {
         let entry = match entry {
             Ok(e) => e,
@@ -227,11 +339,21 @@ where
             // Not files_skipped, which means the hash matched.
             info!(rel_path, "dropped, over the size limit");
             summary.files_oversized += 1;
+            skipped.push(Skipped {
+                file_key: keys::file_key(&rel_path),
+                rel_path,
+                reason: "over the size limit",
+            });
             continue;
         }
         // Not valid UTF-8 means not source, whatever the extension says.
         let Ok(source) = std::fs::read_to_string(path) else {
             summary.files_failed += 1;
+            skipped.push(Skipped {
+                file_key: keys::file_key(&rel_path),
+                rel_path,
+                reason: "could not be read",
+            });
             continue;
         };
         let analysis =
@@ -241,6 +363,11 @@ where
                     // EC-1: one unparseable file does not fail the repository.
                     warn!(rel_path, analyzer, reason, "analysis failed");
                     summary.files_failed += 1;
+                    skipped.push(Skipped {
+                        file_key: keys::file_key(&rel_path),
+                        rel_path,
+                        reason: "could not be analyzed",
+                    });
                     continue;
                 }
             };
@@ -261,7 +388,7 @@ where
             changed,
         });
     }
-    Ok(out)
+    Ok((out, skipped))
 }
 
 /// The file node and its symbol nodes.

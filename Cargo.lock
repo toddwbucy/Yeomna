@@ -3462,10 +3462,13 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-postgres",
  "tracing",
+ "yeomna-chunking",
+ "yeomna-pipeline",
  "yeomna-store",
 ]
 

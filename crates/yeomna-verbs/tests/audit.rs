@@ -176,6 +176,25 @@ fn phase_two_verbs() -> Vec<Verb> {
             database: "postgres".into(), // Denied by name before any SQL
             statement: "SELECT 1".into(),
         }),
+        // -- Phase 6a (spec 019). Refusals again, so auditing is proven
+        // without an ingest running inside the completeness sweep.
+        Verb::CodebaseIngest(IngestRequest {
+            path: "/nonexistent/tree".into(), // InvalidArgs before any connection
+            graph: "audit_graph".into(),
+            overwrite: false,
+        }),
+        Verb::Ingest(IngestRequest {
+            path: "/nonexistent/tree".into(), // InvalidArgs
+            graph: "audit_graph".into(),
+            overwrite: false,
+        }),
+        Verb::CodebaseDrift(DriftRequest {
+            graph: "audit_graph".into(),
+            path: "/nonexistent/tree".into(), // InvalidArgs
+        }),
+        Verb::CodebaseValidate(GraphScoped {
+            graph: "audit_graph".into(), // clean and side-effect free
+        }),
     ]
 }
 
