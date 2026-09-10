@@ -11,13 +11,15 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and review notes alongside each.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, eleven crates, 446 tests, plus one Python service
-at `services/embedder/`. **The count is every test the workspace
-defines, and the gate is run with the cluster and the embedder up.**
-Cluster-gated and service-gated tests pass by returning early with a
-named skip when their dependency is absent, so the number does not
-move on a machine without one and it means less there. A gate run that
-matters is one where the skip lines are absent. **The Rust side of the
+`rust-toolchain.toml`, eleven crates, and two suites. **461 is what
+`cargo test --workspace` reports passing** with the cluster and the
+embedder up, which is the gate. It counts every Rust test the workspace
+defines, because cluster-gated and service-gated tests pass by returning
+early with a named skip when their dependency is absent: the number does
+not move on a machine without one and it means less there, so a gate run
+that matters is one where the skip lines are absent. The Python suite is
+separate, `uv run pytest` in `services/embedder/`, and reports 59 with a
+GPU and 54 without. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
 and merged. **The store exists and holes-ledger H1 is filled** (specs 008
@@ -56,6 +58,16 @@ before touching the embedding path:
   and named, never truncated (D5), because truncation drops a document's
   tail out of vector search while leaving it in keyword search with
   nothing saying so.
+
+**Hybrid query is built** (spec 023), so `query --hybrid` fuses keyword
+and vector ranking by reciprocal rank fusion in one statement, which is
+the claim the store PRD has carried since it was drafted. The query
+vector is computed inside the verb at the task that pairs with the
+corpus's, read off the rows, and is never accepted from the caller: a
+`vector` field on the request would be a way to reach vector search
+without calling `embed.text`, which is a side door around a verb. A graph
+with no vectors, or with more than one cohort, is a refusal rather than a
+quiet fall back to keyword ranking.
 
 The history below is kept because the reasoning in it is still load
 bearing.
@@ -160,10 +172,11 @@ the analyzers through the same resolver the ingest preflight uses, and
 `tools install` places a binary the operator supplies rather than
 fetching one (R24).
 
-All seven of H2's phases are done. What remains on R21's order, as Todd
-reordered it 2026-09-10: the native embedder (H4), hybrid query, and
-**the WeaverTools KG stand-up last**, since it touches their repository
-and deployment and wants a WeaverTools session in the loop.
+All seven of H2's phases are done. What remains on R21's order:
+**the WeaverTools KG stand-up alone.** H4 filled in spec 022 and hybrid
+query landed in spec 023, so the stand-up is the last of the ten and it
+is last by Todd's order, since it touches their repository and their
+deployment and wants a WeaverTools session in the loop.
 
 **H3 is filled and this repository is a graph** (spec 011, merged
 2026-08-15). `yeomna-pipeline` carries the codebase orchestrator beside the

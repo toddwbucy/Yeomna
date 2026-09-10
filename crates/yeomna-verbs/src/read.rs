@@ -38,7 +38,15 @@ pub(crate) fn check_kind(kind: &str) -> Result<(), VerbError> {
 }
 
 fn db(e: tokio_postgres::Error) -> VerbError {
-    VerbError::Internal(format!("store error: {e}"))
+    // `tokio_postgres::Error`'s own Display is "db error" and nothing else,
+    // so the server's message lives one level down the source chain. An
+    // operator reading "internal: store error: db error" learns nothing,
+    // which is worse than useless in an appliance whose only window on the
+    // store is this envelope.
+    let detail = std::error::Error::source(&e)
+        .map(|src| src.to_string())
+        .unwrap_or_else(|| e.to_string());
+    VerbError::Internal(format!("store error: {detail}"))
 }
 
 /// Group rows of `(label, count)` into an object.
@@ -461,18 +469,6 @@ pub async fn recent(s: &Exec<'_>, r: &RecentRequest) -> Result<Value, VerbError>
 /// caller-supplied field or operator, so there is no allowlist to escape,
 /// which is the shape charter section 6 wants.
 pub async fn query(s: &Exec<'_>, r: &QueryRequest) -> Result<Value, VerbError> {
-    if r.hybrid {
-        // H4 is filled, so this no longer waits on the embedder. What it
-        // waits on is the fusion itself, which is PRD-embedder Phase 3: one
-        // statement ranking by ts_rank_cd and by vector distance and fusing
-        // the two, with the query vector computed in this verb rather than
-        // accepted from the caller (D7). Naming a closed hole would send a
-        // caller looking in the wrong place.
-        return Err(VerbError::Unimplemented(
-            "hybrid ranking needs the RRF fusion, PRD-embedder Phase 3. The embedder is here, the fusion is not. Ask again without it"
-                .into(),
-        ));
-    }
     if r.structural {
         return Err(VerbError::Unimplemented(
             "structural ranking needs graph embeddings, H9. Ask again without it".into(),
@@ -485,6 +481,9 @@ pub async fn query(s: &Exec<'_>, r: &QueryRequest) -> Result<Value, VerbError> {
         return Err(VerbError::InvalidArgs("search_text is empty".into()));
     }
     let limit = i64::from(r.limit.min(MAX_PAGE));
+    if r.hybrid {
+        return hybrid(s, r, limit).await;
+    }
     let rows = s
         .client()
         .query(
@@ -504,6 +503,11 @@ pub async fn query(s: &Exec<'_>, r: &QueryRequest) -> Result<Value, VerbError> {
         .map_err(db)?;
     Ok(json!({
         "search_text": r.search_text,
+        // Named, because `rank` means two different things in the two modes:
+        // a `ts_rank_cd` score here and a fused reciprocal-rank score under
+        // `hybrid`. A caller reading a number should be able to tell which
+        // it has without inferring it from the request it sent.
+        "ranking": "keyword",
         "hits": rows.iter().map(|row| json!({
             "graph": row.get::<_, String>(0),
             "key": row.get::<_, String>(1),
@@ -513,4 +517,354 @@ pub async fn query(s: &Exec<'_>, r: &QueryRequest) -> Result<Value, VerbError> {
             "rank": row.get::<_, f32>(5),
         })).collect::<Vec<_>>(),
     }))
+}
+
+/// The RRF constant (spec 023).
+///
+/// 60, which is the value the reciprocal-rank-fusion literature uses and
+/// the one docling-rag used where the ledger's harvest pointer read it. It
+/// is compiled in rather than a request field: a caller who can tune the
+/// fusion constant is a caller who can make retrieval quality
+/// unreproducible, and two callers tuning it differently would be comparing
+/// rankings that are not comparable. Whether 60 suits this corpus is a
+/// measurement (M1), not a knob.
+const RRF_K: f64 = 60.0;
+
+/// The most candidates either source contributes, whatever the limit.
+///
+/// Every candidate that survives the fusion is joined back to `chunks` for
+/// its text, and a chunk's text is what it is, so the depth is what decides
+/// how much text is read to return a page of hits. A thousand is generous
+/// against a `MAX_PAGE` of a thousand and bounded enough that a caller
+/// cannot ask for ten thousand chunk bodies by asking for a thousand hits.
+const MAX_CANDIDATES: i64 = 1000;
+
+/// How many rows each source contributes before fusion.
+///
+/// Wider than `limit`, because fusion reorders. A chunk ranked eleventh by
+/// keyword and eleventh by vector fuses higher than one ranked first by
+/// keyword and nowhere by vector, and cutting each source at `limit` would
+/// have thrown it away before the fusion could find it. Ten times the
+/// requested limit, floored, and capped by [`MAX_CANDIDATES`].
+fn candidate_depth(limit: i64) -> i64 {
+    (limit.saturating_mul(10)).clamp(50, MAX_CANDIDATES)
+}
+
+/// What a graph's vectors are, and how much of it has them.
+struct Cohort {
+    model: String,
+    revision: String,
+    task: String,
+    /// Chunks in the slice being searched, and how many carry a vector. A
+    /// graph is often partly embedded, because a document over the
+    /// embedder's ceiling is chunked and not embedded (PRD D5), and a chunk
+    /// with no vector is invisible to the vector half. Reported, so a
+    /// `vector_rank` of null can be told from a chunk that had no vector to
+    /// be ranked by.
+    chunks: i64,
+    embedded: i64,
+}
+
+/// The cohort a graph's vectors belong to, or why there is no single one.
+///
+/// Read from the rows rather than from config, because the rows are what
+/// the vectors are in. R26 put these three columns there for this call.
+///
+/// Scoped by `kind` as well as by graph, because both halves of the fusion
+/// are. A graph whose documents are embedded at one task and whose files are
+/// embedded at another holds two cohorts, and a query naming one kind is
+/// asking about one of them: checking the whole graph would refuse a query
+/// that is perfectly answerable, and worse, a graph where only the
+/// unqueried kind is embedded would pass the check and then fuse against an
+/// empty vector half.
+async fn corpus_cohort(
+    s: &Exec<'_>,
+    graph: &str,
+    kind: Option<&String>,
+) -> Result<Cohort, VerbError> {
+    let coverage = s
+        .client()
+        .query_one(
+            "SELECT count(*), count(e.chunk_id)
+             FROM chunks c
+             JOIN nodes n ON n.id = c.node_id
+             JOIN graphs g ON g.id = n.graph_id
+             LEFT JOIN embeddings e ON e.chunk_id = c.id
+             WHERE g.name = $1 AND ($2::text IS NULL OR n.kind = $2)",
+            &[&graph, &kind],
+        )
+        .await
+        .map_err(db)?;
+    let rows = s
+        .client()
+        .query(
+            "SELECT DISTINCT e.model, e.model_revision, e.task
+             FROM embeddings e
+             JOIN chunks c ON c.id = e.chunk_id
+             JOIN nodes n ON n.id = c.node_id
+             JOIN graphs g ON g.id = n.graph_id
+             WHERE g.name = $1 AND ($2::text IS NULL OR n.kind = $2)
+             ORDER BY 1, 2, 3",
+            &[&graph, &kind],
+        )
+        .await
+        .map_err(db)?;
+    match rows.len() {
+        // Not a fallback to keyword ranking. A caller who asked for hybrid
+        // and silently got keyword has no way to learn that the vectors it
+        // was ranking against do not exist, which is the same reason spec
+        // 012 made this flag refuse rather than be ignored.
+        0 if coverage.get::<_, i64>(0) == 0 => Err(VerbError::NotFound(format!(
+            "graph {graph:?} has no chunks to rank{}. Ingest it, then ask again",
+            kind.map(|k| format!(" of kind {k:?}")).unwrap_or_default()
+        ))),
+        0 => Err(VerbError::NotFound(format!(
+            "graph {graph:?} has chunks and no embeddings, so there is nothing to rank \
+             against. Ingest it with embed: true, then ask again"
+        ))),
+        1 => Ok(Cohort {
+            model: rows[0].get(0),
+            revision: rows[0].get(1),
+            task: rows[0].get(2),
+            chunks: coverage.get(0),
+            embedded: coverage.get(1),
+        }),
+        n => {
+            let named: Vec<String> = rows
+                .iter()
+                .map(|row| {
+                    format!(
+                        "{} @ {} / {}",
+                        row.get::<_, String>(0),
+                        row.get::<_, String>(1),
+                        row.get::<_, String>(2)
+                    )
+                })
+                .collect();
+            Err(VerbError::InvalidArgs(format!(
+                "graph {graph:?} holds {n} embedding cohorts, and no one query vector is \
+                 comparable to all of them: {}. Re-ingest the graph under one cohort, or \
+                 query without hybrid",
+                named.join(", ")
+            )))
+        }
+    }
+}
+
+/// `query --hybrid`: reciprocal rank fusion over keyword and vector, in one
+/// statement (spec 023, PRD-embedder Phase 3).
+///
+/// The store PRD has claimed since it was drafted that "hybrid is one
+/// statement", against a reference whose search verb was four round trips
+/// plus a Rust loop. This is that claim made true or not: one statement,
+/// one round trip, two CTEs and a full outer join.
+///
+/// The query vector is computed here rather than accepted from the caller
+/// (PRD D7). A `vector` field on the request would be a way to reach vector
+/// search without calling `embed.text`, which is a side door around a verb
+/// and would falsify T3 the moment `embed.text` refused anything. It also
+/// makes the cohort check possible at all, since a caller-supplied vector
+/// carries no task.
+async fn hybrid(s: &Exec<'_>, r: &QueryRequest, limit: i64) -> Result<Value, VerbError> {
+    // Hybrid needs a graph, because a cohort is a property of one. Across
+    // an unscoped database there could be as many cohorts as graphs.
+    let Some(graph) = s.graph() else {
+        return Err(VerbError::InvalidArgs(
+            "hybrid ranking needs a graph, because the cohort its vectors belong to is a \
+             property of one. Scope the session or name a graph"
+                .into(),
+        ));
+    };
+    let cohort = corpus_cohort(s, graph, r.kind.as_ref()).await?;
+    let vector = crate::embed::query_vector_literal(
+        s,
+        &r.search_text,
+        &cohort.model,
+        &cohort.revision,
+        &cohort.task,
+    )
+    .await?;
+    let depth = candidate_depth(limit);
+
+    // `keyword` ranks by ts_rank_cd exactly as the non-hybrid path does, so
+    // the two modes cannot disagree about what a keyword match is worth.
+    // `vector` ranks by cosine distance.
+    //
+    // **The vector half does not use `embeddings_hnsw`, and M5 is why.** The
+    // graph filter reaches `embeddings` only through
+    // `chunks -> nodes -> graphs`, so the planner drives from the graph side
+    // and the vector index cannot supply the ordering. Every embedding in
+    // the graph is fetched and distances are computed over all of them.
+    // Measured on this cluster: 4.8 ms and 9,541 buffers over 1,275
+    // embedded chunks, against 0.28 ms and 368 buffers for the same nearest
+    // search with no graph filter, where the index does run. The ranking is
+    // exact, which brute force always is, and the cost is linear in the
+    // graph's embedding count. Fixing it wants a filter column on
+    // `embeddings`, which is a schema change and a re-ingest, so it is
+    // measured and named rather than smuggled into this spec. Both halves
+    // still order and limit inside a subquery, which is what lets the sort
+    // be a top-N heapsort rather than a full sort, and what the index would
+    // need if the filter ever reaches it.
+    //
+    // The full outer join keeps a chunk that appeared in only one source,
+    // which is the case fusion exists for, and COALESCE on the key is what
+    // makes the join's own row identity work.
+    // Each rank window orders by the key its subquery ordered on. An empty
+    // `OVER ()` numbers rows in whatever order they arrive, which happens
+    // to be the subquery's today and is not promised to be, and a rank is
+    // what the fusion score is built from, so it cannot rest on a plan
+    // detail. The re-sort is over at most `candidate_depth` rows.
+    let rows = s
+        .client()
+        .query(
+            "WITH keyword AS (
+                 SELECT chunk_id,
+                        row_number() OVER (ORDER BY score DESC, chunk_id) AS rank
+                 FROM (
+                     SELECT c.id AS chunk_id,
+                            ts_rank_cd(c.tsv, websearch_to_tsquery('english', $1)) AS score
+                     FROM chunks c
+                     JOIN nodes n ON n.id = c.node_id
+                     JOIN graphs g ON g.id = n.graph_id
+                     WHERE g.name = $2
+                       AND ($3::text IS NULL OR n.kind = $3)
+                       AND c.tsv @@ websearch_to_tsquery('english', $1)
+                     ORDER BY score DESC, c.id
+                     LIMIT $4
+                 ) ranked
+             ),
+             vector AS (
+                 SELECT chunk_id,
+                        row_number() OVER (ORDER BY distance, chunk_id) AS rank
+                 FROM (
+                     SELECT c.id AS chunk_id,
+                            e.vec <=> $5::text::halfvec AS distance
+                     FROM embeddings e
+                     JOIN chunks c ON c.id = e.chunk_id
+                     JOIN nodes n ON n.id = c.node_id
+                     JOIN graphs g ON g.id = n.graph_id
+                     WHERE g.name = $2
+                       AND ($3::text IS NULL OR n.kind = $3)
+                     ORDER BY distance, c.id
+                     LIMIT $4
+                 ) nearest
+             ),
+             fused AS (
+                 SELECT COALESCE(k.chunk_id, v.chunk_id) AS chunk_id,
+                        k.rank AS text_rank,
+                        v.rank AS vector_rank,
+                        -- Every cast is explicit. Left to inference,
+                        -- `1.0 / ($6 + k.rank)` makes Postgres want numeric
+                        -- for $6 where the client is sending float8, and
+                        -- the failure is a serialization error naming a
+                        -- parameter number rather than a type.
+                        COALESCE(1.0::float8 / ($6::float8 + k.rank::float8), 0::float8)
+                          + COALESCE(1.0::float8 / ($6::float8 + v.rank::float8), 0::float8)
+                          AS score
+                 FROM keyword k
+                 FULL OUTER JOIN vector v ON v.chunk_id = k.chunk_id
+             ),
+             -- The page is taken before the chunk bodies are joined, so a
+             -- deep candidate set does not cost a chunk body per candidate
+             -- to return a handful of hits.
+             top AS (
+                 SELECT chunk_id, text_rank, vector_rank, score
+                 FROM fused
+                 ORDER BY score DESC, chunk_id
+                 LIMIT $7
+             )
+             SELECT g.name, n.natural_key, n.kind, c.chunk_index, c.text,
+                    t.score, t.text_rank, t.vector_rank
+             FROM top t
+             JOIN chunks c ON c.id = t.chunk_id
+             JOIN nodes n ON n.id = c.node_id
+             JOIN graphs g ON g.id = n.graph_id
+             ORDER BY t.score DESC, n.natural_key, c.chunk_index",
+            &[
+                &r.search_text,
+                &graph,
+                &r.kind,
+                &depth,
+                &vector,
+                &RRF_K,
+                &limit,
+            ],
+        )
+        .await
+        .map_err(db)?;
+
+    Ok(json!({
+        "search_text": r.search_text,
+        "ranking": "hybrid",
+        // Which cohort answered, so a caller reading a surprising result can
+        // see what the ranking was against.
+        "cohort": {
+            "model": cohort.model,
+            "model_revision": cohort.revision,
+            "corpus_task": cohort.task,
+            "query_task": crate::embed::query_task_for(&cohort.task),
+        },
+        // How much of the slice the vector half could see. When `embedded`
+        // is short of `chunks`, some chunk's `vector_rank` is null because
+        // it has no vector rather than because it ranked below the
+        // candidate depth, and the two are otherwise indistinguishable.
+        "coverage": {
+            "chunks": cohort.chunks,
+            "embedded": cohort.embedded,
+        },
+        // `candidate_depth` is the LIMIT each source was given before the
+        // fusion, so a reader can tell a chunk that ranked below it from one
+        // that was never a candidate. Nothing here sets `hnsw.ef_search`: the
+        // vector half does not reach the index at all (M5), so a setting for
+        // a plan this query cannot produce would be a claim the code does
+        // not honor.
+        "fusion": { "method": "rrf", "k": RRF_K, "candidate_depth": depth },
+        "hits": rows.iter().map(|row| json!({
+            "graph": row.get::<_, String>(0),
+            "key": row.get::<_, String>(1),
+            "kind": row.get::<_, String>(2),
+            "chunk_index": row.get::<_, i32>(3),
+            "text": row.get::<_, String>(4),
+            "rank": row.get::<_, f64>(5),
+            // Absent when the chunk appeared in only one source, which is
+            // the thing worth being able to see in a fused result.
+            "text_rank": row.get::<_, Option<i64>>(6),
+            "vector_rank": row.get::<_, Option<i64>>(7),
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// EC-3: fusion reorders, so each source has to contribute more rows
+    /// than the caller asked for. A chunk ranked eleventh in each source
+    /// fuses above one ranked first in a single source, and cutting each
+    /// source at `limit` would throw it away before the fusion could find
+    /// it. Observed on the real corpus: a chunk at keyword rank 22 and
+    /// vector rank 10 landed sixth in a fused top six.
+    #[test]
+    fn candidates_are_wider_than_the_limit_because_fusion_reorders() {
+        for limit in [1i64, 5, 10, 20] {
+            assert!(
+                candidate_depth(limit) > limit,
+                "limit {limit} takes a wider slice, got {}",
+                candidate_depth(limit)
+            );
+        }
+        // Floored, so a limit of 1 still has something to fuse.
+        assert_eq!(candidate_depth(1), 50);
+        // Capped, because every candidate costs a chunk body at the end.
+        assert_eq!(candidate_depth(i64::from(MAX_PAGE)), MAX_CANDIDATES);
+        // And no overflow at the edge, which `saturating_mul` is for.
+        assert_eq!(candidate_depth(i64::MAX), MAX_CANDIDATES);
+    }
+
+    /// FR9: the fusion constant is compiled in. A test that reads it is the
+    /// cheapest guard against it quietly becoming configurable.
+    #[test]
+    fn the_fusion_constant_is_the_literature_value() {
+        assert_eq!(RRF_K, 60.0);
+    }
 }

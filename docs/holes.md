@@ -14,8 +14,11 @@ named by the kernel. The resumption's driver is a semantic KG over the
 WeaverTools codebase, and the boundary is ruled (D9): Yeomna is an
 external RAG appliance whose **first caller is Claude Code itself**,
 using the graph as the RAG for building these projects, with weaver
-agents and buyers behind it. What remains on R21's order: hybrid query,
-then the WeaverTools KG stand-up last. **The severance is complete**: R19b and R20 closed the
+agents and buyers behind it. What remains on R21's order: **the WeaverTools KG stand-up alone**,
+which is last by Todd's order because it touches their repository and
+their deployment. Hybrid query is built (spec 023), which retires the
+last refusal in the verb layer that named a capability rather than a
+future era. **The severance is complete**: R19b and R20 closed the
 last two held drafts unmerged (branches kept as records), so nothing
 of the reference remains in flight.
 The hole-mapping step of the severance sequence
@@ -119,7 +122,7 @@ carries the wire, `services/embedder/` holds the model, and
 | Late chunking | **wired, for the first time in this code or the reference's.** Both ingest paths encode a document in one pass and take the boundaries from that pass, so chunk vectors are conditioned on the document around them. The reference specified this and never built it |
 | The seal | three layers on the unit. `PrivateNetwork=yes` makes the `requests` import in the model's own cached code inert for want of a namespace, `RestrictAddressFamilies=AF_UNIX`, and the offline variables so a reach for the network fails on a variable and says so. `MemoryDenyWriteExecute` and `PrivateDevices` are omitted with reasons, because CUDA needs both |
 | The TCP default | **deleted, not moved** (PRD D10). Charter 5.1 makes local embedding a requirement rather than a configuration default, and a requirement a config key can turn off is a preference. `EmbeddingEndpoint` carries a path and has no variant a URL fits in, `parse_endpoint` refuses `http://` naming the charter, and the test that pinned the default now pins its absence |
-| The ceiling, measured | **16,384 tokens, and the model's advertised 32k does not fit on GPU 2.** 8,631 tokens peaked at 11.48 GiB of 16, with 7.5 to 8 GiB of that being weights. A document above it is **refused, never truncated** (PRD D5), counted, and named, because truncation would drop a document's tail out of vector search while leaving it in keyword search with nothing saying so. `read::health`'s `chunks_without_embeddings` already reports the gap |
+| The ceiling, measured | **16,384 tokens, and the model's advertised 32k does not fit on GPU 2.** 8,631 tokens peaked at 11.48 GiB of 16, with 7.5 to 8 GiB of that being weights. A document above it is **refused, never truncated** (PRD D5), counted, and named, because truncation would drop a document's tail out of vector search while leaving it in keyword search with nothing saying so. `orient` reports the gap per graph, chunks against embeddings, which is the one to reach for: `read::health` counts `chunks_without_embeddings` across the whole database and so cannot say which graph is short |
 | The defect found on the way | `insert_embedding` read the model out of the parent node's payload and counted a missing one in `errors`. The document path wrote `embedding_model` and the codebase path never did, and the live ingest path discarded `errors` for chunks and embeddings while keeping it for edges. So the first codebase ingest with embedding on would have run the GPU, produced correct vectors, rejected every one, and reported `embeddings_written: 0` with success. The cohort rides the embedding document now (R26) and a rejection stops the run |
 | The test double | `HashEmbedder`, the harvest pointer read from docling-rag and not adopted from it. Deterministic unit vectors by hash, the same windowing rule, real byte spans, and a model name that says `yeomna-test` so a store holding its rows says so. Every embedding test but the model's own runs with no GPU |
 | CLI holes it filled | 6 (`embed` tree) |
@@ -357,6 +360,36 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R26 | The cohort rides the embeddings row | **Proposed in spec 022, implemented as proposed.** `embeddings` gains `model_revision` and `task`, both `NOT NULL`, and SCHEMA_VERSION goes to 1.3.0. `model` and `model_hash` identify the weights by name, and the same name at another revision or under another LoRA adapter is a different geometry that nothing else would notice: a corpus embedded at `text-matching` and queried at `retrieval.query` returns plausible nonsense rather than an error. The provenance also moved onto the embedding document, out of the parent node's payload, which is what made the silent-drop defect possible. Cost is a drop, a re-apply, a template re-stamp, and a re-ingest, which under T4 is what schema changes cost here and is why they are affordable |
 | R27 | The embedder backend is Python behind the contract | **Proposed in spec 022, implemented as proposed.** jina-v4 ships custom modeling code, a Qwen2.5-VL backbone, and LoRA adapters selected per task, so reimplementing it in Candle is new construction whose only deliverable is the same vectors, and inherit-do-not-author points the other way. The service is replaceable because the contract is narrow: three operations, one of which exists only for a test. Recorded cost: Python in the box is a supply chain, seven packages and a committed lockfile, and `PrivateNetwork=yes` is what makes that supply chain unable to act at run time. The HTTP server is the standard library, because fastapi and uvicorn would be four more packages for a service the GPU already serializes |
 | R28 | Does the `code` task need a query and passage split | **Open, raised by spec 022's build.** The model's snapshot fixes two prompt prefixes and forces the query one for `text-matching` whatever it is asked. For `code` it fixes nothing, so the service uses the query prompt for both halves and says so. Whether that is right is a retrieval-quality question about whether ingested code is a passage: if it is, the contract grows `code.passage` and `code.query`, the pairing table gains one line, and every code corpus embedded under the old answer is a re-ingest away from the new one. Cheap to hold open, because R26 put the task on every embeddings row, so whichever way it is ruled a reader can tell which corpora were embedded under which answer |
+
+## Two open items that spec 023 opened
+
+**M5. Hybrid fusion does not use the vector index.** Measured 2026-09-10,
+reported at `docs/measurements/M5-hybrid-fusion-and-the-unused-index.md`.
+The ranking is exact and the cost is linear in the graph's embedding
+count. `embeddings` carries no column the graph filter can be expressed
+in, so the planner drives from the graph side and the vector index cannot
+supply the ordering, and forcing every alternative plan off still does not
+produce an index scan. Measured at 4.8 ms and 9,541 buffers over 1,275
+embedded chunks, against 0.28 ms and 368 buffers for the same nearest
+search with no graph filter, where the index does run. The fix is a
+`graph_id` on `embeddings` plus `hnsw.ef_search` and
+`hnsw.iterative_scan`, which is a schema version and a re-ingest, so it
+wants its own spec. **The charter's own comparison is what makes this
+worth naming**: `halfvec` is mandatory because `vector(2048)` refuses an
+HNSW index, and an index nothing reaches is the same outcome by a
+different route.
+
+**The editorial backlog.** The rules in the charter's header have been
+binding since the charter and were being checked by hand. A mechanical
+scan was written during spec 023, run, and taken back out: it found **125
+violations across 27 files**, nearly all of them em-dashes and arrows in
+doc comments on the crates lifted from the reference, plus three uses of
+a banned word. The scan belongs in the tree and the sweep belongs in its
+own commit, because 125 mechanical edits are reviewable as a sweep and
+unreviewable underneath a feature. `crates/yeomna-verbs/tests/message_lint.rs`
+carries the half that did land, which catches a message whose line
+continuation collapsed, and its header records why the other half is not
+there yet.
 
 ## The fill order, as the dependencies read
 

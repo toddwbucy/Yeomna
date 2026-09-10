@@ -18,6 +18,8 @@
 
 use std::future::Future;
 
+use yeomna_chunking::TextChunk;
+
 use sha2::{Digest, Sha256};
 use yeomna_embed::embedding::{
     ChunkPolicy, EmbeddedChunk, EmbeddingClient, EmbeddingError, REQUIRED_DIMENSION,
@@ -256,6 +258,46 @@ impl Embedder for HashEmbedder {
             })
             .collect())
     }
+}
+
+/// Turn a document's late chunks into `TextChunk`s and their vectors.
+///
+/// The one place the span contract is enforced. A chunk carries a byte span
+/// into the caller's own text, and slicing by it is what proves the
+/// service's character-to-byte conversion and its prefix rebase were right,
+/// which is the seam the spike found a defect in. Both ingest paths and the
+/// orchestrator called this shape, and three copies of a subtle check is
+/// how the three drift.
+///
+/// The error is a `String` so each caller maps it into its own type: the
+/// document path counts it as one file's refusal and carries on, the
+/// codebase path fails the run.
+pub fn late_pieces(
+    text: &str,
+    late: Vec<EmbeddedChunk>,
+    label: &str,
+) -> Result<(Vec<TextChunk>, Vec<Vec<f32>>), String> {
+    let total = late.len();
+    let mut chunks = Vec::with_capacity(total);
+    let mut vectors = Vec::with_capacity(total);
+    for (i, c) in late.into_iter().enumerate() {
+        let slice = c.slice(text).ok_or_else(|| {
+            format!(
+                "{label}: chunk {i} spans bytes {}..{} which do not slice the text. \
+                 The embedder's offset conversion is wrong",
+                c.start_byte, c.end_byte
+            )
+        })?;
+        chunks.push(TextChunk {
+            text: slice.to_string(),
+            start_char: c.start_byte,
+            end_char: c.end_byte,
+            chunk_index: i,
+            total_chunks: total,
+        });
+        vectors.push(c.vector);
+    }
+    Ok((chunks, vectors))
 }
 
 #[cfg(test)]

@@ -36,6 +36,11 @@ RestrictAddressFamilies=AF_UNIX
 Environment=HF_HUB_OFFLINE=1
 Environment=TRANSFORMERS_OFFLINE=1
 Environment=HF_HOME=/home/todd/.cache/huggingface
+# This path and the appliance's `socket_dir` have to agree, because the
+# client derives `{socket_dir}/embedder.sock` when the config names no
+# `embedder_socket`. They agree here and in `docs/yeomna.toml.example`,
+# each for its own deployment. An operator who moves `socket_dir` moves
+# this line with it, or sets `embedder_socket` explicitly.
 Environment=YEOMNA_EMBEDDER_SOCKET=/home/todd/.local/share/yeomna/run/embedder.sock
 Environment=YEOMNA_EMBEDDER_DEVICE=cuda:2
 Environment=YEOMNA_EMBEDDER_MAX_TOKENS=16384
@@ -61,6 +66,13 @@ ProtectSystem=strict
 # cache and this service must be able to read them and unable to add to
 # them.
 ProtectHome=read-only
+# The socket directory is a deployment prerequisite rather than something
+# anything here creates, and it is refused twice over. systemd fails the
+# unit when a ReadWritePaths target does not exist, and the service
+# refuses to start on a missing socket directory by contract, because a
+# service that creates its own can create it in the wrong place. An
+# ExecStartPre could not make it either: ProtectHome is read-only and the
+# parent is outside ReadWritePaths.
 ReadWritePaths=/home/todd/.local/share/yeomna/run
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

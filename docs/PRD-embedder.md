@@ -428,8 +428,8 @@ The alternative, silent truncation, is rejected by D5.
 
 ### Phase 3: Hybrid query
 
-Its own spec, and the tenth item of R21's order. Recorded here because
-this is the PRD that supplies its vector.
+**Built, spec 023.** The tenth item of R21's order, and this is the PRD
+that supplies its vector.
 
 RRF over two sources in one statement, which is the store PRD's binding
 constraint: "The reference's search verb is four round trips plus a Rust
@@ -440,9 +440,21 @@ field, because a caller who can tune the fusion constant is a caller who
 can make retrieval quality unreproducible.
 
 The query vector is computed inside the verb through the session's
-embedder handle, at `retrieval.query`, against a corpus the verb first
-checks was embedded at `retrieval.passage`. It is not accepted from the
+embedder handle, at the task that **pairs** with the corpus's, which the
+verb reads off the rows rather than assuming. It is not accepted from the
 caller. See D7.
+
+Three things the build settled that this paragraph did not anticipate.
+The cohort check has three outcomes rather than one, and they are
+different problems: no embeddings is a `not-found` naming what would fix
+it, more than one cohort is an `invalid-args` naming them, and one cohort
+is the answer. Hybrid needs a graph, because a cohort is a property of one
+and an unscoped database could hold as many cohorts as graphs. And each
+source contributes ten times the requested limit before fusion, because
+fusion reorders: observed on the WeaverTools corpus, a chunk at keyword
+rank 22 and vector rank 10 landed sixth in a fused top six, and cutting
+each source at the limit would have discarded it before the fusion could
+find it.
 
 ### Phase 4: Deferred, and named so it is not discovered
 

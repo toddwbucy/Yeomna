@@ -14,6 +14,14 @@
 //!
 //! SQL is exempt. Statement text is indented inside its literal on
 //! purpose, and it is not prose a person reads as a sentence.
+//!
+//! **The editorial rules are not checked here, and they should be.** They are
+//! just as mechanical, and a banned word reached a comment in this very
+//! branch. A scan for them was written, run, and taken back out: it found 125
+//! violations across 27 files, nearly all of them em-dashes and arrows in
+//! doc comments on the crates lifted from the reference. That sweep is
+//! reviewable as a sweep and unreviewable underneath a retrieval feature, so
+//! it is recorded in the holes ledger and left for its own commit.
 
 use std::path::{Path, PathBuf};
 
@@ -136,9 +144,19 @@ fn literals(text: &str) -> Vec<(usize, String)> {
                 continue;
             }
         }
-        // A char literal, so `'"'` does not open a string.
+        // A char literal, in both spellings a quote can take. `'"'` is the
+        // usual one and `'\\"'` is legal too, and either would otherwise
+        // open a string that swallows the rest of the file.
         if c == '\'' && bytes.get(i + 1) == Some(&'"') && bytes.get(i + 2) == Some(&'\'') {
             i += 3;
+            continue;
+        }
+        if c == '\''
+            && bytes.get(i + 1) == Some(&'\\')
+            && bytes.get(i + 2) == Some(&'"')
+            && bytes.get(i + 3) == Some(&'\'')
+        {
+            i += 4;
             continue;
         }
         if c != '"' {
@@ -379,11 +397,17 @@ fn the_lint_catches_a_planted_collapse() {
     assert!(has_collapsed_run(&after[0].1), "{:?}", after[0].1);
     assert_eq!(after[0].0, 2, "and its line number survived the comment");
 
-    // A char literal holding a quote does not either.
+    // A char literal holding a quote does not either, in either spelling.
     let charred = literals("if c == '\"' { } let a = \"real\";");
     assert_eq!(
         charred.iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(),
         vec!["real".to_string()]
+    );
+    let escaped = literals(r#"if c == '\"' { } let a = "real";"#);
+    assert_eq!(
+        escaped.iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(),
+        vec!["real".to_string()],
+        "the escaped spelling must not open a string either"
     );
     // The line number is where the literal opened.
     let numbered = literals("fn a() {}\nfn b() {}\nlet m = \"here\";");

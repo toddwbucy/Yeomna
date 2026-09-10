@@ -64,3 +64,141 @@ pub(crate) async fn text(s: &Exec<'_>, r: &EmbedTextRequest) -> Result<Value, Ve
         "vector": vector,
     }))
 }
+
+/// Which query task pairs with which corpus task (spec 023).
+///
+/// A document and a search for it are asymmetric, which is why
+/// `retrieval.passage` and `retrieval.query` exist as a pair. Embedding a
+/// query the way the corpus was embedded produces a ranking that is
+/// plausible and worse, with nothing in the result saying so, so the
+/// pairing is read from the corpus rather than assumed.
+///
+/// `text-matching` is symmetric by construction: the model forces the query
+/// prompt for it whatever it is asked, so both halves are the same name.
+///
+/// **`code` is provisional and R28 is the open question.** The model's
+/// snapshot fixes no passage prompt for it, so the service uses the query
+/// prompt for both halves and this table says the same. If `code` turns out
+/// to be asymmetric, the contract grows `code.passage` and `code.query`,
+/// this table gains one line, and every code corpus embedded under the old
+/// answer is a re-ingest away from the new one. R26's `task` column is what
+/// makes those corpora identifiable.
+pub(crate) fn query_task_for(corpus_task: &str) -> Option<&'static str> {
+    match corpus_task {
+        "retrieval.passage" => Some("retrieval.query"),
+        "retrieval.query" => Some("retrieval.query"),
+        "text-matching" => Some("text-matching"),
+        "code" => Some("code"),
+        _ => None,
+    }
+}
+
+/// Embed a search string as a query against a corpus embedded at
+/// `corpus_task`, and return the vector as the literal the store's
+/// `halfvec` cast takes.
+///
+/// The literal rather than the floats, because that is the only shape a
+/// vector crosses into SQL in here (the sink does the same), and building
+/// it in one place means the hybrid statement cannot get the format wrong
+/// in a second one.
+pub(crate) async fn query_vector_literal(
+    s: &Exec<'_>,
+    search_text: &str,
+    corpus_model: &str,
+    corpus_revision: &str,
+    corpus_task: &str,
+) -> Result<String, VerbError> {
+    let Some(task) = query_task_for(corpus_task) else {
+        return Err(VerbError::Internal(format!(
+            "the corpus was embedded at task {corpus_task:?}, which this appliance has no query \
+             pairing for. Nothing can be ranked against it"
+        )));
+    };
+    let client = s.embedder().await?;
+    let info = client.info();
+    if !info.loaded {
+        return Err(VerbError::Internal(format!(
+            "the embedder at {} is still loading its weights. Ask again in a moment",
+            client.endpoint()
+        )));
+    }
+    // A cohort is three things, and checking one of them is checking none.
+    // The corpus records its model and its revision beside its task (R26)
+    // for exactly this comparison: a query embedded by another model, or by
+    // another snapshot of the same model, lands in a different geometry and
+    // ranks the corpus into plausible nonsense with nothing in the result
+    // saying so. The service is swappable and the weights are pinned by
+    // configuration, so this is a state an operator can reach by restarting
+    // one unit.
+    if info.model != corpus_model || info.model_revision != corpus_revision {
+        return Err(VerbError::Internal(format!(
+            "the corpus was embedded by {corpus_model} at {corpus_revision} and the embedder is \
+             serving {} at {}. A query vector from another cohort ranks this corpus into \
+             plausible nonsense, so it is refused. Re-ingest the graph under the running model, \
+             or query without hybrid",
+            info.model, info.model_revision
+        )));
+    }
+    if !info.tasks.iter().any(|t| t == task) {
+        return Err(VerbError::Internal(format!(
+            "the corpus wants a {task:?} query and the embedder serves {}",
+            info.tasks.join(", ")
+        )));
+    }
+    let vector = client
+        .embed_one(search_text, task)
+        .await
+        .map_err(|e| match e.code() {
+            Some("input-too-large") | Some("invalid-request") => {
+                VerbError::InvalidArgs(e.to_string())
+            }
+            _ => VerbError::Internal(e.to_string()),
+        })?;
+    let mut literal = String::with_capacity(vector.len() * 12 + 2);
+    literal.push('[');
+    for (i, v) in vector.iter().enumerate() {
+        if i > 0 {
+            literal.push(',');
+        }
+        literal.push_str(&v.to_string());
+    }
+    literal.push(']');
+    Ok(literal)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// EC-5: the pairing, which is what makes a query comparable to a
+    /// corpus. A wrong pairing is the failure mode with no symptom: the
+    /// vectors are plausible, the ranking is quietly worse, and nothing
+    /// errors.
+    #[test]
+    fn every_task_the_embedder_serves_has_a_query_pairing() {
+        // The corpus half of the asymmetric pair takes the query half.
+        assert_eq!(query_task_for("retrieval.passage"), Some("retrieval.query"));
+        // A corpus embedded as queries is odd and still answerable.
+        assert_eq!(query_task_for("retrieval.query"), Some("retrieval.query"));
+        // Symmetric by construction: the model forces the query prompt for
+        // this one whatever it is asked, so both halves are one name.
+        assert_eq!(query_task_for("text-matching"), Some("text-matching"));
+        // R28's provisional answer. If code turns out to be asymmetric this
+        // line changes and the contract grows code.passage and code.query.
+        assert_eq!(query_task_for("code"), Some("code"));
+        // Anything else has no pairing, which is a refusal rather than a
+        // guess, because guessing produces a ranking that looks fine.
+        for unknown in ["retrieval", "classification", "", "Retrieval.Passage"] {
+            assert_eq!(query_task_for(unknown), None, "{unknown:?}");
+        }
+    }
+
+    /// The default a bare `embed.text` gets is the query half, not the
+    /// corpus half. A query embedded as a passage is the silent failure the
+    /// reference's own contract warned about.
+    #[test]
+    fn the_default_task_is_a_query() {
+        assert_eq!(DEFAULT_TASK, "retrieval.query");
+        assert_eq!(query_task_for("retrieval.passage"), Some(DEFAULT_TASK));
+    }
+}
