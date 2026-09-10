@@ -11,7 +11,7 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and review notes alongside each.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, eleven crates, 446 tests, plus one Python service
+`rust-toolchain.toml`, eleven crates, 460 tests, plus one Python service
 at `services/embedder/`. **The count is every test the workspace
 defines, and the gate is run with the cluster and the embedder up.**
 Cluster-gated and service-gated tests pass by returning early with a
