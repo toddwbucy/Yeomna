@@ -953,7 +953,7 @@ async fn semantic_lsp_pass<S: IngestSink + IngestProbe>(
                 warn!(
                     path,
                     root = %root.display(),
-                    "extractor returned a path outside the ingest root, so its                      symbol keys will not match the structural pass"
+                    "extractor returned a path outside the ingest root, so its symbol keys will not match the structural pass"
                 );
                 path
             }

@@ -469,7 +469,7 @@ pub async fn query(s: &Exec<'_>, r: &QueryRequest) -> Result<Value, VerbError> {
         // accepted from the caller (D7). Naming a closed hole would send a
         // caller looking in the wrong place.
         return Err(VerbError::Unimplemented(
-            "hybrid ranking needs the RRF fusion, PRD-embedder Phase 3.              The embedder is here, the fusion is not. Ask again without it"
+            "hybrid ranking needs the RRF fusion, PRD-embedder Phase 3. The embedder is here, the fusion is not. Ask again without it"
                 .into(),
         ));
     }
