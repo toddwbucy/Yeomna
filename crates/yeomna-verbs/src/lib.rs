@@ -21,6 +21,7 @@
 pub mod actor;
 mod audit;
 mod database;
+mod embed;
 mod envelope;
 mod error;
 mod execute;

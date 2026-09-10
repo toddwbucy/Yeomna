@@ -12,9 +12,11 @@
 
 use serde_json::Value;
 use tokio_postgres::Client;
+use yeomna_embed::embedding::EmbeddingClient;
 
 use crate::audit;
 use crate::database;
+use crate::embed;
 use crate::envelope::{Envelope, envelope, error_envelope};
 use crate::error::VerbError;
 use crate::graph;
@@ -40,6 +42,14 @@ pub struct Session {
     /// connection (`sql` reaches its target database directly). A session
     /// built without it refuses that verb rather than guessing.
     endpoint: Option<(String, u16)>,
+    /// Where the in-box embedder answers, when this session was told.
+    /// A path rather than a live client: `EmbeddingClient::connect` asks
+    /// the service what it is, so holding one would make opening a
+    /// session fail whenever the embedder was down, and every verb but a
+    /// handful has no use for it. The verbs that do connect per call, the
+    /// same way `sql` and the ingesting verbs open their own connection
+    /// (R17).
+    embedder: Option<String>,
     /// Set when an escalation begins, cleared only when RESET ROLE
     /// completes. A cancelled or failed reset leaves it set, and a set
     /// flag retires the session: refusing every further call is the
@@ -58,6 +68,7 @@ pub(crate) struct Exec<'a> {
     client: &'a Client,
     actor: &'a str,
     graph: Option<&'a str>,
+    embedder: Option<&'a str>,
     escalated: &'a std::sync::atomic::AtomicBool,
 }
 
@@ -70,6 +81,28 @@ impl Exec<'_> {
     /// The session's graph, if it has one.
     pub(crate) fn graph(&self) -> Option<&str> {
         self.graph
+    }
+
+    /// Connect to the embedder, or say why not.
+    ///
+    /// Per call rather than per session, so a session opens whether or
+    /// not the service is up and only the verbs that need vectors care.
+    /// Both refusals are `Internal` because a caller asking for an
+    /// embedding is asking for something the appliance advertises, and
+    /// its own service being absent is not the caller's mistake.
+    pub(crate) async fn embedder(&self) -> Result<EmbeddingClient, VerbError> {
+        let Some(path) = self.embedder else {
+            return Err(VerbError::Internal(
+                "this session was built without an embedder socket, so nothing here can \
+                 produce a vector. Set embedder_socket in the config file"
+                    .into(),
+            ));
+        };
+        EmbeddingClient::connect_configured(path)
+            .await
+            .map_err(|e| {
+                VerbError::Internal(format!("the embedder at {path:?} did not answer: {e}"))
+            })
     }
 
     /// Who this session calls as. Reported by `status` so a caller can
@@ -123,6 +156,7 @@ impl Session {
             actor: actor.into(),
             graph: None,
             endpoint: None,
+            embedder: None,
             escalated: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -143,6 +177,15 @@ impl Session {
         self
     }
 
+    /// Tell the session where the in-box embedder answers, so the verbs
+    /// that need a vector can reach it (spec 022). Absent, `embed.text`
+    /// and hybrid ranking fail with an error naming the config key rather
+    /// than pretending to have embedded something.
+    pub fn with_embedder(mut self, socket: impl Into<String>) -> Self {
+        self.embedder = Some(socket.into());
+        self
+    }
+
     /// Where this cluster answers, for the verbs that open their own
     /// connection: `sql` reaches another database, and the ingesting
     /// verbs need a client the call lock is not holding.
@@ -157,6 +200,7 @@ impl Session {
             client,
             actor: &self.actor,
             graph: self.graph.as_deref(),
+            embedder: self.embedder.as_deref(),
             escalated: &self.escalated,
         }
     }
@@ -256,7 +300,7 @@ impl Session {
                 Err(unimplemented_in("the schema manager, H7", verb))
             }
 
-            Verb::EmbedText(_) => Err(unimplemented_in("the embedder, H4", verb)),
+            Verb::EmbedText(r) => embed::text(&self.exec(client), r).await,
 
             Verb::GraphEmbedEmbed(_) | Verb::GraphEmbedNeighbors(_) | Verb::GraphEmbedUpdate(_) => {
                 Err(unimplemented_in("the graph-embed era, H9", verb))

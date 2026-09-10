@@ -459,6 +459,22 @@ pub struct IngestRequest {
     pub graph: String,
     #[serde(default)]
     pub overwrite: bool,
+    /// Embed the chunks as they land (spec 022).
+    ///
+    /// Off by default. The embedder is a separate service on one GPU, a
+    /// graph without vectors is still a graph and still searchable by
+    /// keyword, and an ingest that quietly needed a service the operator
+    /// had not started would be a worse default than one that has to be
+    /// asked. When it is asked for and the embedder is unreachable the run
+    /// fails before writing a chunk, rather than leaving text in the store
+    /// with no vectors beside it (spec 011 EC-4).
+    #[serde(default)]
+    pub embed: bool,
+    /// The task to embed at, which becomes `embeddings.task` and is the
+    /// corpus half of the pairing a query has to match (R26). Absent means
+    /// `retrieval.passage`, which is what a corpus is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embed_task: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

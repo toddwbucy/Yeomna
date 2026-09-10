@@ -27,6 +27,10 @@ pub struct Settings {
     pub port: u16,
     pub database: String,
     pub graph: Option<String>,
+    /// Where the in-box embedder listens (spec 022). Handed to every
+    /// session, which connects per call rather than holding a client, so
+    /// the daemon still serves when the embedder is down.
+    pub embedder_socket: String,
 }
 
 /// Bind the socket, with the mode the appliance model wants.
@@ -113,7 +117,8 @@ async fn connection(mut stream: UnixStream, settings: Settings) -> Result<(), Fr
     {
         Ok(client) => {
             let mut s = Session::new(client, who.clone())
-                .with_endpoint(settings.socket_dir.clone(), settings.port);
+                .with_endpoint(settings.socket_dir.clone(), settings.port)
+                .with_embedder(settings.embedder_socket.clone());
             if let Some(g) = settings.graph.clone() {
                 s = s.with_graph(g);
             }

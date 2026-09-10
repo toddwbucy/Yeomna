@@ -15,6 +15,7 @@
 pub mod codebase;
 pub mod document_graph;
 pub mod documents;
+pub mod embed;
 pub mod extract;
 mod orchestrator;
 pub mod probe;
@@ -25,6 +26,7 @@ pub use codebase::{CodebaseConfig, CodebaseSummary, DriftSummary, drift, ingest_
 pub use documents::{
     ConformsSummary, DocumentsConfig, DocumentsSummary, ingest_documents, link_conforms,
 };
+pub use embed::{Embedder, EmbedderIdentity, HashEmbedder, embed_one};
 pub use extract::{ExtractError, Extractor, NativeExtractor};
 pub use orchestrator::{DocumentResult, Pipeline, PipelineConfig, PipelineError, PipelineSummary};
 pub use probe::IngestProbe;

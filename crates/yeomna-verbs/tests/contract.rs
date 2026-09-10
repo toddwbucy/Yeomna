@@ -133,11 +133,15 @@ fn all_examples() -> Vec<Verb> {
             path: "/corpus".into(),
             graph: "yeomna".into(),
             overwrite: true,
+            embed: false,
+            embed_task: None,
         }),
         Verb::CodebaseIngest(IngestRequest {
             path: "/repo".into(),
             graph: "yeomna".into(),
             overwrite: false,
+            embed: false,
+            embed_task: None,
         }),
         Verb::CodebaseRetire(RetireRequest {
             graph: "yeomna".into(),

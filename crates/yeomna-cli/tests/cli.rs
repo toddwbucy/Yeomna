@@ -346,6 +346,7 @@ async fn the_daemon_transport_answers_like_the_embedded_one() {
             port: PORT,
             database: "yeomna".to_string(),
             graph: None,
+            embedder_socket: sockets.path().join("embedder.sock").display().to_string(),
         },
     ));
 

@@ -208,7 +208,8 @@ async fn embedded(verb: Verb, graph: Option<String>, raw_json: bool) -> ExitCode
     };
 
     let mut session = Session::new(client, actor::from_kernel())
-        .with_endpoint(config.socket_dir.clone(), config.port);
+        .with_endpoint(config.socket_dir.clone(), config.port)
+        .with_embedder(config.embedder_socket());
     if let Some(g) = graph.or(config.graph) {
         session = session.with_graph(g);
     }

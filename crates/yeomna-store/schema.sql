@@ -64,12 +64,27 @@ CREATE INDEX IF NOT EXISTS chunks_symbols_gin ON chunks USING gin (symbol_ids);
 -- Embeddings. halfvec(2048) is mandatory, not preferred: measured on this
 -- cluster, vector(2048) refuses HNSW. model_hash pairs with
 -- yeomna_keys::model_hash for staleness detection.
+--
+-- Four columns name the cohort and all four are load-bearing (1.3.0,
+-- spec 022, R26). model names the weights. model_revision names which
+-- snapshot of them, because the same name at a different revision is a
+-- different geometry and nothing else here would notice. task names the
+-- LoRA adapter and prompt, because jina-v4 under 'code' and under
+-- 'text-matching' produces incomparable vectors that share a model name,
+-- and querying a 'text-matching' corpus with a 'retrieval.query' vector
+-- returns plausible nonsense rather than an error. With the columns the
+-- comparability check is available to any reader of the row.
 CREATE TABLE IF NOT EXISTS embeddings (
-    chunk_id   bigint PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
-    vec        halfvec(2048) NOT NULL,
-    model      text NOT NULL,
-    model_hash text NOT NULL
+    chunk_id       bigint PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
+    vec            halfvec(2048) NOT NULL,
+    model          text NOT NULL,
+    model_hash     text NOT NULL,
+    model_revision text NOT NULL,
+    task           text NOT NULL
 );
+-- One row per (model, revision, task) present, which is what a query has
+-- to check before it fuses vector ranking into a result.
+CREATE INDEX IF NOT EXISTS embeddings_cohort ON embeddings (model, model_revision, task);
 CREATE INDEX IF NOT EXISTS embeddings_hnsw ON embeddings
     USING hnsw (vec halfvec_cosine_ops);
 

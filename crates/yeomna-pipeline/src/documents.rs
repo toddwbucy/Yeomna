@@ -20,14 +20,16 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 
-use yeomna_chunking::ChunkingStrategy;
+use yeomna_chunking::{ChunkingStrategy, TextChunk};
 use yeomna_code::Language;
+use yeomna_embed::embedding::EmbeddingError;
 use yeomna_embed::extraction::ExtractOptions;
 use yeomna_keys as keys;
 
 use crate::document_graph::{GraphEdge, GraphNode, parse_graph_blocks, scan_conforms};
+use crate::embed::Embedder;
 use crate::extract::Extractor;
-use crate::orchestrator::{PipelineError, chunk_doc};
+use crate::orchestrator::{PipelineError, chunk_doc, embedding_doc};
 use crate::probe::IngestProbe;
 use crate::profile;
 use crate::sink::IngestSink;
@@ -54,6 +56,13 @@ pub struct DocumentsConfig {
     /// The extensions the walk offers to the extractor, without dots.
     /// Spec 015 fixes this at Markdown.
     pub extensions: Vec<String>,
+    /// Embed the chunks as they land (spec 022). Off by default, for the
+    /// reasons `IngestRequest::embed` gives.
+    pub embed: bool,
+    /// The task to embed at, which becomes `embeddings.task` (R26).
+    pub embed_task: String,
+    /// Where the late-chunk boundaries fall, in tokens.
+    pub chunking: yeomna_embed::embedding::ChunkPolicy,
 }
 
 impl Default for DocumentsConfig {
@@ -61,6 +70,9 @@ impl Default for DocumentsConfig {
         Self {
             overwrite: true,
             max_file_bytes: 1024 * 1024,
+            embed: false,
+            embed_task: "retrieval.passage".to_string(),
+            chunking: yeomna_embed::embedding::ChunkPolicy::default(),
             extensions: vec!["md".to_string()],
         }
     }
@@ -81,6 +93,11 @@ pub struct DocumentsSummary {
     /// first in sorted order won (EC-4).
     pub collisions: usize,
     pub chunks_written: usize,
+    /// Embeddings written.
+    pub embeddings_written: usize,
+    /// Documents whose text was above the embedder's context ceiling.
+    /// Chunked and searchable by keyword, carrying no vectors (PRD D5).
+    pub docs_over_ceiling: usize,
     pub blocks_seen: usize,
     pub blocks_refused: usize,
     /// Corpus-declared nodes written.
@@ -158,17 +175,24 @@ fn walk(root: &Path, config: &DocumentsConfig) -> Vec<Offered> {
 }
 
 /// Ingest the documents under `root` into the sink's graph.
-pub async fn ingest_documents<S, X>(
+pub async fn ingest_documents<S, X, E>(
     root: &Path,
     sink: &S,
     extractor: &X,
     chunker: &(dyn ChunkingStrategy + Send + Sync),
+    embedder: Option<&E>,
     config: &DocumentsConfig,
 ) -> Result<DocumentsSummary, PipelineError>
 where
     S: IngestSink + IngestProbe,
     X: Extractor,
+    E: Embedder,
 {
+    if config.embed && embedder.is_none() {
+        return Err(PipelineError::Other(
+            "embedding requested with no embedder supplied".into(),
+        ));
+    }
     let mut summary = DocumentsSummary::default();
     let mut taken: HashSet<String> = HashSet::new();
     let mut declared: Vec<Declared> = Vec::new();
@@ -252,7 +276,44 @@ where
             .get("headings")
             .and_then(|h| serde_json::from_str(h).ok())
             .unwrap_or(Value::Array(Vec::new()));
-        let chunks = chunker.chunk(&extracted.full_text);
+        // Late chunking when embedding was asked for: one forward pass
+        // over the whole document, then boundaries, so every chunk vector
+        // is conditioned on the document around it. This is the wiring the
+        // reference specified and never built.
+        // Blank text has nothing to embed and the local chunker already
+        // returns nothing for it, so the two paths agree instead of one
+        // failing the run over an empty document.
+        let embeddable =
+            embedder.filter(|_| config.embed && !extracted.full_text.trim().is_empty());
+        let (chunks, vectors, identity) = match embeddable {
+            Some(e) => {
+                match e
+                    .embed_document(&extracted.full_text, &config.embed_task, config.chunking)
+                    .await
+                {
+                    Ok(late) => match late_pieces(&extracted.full_text, late, &file.rel_path) {
+                        Ok((chunks, vectors)) => (chunks, vectors, Some(e.identity())),
+                        Err(bad) => {
+                            summary.files_failed += 1;
+                            summary.refusals.push(bad);
+                            continue;
+                        }
+                    },
+                    // PRD D5: refused, never truncated. Still worth having
+                    // by keyword, so it is chunked locally and counted.
+                    Err(EmbeddingError::Service { ref code, .. }) if code == "input-too-large" => {
+                        warn!(
+                            rel_path = file.rel_path,
+                            "over the embedder's context ceiling, keyword only"
+                        );
+                        summary.docs_over_ceiling += 1;
+                        (chunker.chunk(&extracted.full_text), Vec::new(), None)
+                    }
+                    Err(e) => return Err(PipelineError::Embedding(e)),
+                }
+            }
+            None => (chunker.chunk(&extracted.full_text), Vec::new(), None),
+        };
         let doc = json!({
             "_key": doc_key,
             "path": file.rel_path,
@@ -295,6 +356,50 @@ where
                 .await
                 .map_err(|e| PipelineError::Sink(Box::new(e)))?;
             summary.chunks_written += out.created;
+            // `errors` counts every row the sink did not create, and under
+            // `overwrite: false` the insert is `ON CONFLICT DO NOTHING`, so a row
+            // that was already there is indistinguishable from one that was
+            // refused. Only under `overwrite` does the insert upsert, where a
+            // non-creation can only mean a rejection. Checking it unconditionally
+            // made a second ingest of a changed file abort the whole run, which is
+            // worse than the discard it replaced.
+            if config.overwrite && out.errors > 0 {
+                return Err(PipelineError::Other(format!(
+                    "{}: the store rejected {} of {} chunk rows",
+                    file.rel_path,
+                    out.errors,
+                    chunk_docs.len()
+                )));
+            }
+            if let Some(identity) = &identity {
+                let embedding_docs: Vec<Value> = vectors
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        embedding_doc(
+                            &profile::DEFAULT,
+                            &doc_key,
+                            i,
+                            v,
+                            identity,
+                            &config.embed_task,
+                        )
+                    })
+                    .collect();
+                let out = sink
+                    .insert_documents(EMBEDDINGS, &embedding_docs, config.overwrite)
+                    .await
+                    .map_err(|e| PipelineError::Sink(Box::new(e)))?;
+                summary.embeddings_written += out.created;
+                if config.overwrite && out.errors > 0 {
+                    return Err(PipelineError::Other(format!(
+                        "{}: the store rejected {} of {} embedding rows",
+                        file.rel_path,
+                        out.errors,
+                        embedding_docs.len()
+                    )));
+                }
+            }
         }
     }
 
@@ -565,4 +670,37 @@ where
     summary.unresolved.sort();
     info!(?summary, "conforms pass complete");
     Ok(summary)
+}
+
+/// Turn late chunks into `TextChunk`s and their vectors, checking the one
+/// thing the contract promises and this code relies on: that a chunk's
+/// byte span slices the text it came from. A failure is this document's
+/// refusal rather than the batch's, which is how every other per-file
+/// fault is handled here.
+fn late_pieces(
+    text: &str,
+    late: Vec<yeomna_embed::embedding::EmbeddedChunk>,
+    rel_path: &str,
+) -> Result<(Vec<TextChunk>, Vec<Vec<f32>>), String> {
+    let total = late.len();
+    let mut chunks = Vec::with_capacity(total);
+    let mut vectors = Vec::with_capacity(total);
+    for (i, c) in late.into_iter().enumerate() {
+        let slice = c.slice(text).ok_or_else(|| {
+            format!(
+                "{rel_path}: chunk {i} spans bytes {}..{} which do not slice the document. \
+                 The embedder's offset conversion is wrong",
+                c.start_byte, c.end_byte
+            )
+        })?;
+        chunks.push(TextChunk {
+            text: slice.to_string(),
+            start_char: c.start_byte,
+            end_char: c.end_byte,
+            chunk_index: i,
+            total_chunks: total,
+        });
+        vectors.push(c.vector);
+    }
+    Ok((chunks, vectors))
 }

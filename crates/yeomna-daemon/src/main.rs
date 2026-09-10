@@ -33,6 +33,12 @@ struct Config {
     /// which is a directory the appliance already keeps at 0700.
     #[serde(default)]
     socket_path: Option<String>,
+    /// Where the in-box embedder listens (spec 022). Same directory, same
+    /// reason. `deny_unknown_fields` is why this has to be here as well as
+    /// in the CLI's reader: one file, two readers, and a key only one of
+    /// them knew would make the other refuse the file.
+    #[serde(default)]
+    embedder_socket: Option<String>,
 }
 
 fn default_socket_dir() -> String {
@@ -105,11 +111,16 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let embedder_socket = config
+        .embedder_socket
+        .clone()
+        .unwrap_or_else(|| format!("{}/embedder.sock", config.socket_dir));
     let settings = server::Settings {
         socket_dir: config.socket_dir,
         port: config.port,
         database: config.database,
         graph: config.graph,
+        embedder_socket,
     };
 
     // FR7: a clean stop takes the socket with it, so the next start

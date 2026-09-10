@@ -1,7 +1,10 @@
 # The Holes Ledger
 
-Status: v2.2, 2026-09-09. H1, H3, H6, and H10 retired, H2 five phases
-of seven merged, M2 measured. The 2026-08-17 hold ended and five PRs
+Status: v2.3, 2026-09-10. **H4 is filled and this appliance embeds.**
+H1, H3, H6, H8, and H10 retired as well, M2 measured, and `embed.text`
+answers instead of naming a hole. H8 and H2's Phase 7 went with PR #51,
+merged 2026-09-10, which derived the CLI tree from the contract. **The
+verb layer is complete in all seven phases.** The 2026-08-17 hold ended and five PRs
 landed the same day: Phase 4's write verbs (#36), the document graph
 (#39), the M2 benchmark (#41), `yeomna call` with the config file
 (#43), and the daemon (#45). **The graph is reachable**: a session on
@@ -11,10 +14,8 @@ named by the kernel. The resumption's driver is a semantic KG over the
 WeaverTools codebase, and the boundary is ruled (D9): Yeomna is an
 external RAG appliance whose **first caller is Claude Code itself**,
 using the graph as the RAG for building these projects, with weaver
-agents and buyers behind it. What remains on R21's order: the
-WeaverTools KG stand-up, Phase 6 in two halves (T3 goes true with
-retire and prune), the CLI tree with H8, the native embedder, and
-hybrid query. **The severance is complete**: R19b and R20 closed the
+agents and buyers behind it. What remains on R21's order: hybrid query,
+then the WeaverTools KG stand-up last. **The severance is complete**: R19b and R20 closed the
 last two held drafts unmerged (branches kept as records), so nothing
 of the reference remains in flight.
 The hole-mapping step of the severance sequence
@@ -104,20 +105,25 @@ costs 12 ms at depth 100 with zero spill.
 
 ## H4. The embedder backend
 
-The reference's Python loader was ruled out (boilerplate around a loader
-that is not ours to keep). **The primary path is a Yeomna-native in-box
-embedder service (D9, ruled 2026-09-09).** The SPU's future embedder work
-is agent-internal and stays in WeaverTools.
+**FILLED 2026-09-10 (spec 022, PR pending). The appliance embeds.**
+`docs/PRD-embedder.md` v0.2 owns it, `docs/embedding-contract.md`
+carries the wire, `services/embedder/` holds the model, and
+`embed.text` answers instead of naming this hole.
 
 | | |
 |---|---|
-| Owner | its own Yeomna PRD (D9 ruled 2026-09-09): a native in-box embedder service, GPU 2, Jina-class late-chunking model, built on our own spike evidence. **The boundary ruling behind it:** Yeomna is an external RAG appliance and WeaverTools is never its component supplier. The SPU will gain embedder operations someday, but those are agent-internal cognition, a different job from appliance-internal indexing |
-| Contract in hand | the spike evidence (`spikes/jina-late-loop`): token-level 2048-d hidden states plus tokenizer offsets, client-pools proven at cosine 0.999999, boundary metadata as token ranges converting to bytes at the edge |
-| CLI holes it fills | 6 (`embed` tree) |
-| Also fills | late-chunking wiring (specified in the reference, never wired), the PE-API successor contract with a Yeomna-native name, retirement of the client's TCP default |
-| Constraint | 32k-context late-chunking-capable model, GPU 2 |
-| Measured 2026-09-09 | weaver-spu has no embedder operation (the Python embedder retired at its PR-1.J and nothing replaced it), which is part of why D9 re-ruled this hole native: the SPU path was new construction in the wrong repo |
-| Harvest pointers (from docling-rag, read not adopted, R19) | the deterministic hash embedder as a test double for cluster-anywhere embedding tests, and RRF hybrid fusion as reference when the `hybrid` query flag lands |
+| Owner | `docs/PRD-embedder.md`, per D9's ruling that H4 is Yeomna-native. **The boundary behind it:** Yeomna is an external RAG appliance and WeaverTools is never its component supplier. The SPU will gain embedder operations someday and those are agent-internal cognition, a different job from appliance-internal indexing |
+| Contract | `yeomna.embedding` v1 at `docs/embedding-contract.md`. Three operations over HTTP/1.1 with JSON on a Unix socket. Always chunked, no single-vector mode |
+| The fork, ruled | **The service pools and the wire carries chunk vectors** (PRD D1). This is the opposite arm from the one the spike proved, and the reason is the transport the spike could not have weighed: one 8,631-token document is 8631 by 2048 floats, about 212 MB once JSON has written each float as text, against 240 KB for the same document's 29 pooled vectors. The spike measured the mathematics and wrote `.npy` files to a local directory |
+| `late_chunk_embeddings` | not retired, repointed. It is the **oracle** now: `POST /v1/tokens` exists only so a gated test can pool the token view in Rust and require the service's own pooling to match at cosine 0.9999. The motive iterates, the mechanic is checked by machine |
+| Late chunking | **wired, for the first time in this code or the reference's.** Both ingest paths encode a document in one pass and take the boundaries from that pass, so chunk vectors are conditioned on the document around them. The reference specified this and never built it |
+| The seal | three layers on the unit. `PrivateNetwork=yes` makes the `requests` import in the model's own cached code inert for want of a namespace, `RestrictAddressFamilies=AF_UNIX`, and the offline variables so a reach for the network fails on a variable and says so. `MemoryDenyWriteExecute` and `PrivateDevices` are omitted with reasons, because CUDA needs both |
+| The TCP default | **deleted, not moved** (PRD D10). Charter 5.1 makes local embedding a requirement rather than a configuration default, and a requirement a config key can turn off is a preference. `EmbeddingEndpoint` carries a path and has no variant a URL fits in, `parse_endpoint` refuses `http://` naming the charter, and the test that pinned the default now pins its absence |
+| The ceiling, measured | **16,384 tokens, and the model's advertised 32k does not fit on GPU 2.** 8,631 tokens peaked at 11.48 GiB of 16, with 7.5 to 8 GiB of that being weights. A document above it is **refused, never truncated** (PRD D5), counted, and named, because truncation would drop a document's tail out of vector search while leaving it in keyword search with nothing saying so. `read::health`'s `chunks_without_embeddings` already reports the gap |
+| The defect found on the way | `insert_embedding` read the model out of the parent node's payload and counted a missing one in `errors`. The document path wrote `embedding_model` and the codebase path never did, and the live ingest path discarded `errors` for chunks and embeddings while keeping it for edges. So the first codebase ingest with embedding on would have run the GPU, produced correct vectors, rejected every one, and reported `embeddings_written: 0` with success. The cohort rides the embedding document now (R26) and a rejection stops the run |
+| The test double | `HashEmbedder`, the harvest pointer read from docling-rag and not adopted from it. Deterministic unit vectors by hash, the same windowing rule, real byte spans, and a model name that says `yeomna-test` so a store holding its rows says so. Every embedding test but the model's own runs with no GPU |
+| CLI holes it filled | 6 (`embed` tree) |
+| Still open | R25, R26, and R27 are proposed by the PRD and implemented as proposed. Idle unload against the extraction service on the same card, throughput, macro-window late chunking for documents above the ceiling, and M1 are PRD Phase 4 |
 
 ## H5. The extraction backend
 
@@ -346,6 +352,10 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R20 | PR #19 closed unmerged, the client surface re-scoped | **Ruled 2026-09-09**: the capture's contract role was superseded by its own product (spec 010's binding disposition table), its census role is replaced by compile-time completeness from the closed enum (a CLI that exhaustive-matches `Verb` cannot omit a verb and build), and its lift role thinned to reference material since the request structs are now the arg shapes. Branch kept. Epic #37 parts out the client surface (daemon, `yeomna call`, the contract-born CLI tree, H8's tools commands, H10's config file) with the five #19 findings carried as do-not-reproduce items. H8 is unblocked |
 | R19b | PR #17 closed unmerged | **Ruled 2026-09-09**: the Python extraction service closes without merging, branch kept as the severance record. R19 retired its declarative role, upstream's continuous validation against Python docling serves the reference role better than our wrapper would, and its unique findings (the six-item surface, the equation fallback) were already harvested into H5. The last living port ends and HADES-Burn is fully closed. If a PDF corpus arrives before the Rust engine's PDF pipeline proves out, the closed branch is the resurrection point |
 | R19a | Declared vocabulary is the source's own | **Ruled 2026-09-09 (v2, spec 015)** after the dig found the WeaverTools docs declare their own graph: 387 fenced graph blocks, 473 nodes, twelve edge relations. The `edges_declared` CHECK opens to identifier shape like `edges_asserted` (sources speak their own words), `edges_structural` keeps the closed list (our analyzers, our vocabulary), corpus-declared nodes land as kind `document` with block kind and tag in payload (the methodology disposition landing as ruled), SCHEMA_VERSION 1.2.0. Declined: enumerating any corpus's ontology into the DDL, which would make every future customer a schema migration. Todd's framing, now binding: a semantic KG is installation-specific and grown through use, so the substrate is fixed and the vocabulary is the operator's |
+| R24 | What `tools install` may reach for | **Proposed in spec 021, merged as PR #51 2026-09-10.** `yeomna tools install --from <path>` places a binary the operator already has. Fetching from upstream is not implemented, because a byte arriving from the network into a sealed appliance decides what the appliance may talk to and how a release is verified, which are charter section 5 questions rather than a convenience. The command says so, and names this ruling, when asked to install without a source |
+| R25 | Weights are present or the service does not start | **Proposed in spec 022, implemented as proposed.** No download, no fetch on first use, no cache warm. The path is configured, the revision is pinned by full SHA, and `RequiresMountsFor` makes an unmounted volume a refusal rather than a 7 GB download into a sealed appliance. This is charter 5.1's third boundary, Updates, and it is R24's question about a different byte |
+| R26 | The cohort rides the embeddings row | **Proposed in spec 022, implemented as proposed.** `embeddings` gains `model_revision` and `task`, both `NOT NULL`, and SCHEMA_VERSION goes to 1.3.0. `model` and `model_hash` identify the weights by name, and the same name at another revision or under another LoRA adapter is a different geometry that nothing else would notice: a corpus embedded at `text-matching` and queried at `retrieval.query` returns plausible nonsense rather than an error. The provenance also moved onto the embedding document, out of the parent node's payload, which is what made the silent-drop defect possible. Cost is a drop, a re-apply, a template re-stamp, and a re-ingest, which under T4 is what schema changes cost here and is why they are affordable |
+| R27 | The embedder backend is Python behind the contract | **Proposed in spec 022, implemented as proposed.** jina-v4 ships custom modeling code, a Qwen2.5-VL backbone, and LoRA adapters selected per task, so reimplementing it in Candle is new construction whose only deliverable is the same vectors, and inherit-do-not-author points the other way. The service is replaceable because the contract is narrow: three operations, one of which exists only for a test. Recorded cost: Python in the box is a supply chain, seven packages and a committed lockfile, and `PrivateNetwork=yes` is what makes that supply chain unable to act at run time. The HTTP server is the standard library, because fastapi and uvicorn would be four more packages for a service the GPU already serializes |
 
 ## The fill order, as the dependencies read
 

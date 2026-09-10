@@ -28,7 +28,7 @@ point costs when the log is unavailable.
 
 | Verb | `data` |
 |---|---|
-| `orient` | `schema_version`, and per graph: `nodes_by_kind`, `edges_by_relation_and_basis`, `chunks`, `embeddings`, `embedding_models`, `last_ingest` |
+| `orient` | `schema_version`, and per graph: `nodes_by_kind`, `edges_by_relation_and_basis`, `chunks`, `embeddings`, `embedding_cohorts` (the model, revision, and task triple with a count, widened from a bare model list by spec 022 R26), `last_ingest` |
 | `status` | `store`, `database`, `graphs`, `schema_version`, `session_graph` |
 | `health` | `documents_without_chunks`, `chunks_without_embeddings`, `nodes`, `chunks` |
 | `check` | `key`, `exists`, `found_in` as graph and kind pairs |

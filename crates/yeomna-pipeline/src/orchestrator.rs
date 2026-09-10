@@ -6,11 +6,12 @@ use std::time::Instant;
 use serde_json::{Value, json};
 use tracing::{debug, error, info, instrument, warn};
 
+use crate::embed::{Embedder, EmbedderIdentity};
 use crate::extract::{ExtractError, Extractor};
 use crate::profile::CollectionProfile;
 use crate::sink::IngestSink;
 use yeomna_chunking::{ChunkingStrategy, TextChunk};
-use yeomna_embed::embedding::{EmbedResult, EmbeddingClient, EmbeddingError};
+use yeomna_embed::embedding::{ChunkPolicy, EmbeddingClient, EmbeddingError};
 use yeomna_embed::extraction::{ExtractOptions, ExtractResult, ExtractionClient, ExtractionError};
 use yeomna_keys as keys;
 
@@ -21,8 +22,8 @@ pub struct PipelineConfig {
     pub profile: &'static CollectionProfile,
     /// Embedding task parameter (e.g. "retrieval.passage").
     pub embed_task: String,
-    /// Embedding batch size (None = server default).
-    pub embed_batch_size: Option<u32>,
+    /// Where the late-chunk boundaries fall, in tokens (spec 022).
+    pub chunking: ChunkPolicy,
     /// Extraction options.
     pub extract_options: ExtractOptions,
     /// Whether to overwrite existing documents.
@@ -34,7 +35,7 @@ impl Default for PipelineConfig {
         Self {
             profile: &crate::profile::DEFAULT,
             embed_task: "retrieval.passage".to_string(),
-            embed_batch_size: None,
+            chunking: ChunkPolicy::default(),
             extract_options: ExtractOptions::all(),
             overwrite: true,
         }
@@ -121,16 +122,16 @@ impl PipelineSummary {
 /// documents flowing into the Yeomna knowledge graph. Generic over its
 /// extractor since spec 015: the socket client by default, the native
 /// docling backend when the caller says so.
-pub struct Pipeline<S: IngestSink, X: Extractor = ExtractionClient> {
+pub struct Pipeline<S: IngestSink, X: Extractor = ExtractionClient, E: Embedder = EmbeddingClient> {
     extractor: X,
-    embedder: EmbeddingClient,
+    embedder: E,
     sink: S,
     config: PipelineConfig,
 }
 
-impl<S: IngestSink, X: Extractor> Pipeline<S, X> {
+impl<S: IngestSink, X: Extractor, E: Embedder> Pipeline<S, X, E> {
     /// Create a new pipeline with the given extractor, embedder, sink, and config.
-    pub fn new(extractor: X, embedder: EmbeddingClient, sink: S, config: PipelineConfig) -> Self {
+    pub fn new(extractor: X, embedder: E, sink: S, config: PipelineConfig) -> Self {
         Self {
             extractor,
             embedder,
@@ -309,42 +310,74 @@ impl<S: IngestSink, X: Extractor> Pipeline<S, X> {
             .await
     }
 
-    /// Chunk extracted text, embed chunks, store through the sink.
+    /// Encode the document, then store what the pass says its chunks were.
+    ///
+    /// The order used to be chunk, then embed each chunk independently.
+    /// Late chunking inverts it: one forward pass over the whole text,
+    /// then boundaries, so every chunk vector is conditioned on the
+    /// document around it. `chunker` is the fallback for a document above
+    /// the embedder's ceiling, which is chunked for keyword search and
+    /// carries no vectors (PRD D5).
     async fn chunk_embed_store(
         &self,
         doc_key: &str,
         extract_result: &ExtractResult,
         chunker: &(dyn ChunkingStrategy + Send + Sync),
     ) -> Result<usize, PipelineError> {
-        // 2. Chunk
-        let chunks = chunker.chunk(&extract_result.full_text);
+        let text = &extract_result.full_text;
+        let late = match self
+            .embedder
+            .embed_document(text, &self.config.embed_task, self.config.chunking)
+            .await
+        {
+            Ok(chunks) => Some(chunks),
+            Err(EmbeddingError::Service { ref code, .. }) if code == "input-too-large" => {
+                warn!(doc_key, "over the embedder's context ceiling, keyword only");
+                None
+            }
+            Err(e) => return Err(PipelineError::Embedding(e)),
+        };
+
+        let (chunks, vectors) = match late {
+            Some(late) => {
+                let total = late.len();
+                let mut chunks = Vec::with_capacity(total);
+                let mut vectors = Vec::with_capacity(total);
+                for (i, c) in late.into_iter().enumerate() {
+                    let slice = c.slice(text).ok_or_else(|| {
+                        PipelineError::Other(format!(
+                            "{doc_key}: chunk {i} spans bytes {}..{} which do not slice the \
+                             document. The embedder's offset conversion is wrong",
+                            c.start_byte, c.end_byte
+                        ))
+                    })?;
+                    chunks.push(TextChunk {
+                        text: slice.to_string(),
+                        start_char: c.start_byte,
+                        end_char: c.end_byte,
+                        chunk_index: i,
+                        total_chunks: total,
+                    });
+                    vectors.push(c.vector);
+                }
+                (chunks, vectors)
+            }
+            None => (chunker.chunk(text), Vec::new()),
+        };
+
         if chunks.is_empty() {
             warn!(doc_key, "chunking produced no text chunks");
             return Err(PipelineError::EmptyChunks);
         }
 
-        // 3. Embed
-        let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-        let embed_result = self
-            .embedder
-            .embed(
-                &texts,
-                &self.config.embed_task,
-                self.config.embed_batch_size,
-            )
-            .await?;
-
-        if embed_result.embeddings.len() != chunks.len() {
-            return Err(PipelineError::Other(format!(
-                "embedding count mismatch: expected {} (chunks), got {} (embeddings)",
-                chunks.len(),
-                embed_result.embeddings.len()
-            )));
-        }
-
-        // 4. Store
-        self.store(doc_key, extract_result, &chunks, &embed_result)
-            .await?;
+        self.store(
+            doc_key,
+            extract_result,
+            &chunks,
+            &vectors,
+            &self.embedder.identity(),
+        )
+        .await?;
 
         Ok(chunks.len())
     }
@@ -355,7 +388,8 @@ impl<S: IngestSink, X: Extractor> Pipeline<S, X> {
         doc_key: &str,
         extract_result: &ExtractResult,
         chunks: &[TextChunk],
-        embed_result: &EmbedResult,
+        vectors: &[Vec<f32>],
+        identity: &EmbedderIdentity,
     ) -> Result<(), PipelineError> {
         let profile = self.config.profile;
 
@@ -373,8 +407,9 @@ impl<S: IngestSink, X: Extractor> Pipeline<S, X> {
             "equations": extract_result.equations.len(),
             "images": extract_result.images.len(),
             "chunk_count": chunks.len(),
-            "embedding_model": embed_result.model,
-            "embedding_dimension": embed_result.dimension,
+            "embedding_model": identity.model,
+            "embedding_revision": identity.model_revision,
+            "embedding_dimension": identity.dimension,
             "extractor_metadata": extract_result.metadata,
         });
 
@@ -410,11 +445,12 @@ impl<S: IngestSink, X: Extractor> Pipeline<S, X> {
         }
 
         // -- Embedding documents -------------------------------------------
-        let embedding_docs: Vec<Value> = embed_result
-            .embeddings
+        let embedding_docs: Vec<Value> = vectors
             .iter()
             .enumerate()
-            .map(|(i, emb)| embedding_doc(profile, doc_key, i, emb))
+            .map(|(i, emb)| {
+                embedding_doc(profile, doc_key, i, emb, identity, &self.config.embed_task)
+            })
             .collect();
 
         let emb_res = self
@@ -550,18 +586,25 @@ fn set_foreign_key(doc: &mut Value, profile: &CollectionProfile, doc_key: &str) 
 }
 
 /// Build an embedding document. Same dual-key contract as [`chunk_doc`].
-fn embedding_doc(
+pub(crate) fn embedding_doc(
     profile: &CollectionProfile,
     doc_key: &str,
     index: usize,
     embedding: &[f32],
+    identity: &EmbedderIdentity,
+    task: &str,
 ) -> Value {
     let ck = keys::chunk_key(doc_key, index);
+    // R26: the cohort rides the row rather than being read back out of a
+    // sibling written by an earlier call.
     let mut doc = json!({
         "_key": keys::embedding_key(&ck),
         "chunk_key": ck,
         "doc_key": doc_key,
         "embedding": embedding,
+        "model": identity.model,
+        "model_revision": identity.model_revision,
+        "task": task,
     });
     set_foreign_key(&mut doc, profile, doc_key);
     doc
@@ -582,6 +625,14 @@ mod tests {
         }
     }
 
+    fn test_identity() -> EmbedderIdentity {
+        EmbedderIdentity {
+            model: "m".to_string(),
+            model_revision: "rev".to_string(),
+            dimension: 2048,
+        }
+    }
+
     /// The writer must emit the field the reader filters on, for every profile
     /// (#165). The reader (db_search phase 1) filters
     /// `emb.<profile.foreign_key> != null`, so a chunk/embedding row missing
@@ -593,7 +644,14 @@ mod tests {
             ("codebase", &profile::CODEBASE),
         ] {
             let c = chunk_doc(profile, "docA", 0, &chunk());
-            let e = embedding_doc(profile, "docA", 0, &[0.1, 0.2]);
+            let e = embedding_doc(
+                profile,
+                "docA",
+                0,
+                &[0.1, 0.2],
+                &test_identity(),
+                "retrieval.passage",
+            );
             for (kind, d) in [("chunk", &c), ("embedding", &e)] {
                 assert_eq!(
                     d[profile.foreign_key].as_str(),
@@ -623,6 +681,12 @@ mod tests {
             "end_char",
             "chunk_key",
             "embedding",
+            // R26's three, for the same reason as the rest: a profile
+            // foreign key naming one of these would clobber a vector's
+            // provenance.
+            "model",
+            "model_revision",
+            "task",
         ];
         for (name, p) in [
             ("default", &profile::DEFAULT),
@@ -643,9 +707,22 @@ mod tests {
         let c = chunk_doc(profile, "docA", 3, &chunk());
         assert_eq!(c["_key"], "docA_chunk_3");
         assert_eq!(c["text"], "hello");
-        let e = embedding_doc(profile, "docA", 3, &[1.0]);
+        let e = embedding_doc(
+            profile,
+            "docA",
+            3,
+            &[1.0],
+            &test_identity(),
+            "retrieval.passage",
+        );
         assert_eq!(e["chunk_key"], "docA_chunk_3");
         assert_eq!(e["_key"], "docA_chunk_3_emb");
+        // R26: the cohort rides the row. The store reads these three
+        // rather than looking the model up in a sibling node's payload,
+        // which is the ordering dependency spec 022 removed.
+        assert_eq!(e["model"], "m");
+        assert_eq!(e["model_revision"], "rev");
+        assert_eq!(e["task"], "retrieval.passage");
     }
 }
 

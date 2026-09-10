@@ -6,10 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Documents: `README.md` is the Yeomna Charter PRD (draft v0.4, 2026-08-08).
 Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
-and specs at `docs/specs/NNN-slug/spec.md` with review notes alongside.
+`docs/PRD-verb-layer.md`, `docs/PRD-embedder.md`, and the wire contract at
+`docs/embedding-contract.md`, with specs at `docs/specs/NNN-slug/spec.md`
+and review notes alongside each.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, eleven crates, 406 tests. **The Rust side of the
+`rust-toolchain.toml`, eleven crates, COUNT tests, plus one Python service
+at `services/embedder/`. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted
 and merged. **The store exists and holes-ledger H1 is filled** (specs 008
@@ -20,7 +23,39 @@ applied to the dev cluster with eight claims as integration tests, and
 five-call sequence as integration tests. All cluster-gated tests skip
 without a cluster. Edge identity is ruled (R6, spec 009).
 
-**H2, the verb layer, is under construction.** `docs/PRD-verb-layer.md` is
+**H2 is complete in all seven phases and H8 is filled** (spec 021, PR #51,
+merged 2026-09-10), which derived the CLI tree from the contract rather
+than writing one beside it. **H4 is filled** (spec 022): the appliance embeds, `embed.text`
+answers, and late chunking is wired for the first time in this code or
+the reference's. `docs/PRD-embedder.md` owns that work and front-loads
+its decisions as D1 through D11. Four things from it are worth knowing
+before touching the embedding path:
+
+- **The service pools and the wire carries chunk vectors** (D1). This is
+  the opposite arm from the one `spikes/jina-late-loop` proved, and the
+  reason is the transport the spike could not have weighed: one
+  8,631-token document is 8631 by 2048 floats, roughly 212 MB once JSON
+  has written each float as text, against 240 KB for the same document's
+  29 pooled vectors.
+- **`late_chunk_embeddings` is the oracle, not the producer.** It is not
+  dead code. `POST /v1/tokens` exists only so a gated test can pool the
+  token view in Rust and require the service's own pooling to match at
+  cosine 0.9999. Do not give that operation a production caller.
+- **`EmbeddingEndpoint` has no network variant and must not gain one**
+  (D10). Charter 5.1 makes local embedding a requirement rather than a
+  configuration default, and a requirement a config key can turn off is a
+  preference.
+- **The context ceiling is 16,384 tokens and it is a hardware fact.** The
+  model advertises 32k and it does not fit on GPU 2: 8,631 tokens peaked
+  at 11.48 GiB of 16. A document above the ceiling is refused, counted,
+  and named, never truncated (D5), because truncation drops a document's
+  tail out of vector search while leaving it in keyword search with
+  nothing saying so.
+
+The history below is kept because the reasoning in it is still load
+bearing.
+
+**H2's construction, as it happened.** `docs/PRD-verb-layer.md` is
 settled at v0.4 (all five review questions ruled) and Phase 1 of 7 is merged
 (spec 010): `crates/yeomna-verbs` carries the closed verb contract (40 wire
 names at Phase 1, 42 since R18 added the edge verbs in Phase 4), the

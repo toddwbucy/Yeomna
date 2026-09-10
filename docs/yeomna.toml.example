@@ -25,3 +25,12 @@ database = "yeomna"
 # the store's socket, which is a directory the appliance already keeps
 # at 0700. Only `yeomna call --daemon` and yeomnad read it.
 # socket_path = "/run/yeomna/yeomna.sock"
+
+# Where the in-box embedder listens (spec 022). Defaults to embedder.sock
+# beside the other two, in the same 0700 directory, for the same reason.
+#
+# There is deliberately no way to give this a host. Charter 5.1 says
+# embedding is local and says it is a requirement rather than a
+# configuration default, so `EmbeddingEndpoint` carries a socket path and
+# has no network variant for a URL to go in.
+# embedder_socket = "/run/yeomna/embedder.sock"
