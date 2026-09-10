@@ -87,6 +87,31 @@ fn literals(text: &str) -> Vec<(usize, String)> {
             }
             continue;
         }
+        // A block comment, for the same reason, and nested because Rust
+        // nests them. The tree has none today, so this is about the lint
+        // staying trustworthy rather than about a file it currently reads:
+        // one unbalanced quote in a block comment would make every literal
+        // after it garbage, and a lint that can be confused stops being
+        // consulted.
+        if c == '/' && bytes.get(i + 1) == Some(&'*') {
+            let mut depth = 1usize;
+            i += 2;
+            while i < bytes.len() && depth > 0 {
+                if bytes[i] == '\n' {
+                    line += 1;
+                    i += 1;
+                } else if bytes[i] == '/' && bytes.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i] == '*' && bytes.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
         // A raw string, in either of its forms. Skipped by finding its
         // matching terminator so its contents cannot be mistaken for a
         // normal literal's.
@@ -333,6 +358,27 @@ fn the_lint_catches_a_planted_collapse() {
         commented.iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(),
         vec!["real".to_string()]
     );
+    // A block comment holding a quote does not open a literal, and the
+    // message after it is still found. Nested, because Rust nests them.
+    let blocked = literals("/* a quote \" here */ let a = \"real\";");
+    assert_eq!(
+        blocked.iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(),
+        vec!["real".to_string()]
+    );
+    let nested = literals("/* outer /* inner \" */ still comment */ let a = \"real\";");
+    assert_eq!(
+        nested.iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(),
+        vec!["real".to_string()]
+    );
+    // And a collapsed continuation after a block comment is still caught,
+    // which is the thing the scan exists for.
+    let after = literals(
+        "/* a quote \" here */\nlet m = \"a message long enough to be judged as prose,\n         \x20            written across two lines with no backslash\";",
+    );
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert!(has_collapsed_run(&after[0].1), "{:?}", after[0].1);
+    assert_eq!(after[0].0, 2, "and its line number survived the comment");
+
     // A char literal holding a quote does not either.
     let charred = literals("if c == '\"' { } let a = \"real\";");
     assert_eq!(
