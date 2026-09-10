@@ -1,7 +1,7 @@
 # PRD: The MCP Front End
 
 Parent: `README.md`, the Yeomna Charter, sections 5.2 and 6.
-Status: draft v0.1, 2026-09-10.
+Status: draft v0.2, 2026-09-10.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually. These govern prose. Rust, JSON,
@@ -11,7 +11,8 @@ and SQL keep their syntax.
 
 | Version | Date | Change |
 |---|---|---|
-| 0.1 | 2026-09-10 | First draft. Unparks MCP for the stdio case only, on Todd's direction, and front-loads eleven decisions plus one open ruling. |
+| 0.1 | 2026-09-10 | First draft. Unparks MCP for the stdio case only, on Todd's direction, and front-loads thirteen decisions plus one open ruling. |
+| 0.2 | 2026-09-10 | Review pass. D7 gained `resultType` and the ssh-255 distinction, D10 became the fuller cancellation rule, and D12 and D13 are new: the request travels on stdin rather than argv, and the target owns which database a call reaches. The argv finding was a real defect. |
 
 ## Executive Summary
 
@@ -287,12 +288,27 @@ Destructive verbs already carry their own `force` gates and their own
 audit rows. Order is `WIRE_NAMES` order, which satisfies the
 deterministic-ordering guidance for free. See R29.
 
-**D7. Error mapping follows the exit code.** Exit 2 becomes a JSON-RPC
-error, because the caller or the machine was wrong and no call was made.
-Exit 1 becomes a result with `isError: true`, because a refusal is
-actionable feedback a model can correct against. Exit 0 becomes a result
-whose `structuredContent` is the envelope and whose text content is the
-same envelope serialized.
+**D7. Error mapping follows the exit code, and transport is not a verb.**
+Exit 2 becomes a JSON-RPC error, because the caller or the machine was
+wrong and no call was made. Exit 1 becomes a result with `isError: true`,
+because a refusal is actionable feedback a model can correct against.
+Exit 0 becomes a result whose `structuredContent` is the envelope and
+whose text content is the same envelope serialized.
+
+Two additions the first draft of this decision missed. **An ssh exit of
+255 is the transport failing, not the appliance refusing**, and it is
+distinguishable because `yeomna call` returns only 0, 1, or 2. Any other
+unexpected status is reported as itself rather than folded into a verb
+outcome, so a caller never debugs the wrong machine. And **every result
+carries `resultType: "complete"`**, which the revision requires on all
+results including the ones carrying `isError: true`. That field belongs to
+the envelope MCP wraps rather than to anything Yeomna produces, which is
+exactly why it is easy to omit, so it is set once in the code that writes
+a result.
+
+A refusal stays a result throughout. It never becomes a JSON-RPC error,
+because Yeomna's refusals are written to be read and the revision says a
+model should see them.
 
 **D8. The target is a launch argument, not a config file.** R3 ruled
 config-file for the appliance, and this is not the appliance. The MCP
@@ -304,17 +320,44 @@ disagree. The laptop needs no `/etc/yeomna`.
 do-not-reproduce item, and keeps a front-end concern out of a surface
 the charter says is the only surface.
 
-**D10. Cancellation kills the child.** `notifications/cancelled` means
-stop and send nothing further. Killing the spawned `yeomna call` is the
-honest implementation, and the audit design already covers the
-consequence: the row commits before the verb runs, so an attempt that
-dies leaves a NULL outcome rather than no trace.
+**D10. Cancellation terminates what this process owns, and says so.**
+`notifications/cancelled` means stop and send nothing further for that
+id, and the same cleanup runs for every in-flight call on stdin EOF. The
+local child is terminated and reaped in both cases. **A remote verb
+already inside its transaction may still run to completion**, because ssh
+does not forward signals without a tty. This is named rather than papered
+over, and the existing audit design is what makes it visible: the row
+commits before the verb runs, so an abandoned destructive call leaves a
+NULL outcome naming its actor rather than no trace. The revision's own
+wording is that a server SHOULD stop work as soon as practical, which is
+best effort by construction.
 
 **D11. Nothing but valid MCP messages on stdout.** The binding requires
 it, and the hazard is specific: `yeomna call` prints its envelope to
 stdout, and the CLI tree deliberately puts headers and rows on stdout
 together. The child's stdout is captured, never inherited. All logging
 goes to stderr, which the binding leaves free.
+
+**D12. The request travels on stdin, never in argv.** Both targets invoke
+the fixed form `yeomna call -` and write the request to the child's
+stdin. For the local target this is tidiness. For ssh it is required:
+**ssh joins its command arguments into one string and hands it to a shell
+on the far side**, so a request carrying a quote, a backtick, a dollar
+sign, or a semicolon would be interpreted there rather than delivered.
+Request text is corpus-derived and caller-supplied, which makes argv an
+injection path rather than a formatting choice. Using one form for both
+targets also removes the argv length ceiling and leaves one code path to
+get right.
+
+**D13. The target owns which database a call reaches.** `yeomna call`
+resolves the database from the config on the machine where it runs, so
+reaching the WeaverTools KG needs a config there naming
+`database = "weavertools"`. The MCP server passes no database and no
+graph of its own. The graph is a request field the contract already
+defines for the verbs that take one, so it arrives in the tool's
+arguments like any other and needs no new surface. There is no implicit
+override and none is added, which keeps this front end from becoming a
+second place scope is decided.
 
 ### R29, open: does `sql` belong on a model-controlled surface
 
@@ -328,6 +371,20 @@ The build proceeds with all 42 because a curated list is a second
 contract, and carving one out later is a smaller change than growing one
 back. If Todd rules that `sql` comes out, it comes out as a named
 exception with the charter sentence cited, not as a silent omission.
+
+**What a ruling against `sql` changes, so the change stays mechanical:**
+D6's count, the spec's FR2 census and its success criterion (41 rather
+than 42, with `sql` named as the excluded wire name and a test asserting
+it is absent rather than merely uncounted), and nothing else. The
+derivation walks `WIRE_NAMES`, so an exclusion is a filter over the
+contract rather than a second table beside it, which is why this stays a
+one-line change and why the review's alternative of building a
+conditional allowlist first would cost more than waiting for the ruling.
+
+The ruling is not a blocker for writing the spec and it is a blocker for
+merging an implementation that exposes `sql`, which is the shape of the
+dependency. This section is where it is recorded rather than left to be
+rediscovered at review time.
 
 ## Testing Strategy
 
@@ -352,8 +409,17 @@ exception with the charter sentence cited, not as a silent omission.
 - **Error mapping.** A refusal arrives as `isError: true` with the
   envelope's message readable, and an unknown tool arrives as a
   JSON-RPC error.
-- **Cancellation.** A cancelled call kills its child and sends nothing
-  further for that id.
+- **Cancellation.** A cancelled call terminates and reaps its child and
+  sends nothing further for that id, and stdin EOF does the same for every
+  in-flight call.
+- **Protocol conformance, by transcript rather than by reading.**
+  `resultType` present on every result, the two required `_meta` fields
+  enforced with `-32602`, and `-32021` and `-32022` used only with their
+  specified meanings.
+- **No shell ever sees request bytes as syntax.** A request whose
+  arguments carry `'`, `"`, backtick, `$(`, `;`, and a newline arrives at
+  the verb byte-identical over both targets. This is the test whose
+  absence would be silent on every happy path.
 - The workspace gate three times green with the cluster up, clippy zero,
   fmt clean, and the no-SQL lint still passing with `yeomna-mcp` outside
   its allowlist.
@@ -368,6 +434,8 @@ exception with the charter sentence cited, not as a silent omission.
 | ssh spawn cost per call | low | ControlMaster in the user's ssh config. Measured in Phase 2 and reported rather than assumed. |
 | A long ingest exceeds the MCP client's timeout | medium | R21 D1 already rules that long verbs block. Cancellation is implemented (D10) and the NULL-outcome row makes an abandoned call visible. |
 | Adding schemars to the contract crate spreads a dependency into the layer that must stay small | low | Non-default feature, enabled only by `yeomna-mcp`. |
+| Request text reaching a remote shell through ssh's argument joining | high, mitigated | D12 makes stdin the only channel and FR15 tests the metacharacters directly. This was a real defect in the first draft of the spec, which had said to pass the request as a single argument. |
+| A cancelled destructive verb keeps running on the far side | medium | D10 states the limit rather than hiding it, and the pre-committed audit row makes an abandoned call visible with its actor. |
 | This is the first front-end component and front-end scope has no precedent here | medium | The non-goals list is long on purpose, and Phase 3 is named rather than left as a direction of travel. |
 
 ## Timeline

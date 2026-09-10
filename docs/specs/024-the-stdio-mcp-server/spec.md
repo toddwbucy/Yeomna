@@ -1,11 +1,13 @@
 # Specification: 024 The stdio MCP Server
 
-Parent PRD: `docs/PRD-mcp-front-end.md` v0.1, Phases 1 and 2.
+Parent PRD: `docs/PRD-mcp-front-end.md` v0.2, Phases 1 and 2.
 Owner: epic #21 (the holes ledger) as a new surface rather than a hole,
 since no verb refuses for want of this. Ruled by that PRD's D1 through
-D11. **R29 proposed** on whether `sql` belongs on a model-controlled
-surface.
-Status: draft, 2026-09-10.
+D13. **R29 proposed** on whether `sql` belongs on a model-controlled
+surface, which gates merging an implementation that exposes `sql` and
+does not gate this spec.
+Status: draft, 2026-09-10. Revised the same day for CodeRabbit's
+protocol and transport findings, six applied and one referred to Todd.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually. These govern prose. Rust, JSON,
@@ -71,18 +73,44 @@ log is not the record section 6 promises.
 - The stdio loop per the 2026-07-28 binding: newline-delimited JSON-RPC
   on stdin and stdout, no embedded newlines, nothing but valid MCP
   messages on stdout, logging to stderr, exit promptly on stdin EOF.
+- Per-request metadata validation, because the protocol core is stateless
+  and nothing may be inferred from an earlier request on the same
+  connection. `_meta.io.modelcontextprotocol/protocolVersion` and
+  `_meta.io.modelcontextprotocol/clientCapabilities` are both required on
+  every request, `clientInfo` is not. A request missing a required field
+  is rejected with `-32602`, an unsupported version with
+  `UnsupportedProtocolVersion` (`-32022`), and a request needing a
+  capability the client did not declare with
+  `MissingRequiredClientCapability` (`-32021`) carrying
+  `data.requiredCapabilities`.
 - `server/discover` returning a `DiscoverResult` with `supportedVersions`
   and the `tools` capability, since the modern era has no `initialize`
-  handshake and the protocol version rides in
-  `_meta.io.modelcontextprotocol/protocolVersion` per request.
+  handshake.
+- `resultType` on every result. The revision requires it, `"complete"` is
+  what this server returns, and it is easy to omit because the field
+  belongs to the envelope MCP wraps rather than to anything Yeomna
+  produces. Results also carry
+  `_meta.io.modelcontextprotocol/serverInfo`, which the revision asks for.
 - `tools/list` returning all 42 in `WIRE_NAMES` order, with a TTL
   advertised because the list is static.
 - `tools/call` building `{"verb": name, "args": arguments}`, spawning the
   target, and mapping the exit code per D7.
-- Two targets: `--local` spawning `yeomna call`, and
-  `--ssh <destination>` spawning `ssh <destination> yeomna call`.
-- `notifications/cancelled`: kill the child, send nothing further for
-  that id.
+- Two targets, both invoking the fixed remote form `yeomna call -` and
+  writing the request to the child's stdin: `--local` spawning
+  `yeomna call -` directly, and `--ssh <destination>` spawning
+  `ssh <destination> yeomna call -`. **The request never travels in
+  argv.** ssh joins its command arguments into one string and hands it to
+  a shell on the far side, so a request carrying a quote, a backtick, a
+  dollar sign, or a semicolon would be interpreted there rather than
+  delivered. Request text is corpus-derived and caller-supplied, which
+  makes argv an injection path and stdin the only correct channel.
+- Transport failure distinguished from verb failure. `yeomna call` exits
+  only 0, 1, or 2, so an ssh exit of 255 is ssh's own failure and every
+  other unexpected status is reported as itself rather than mapped onto a
+  verb outcome.
+- `notifications/cancelled`: terminate and reap the in-flight child, send
+  nothing further for that id, and apply the same cleanup to every
+  in-flight call on stdin EOF.
 
 ## Out of Scope
 
@@ -155,6 +183,23 @@ log is not the record section 6 promises.
 - **FR11** stdin EOF exits the process promptly.
 - **FR12** Exactly one of `--local` and `--ssh` is required. Neither, or
   both, is a usage error.
+- **FR13** Every result carries `resultType: "complete"`, including
+  `server/discover`, `tools/list`, a successful `tools/call`, and a
+  `tools/call` that returns `isError: true`. A refusal is a result and so
+  it carries `resultType` too.
+- **FR14** A request missing `protocolVersion` or `clientCapabilities`,
+  or carrying either malformed, is rejected with `-32602`. A version this
+  server does not support is rejected with `-32022` listing what it does
+  support. A request whose handling would need an undeclared client
+  capability is rejected with `-32021` naming the missing capabilities in
+  `data.requiredCapabilities`.
+- **FR15** The request reaches the child on stdin and is byte-identical
+  to what the server built, for both targets, including requests whose
+  text contains `'`, `"`, backtick, `$(`, `;`, and a newline. No shell on
+  either side of the ssh hop sees request bytes as syntax.
+- **FR16** An ssh exit status of 255 is reported as a transport failure
+  naming the destination, not as a verb refusal. Statuses other than 0,
+  1, 2, and 255 are reported as unexpected, quoting the status.
 
 ## Edge Cases
 
@@ -166,10 +211,14 @@ log is not the record section 6 promises.
   where `yeomna` is absent or a different version: a JSON-RPC error
   quoting what arrived, truncated, because a parse failure that hides
   the bytes is unfixable from the outside.
-- **EC-3** `ssh` itself failing (host down, key refused): distinguished
-  from a verb failure, because one is the transport and one is the
-  appliance, and a caller that cannot tell them apart debugs the wrong
-  machine.
+- **EC-3** `ssh` itself failing (host down, key refused, host key
+  changed): ssh exits 255, which `yeomna call` never returns, so the two
+  are distinguishable in practice and the report names the destination
+  rather than the verb. A caller that cannot tell transport from
+  appliance debugs the wrong machine. The one honest limit: 255 is
+  unambiguous because of what `yeomna call` chooses to return and not
+  because ssh reserves it, so the mapping cites the CLI's exit codes as
+  its warrant.
 - **EC-4** An envelope containing a newline in a message: the JSON-RPC
   line is a single JSON string, so the newline is escaped by
   serialization. Asserted rather than assumed, since the binding forbids
@@ -194,6 +243,26 @@ log is not the record section 6 promises.
   rather than treated as a build failure, and the list is the work it
   names. A missing *variant* doc comment is the stricter case and does
   fail FR2.
+- **EC-9** A request whose arguments carry shell metacharacters, for
+  example a `query` term of `"; rm -rf /"` or a document body containing
+  `$(id)`: transmitted unchanged on stdin and answered as an ordinary
+  query. Tested rather than reasoned about, because the failure would be
+  silent on the happy path and catastrophic once.
+- **EC-10** A client that omits `_meta` entirely, or sends
+  `protocolVersion` as a number: `-32602`, and the connection stays
+  usable, because the protocol is stateless and one bad request is not a
+  broken session.
+- **EC-11** A cancelled or disconnected call whose remote verb is already
+  inside its transaction: the local child is terminated and reaped and
+  nothing further is sent for that id, and the remote verb may still run
+  to completion. ssh does not forward signals without a tty, and closing
+  the channel leaves the far side to notice. This is stated rather than
+  papered over, and the audit row is what makes it visible: the row
+  commits before the verb runs, so an abandoned destructive call leaves a
+  NULL outcome naming its actor rather than no trace. MCP's own wording
+  is that a server SHOULD stop work as soon as practical, which is a
+  best-effort obligation and is met by terminating what this process
+  owns.
 
 ## Implementation Notes
 
@@ -214,9 +283,12 @@ DO:
 - DO let ssh handle connection reuse through the user's own
   `~/.ssh/config`. `ControlMaster` and `ControlPersist` exist and are
   not this crate's business.
-- DO pass the request to the child as a single argument, and prefer
-  stdin (`yeomna call -`) if argument length is ever a question, since
-  the CLI already supports it.
+- DO write the request to the child's stdin and invoke the fixed form
+  `yeomna call -` for both targets. One code path, no argv length
+  ceiling, and no shell on the far side of ssh that could read request
+  bytes as syntax.
+- DO set `resultType` once, in the code that writes a result, so no
+  response path can forget it.
 - DO run the gate three times with the cluster up.
 
 DON'T:
@@ -227,8 +299,12 @@ DON'T:
 - DON'T write a tool table by hand.
 - DON'T hold state between calls. The protocol core is stateless and a
   held session would be a fourth place a session lives.
-- DON'T report a refusal as a JSON-RPC error, or a transport failure as
-  a refusal.
+- DON'T report a refusal as a JSON-RPC error, a transport failure as a
+  refusal, or an ssh 255 as an appliance problem.
+- DON'T interpolate any part of a request into a command line, an `ssh`
+  argument, or a shell string, under any circumstance.
+- DON'T claim a cancelled call stopped remote work. Terminate what this
+  process owns and say what the audit row will show.
 - DON'T let the ssh target default to a host. An absent `--ssh` value is
   a usage error.
 
@@ -252,7 +328,19 @@ DON'T:
 - Tests cover FR1 through FR12, FR3a included, and EC-1 through EC-8.
 - An end-to-end check from the laptop: `yeomna-mcp --ssh olympus`, a
   `tools/list`, a `query --hybrid` tool call against the `weavertools`
-  graph, and the audit row read back on the appliance.
+  graph, and the audit row read back on the appliance. **Which database
+  that call lands in is the target's business, not this server's.**
+  `yeomna call` resolves the database from the config on the machine
+  where it runs, so reaching the WeaverTools KG needs a config there
+  naming `database = "weavertools"`, reached by `/etc/yeomna/yeomna.toml`
+  or `YEOMNA_CONFIG`. The MCP server passes no database and no graph of
+  its own: the graph is a request field the contract already defines for
+  the verbs that take one, and it arrives in the tool's arguments like
+  any other. There is no implicit override and none is added.
+- Protocol conformance checked against the 2026-07-28 revision by
+  transcript rather than by reading: `resultType` present on every
+  result, required `_meta` fields enforced, and the three MCP error codes
+  used only with their specified meanings.
 - The description check reports which variants and fields lack doc
   comments, and that list is recorded in the review notes as work rather
   than silently passed.
