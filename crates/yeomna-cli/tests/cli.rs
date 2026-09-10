@@ -404,3 +404,261 @@ fn an_absent_daemon_names_the_socket_it_tried() {
     assert!(r.stderr.contains("cannot reach the daemon"), "{}", r.stderr);
     assert!(r.stderr.contains("/tmp/yeomna.sock"), "{}", r.stderr);
 }
+
+/// FR8, the census inverted. PR #19's census asserted that every command
+/// reports its hole. This asserts that every wire name in the contract
+/// is reachable as a subcommand, which is the claim that matters once
+/// the holes are filled.
+///
+/// Reachability is tested by whether the path resolves, not by whether
+/// the verb succeeds: a resolved path fails on a missing field or on an
+/// absent store, and only an unresolved one says "unknown command". So
+/// this runs without a cluster and still proves the tree covers the
+/// contract.
+#[test]
+fn every_wire_name_is_reachable_as_a_subcommand() {
+    let mut unreachable = Vec::new();
+    for name in yeomna_verbs::WIRE_NAMES {
+        let path: Vec<&str> = name.split('.').collect();
+        let r = run(None, &path, None);
+        if r.stderr.contains("unknown command") {
+            unreachable.push(name);
+        }
+    }
+    assert!(
+        unreachable.is_empty(),
+        "the tree does not cover the contract: {unreachable:?}"
+    );
+    // And the count is the contract's, not a number kept here (PR #19's
+    // third do-not-repeat: counts come from the contract).
+    assert_eq!(yeomna_verbs::WIRE_NAMES.len(), 42);
+}
+
+/// FR2 and FR3: arguments arrive typed, and the contract is what says a
+/// name or a type was wrong.
+#[test]
+fn arguments_are_typed_and_the_contract_checks_them() {
+    // A misspelled field: the contract denies unknown fields, so the
+    // message names the stranger.
+    let r = run(None, &["list", "--kidn", "callable"], None);
+    assert_eq!(r.code, 2, "{}", r.stderr);
+    assert!(r.stderr.contains("kidn"), "{}", r.stderr);
+
+    // A missing required field: serde says which.
+    let r = run(None, &["graph", "neighbors"], None);
+    assert_eq!(r.code, 2);
+    assert!(r.stderr.contains("missing field"), "{}", r.stderr);
+
+    // A wrong type: `--limit` is a number, so a word is refused by the
+    // contract rather than coerced here.
+    let r = run(None, &["list", "--limit", "many"], None);
+    assert_eq!(r.code, 2);
+    assert!(
+        r.stderr.contains("limit") || r.stderr.contains("invalid type"),
+        "{}",
+        r.stderr
+    );
+}
+
+/// EC-1: a near miss gets the neighbours, not the whole contract.
+#[test]
+fn a_near_miss_suggests_rather_than_dumping_the_tree() {
+    let r = run(None, &["graph", "nieghbors"], None);
+    assert_eq!(r.code, 2);
+    assert!(r.stderr.contains("unknown command"), "{}", r.stderr);
+    assert!(r.stderr.contains("Did you mean"), "{}", r.stderr);
+    assert!(r.stderr.contains("graph neighbors"), "{}", r.stderr);
+    assert!(
+        !r.stderr.contains("codebase.ingest") && !r.stderr.contains("codebase ingest"),
+        "unrelated commands are not listed: {}",
+        r.stderr
+    );
+}
+
+/// A misspelled root, not only a misspelled leaf.
+///
+/// The first cut matched a root by prefix or equality, so `grph` and
+/// `garph` produced no suggestion at all and EC-1's promise held only for
+/// callers who spelled the first word correctly. Edit distance is what
+/// closes that, and a transposition costs two, so the budget has to admit
+/// two on a five-letter root.
+#[test]
+fn a_misspelled_root_still_gets_its_neighbours() {
+    for typo in ["grph", "garph", "codbase", "datbase"] {
+        let r = run(None, &[typo, "list"], None);
+        assert_eq!(r.code, 2, "{typo}: {}", r.stderr);
+        assert!(
+            r.stderr.contains("Did you mean"),
+            "{typo} suggested nothing: {}",
+            r.stderr
+        );
+    }
+    // And a root that resembles nothing gets the whole-list pointer rather
+    // than a list of everything.
+    let r = run(None, &["zzzzzzzz", "list"], None);
+    assert_eq!(r.code, 2);
+    assert!(!r.stderr.contains("Did you mean"), "{}", r.stderr);
+    assert!(r.stderr.contains("yeomna verbs"), "{}", r.stderr);
+}
+
+/// FR4 and FR5: a table by default, the envelope with `--json`, both to
+/// stdout, and the exit code the same either way.
+#[test]
+fn the_tree_renders_a_table_and_json_on_request() {
+    let Some(dir) = socket_dir() else {
+        eprintln!("SKIP: no cluster socket");
+        return;
+    };
+    let (_d, config) = config_for(&dir, None);
+
+    let table = run(Some(&config), &["status"], None);
+    assert_eq!(table.code, 0, "{}", table.stderr);
+    assert!(table.stderr.is_empty(), "everything went to stdout");
+    assert!(table.stdout.contains("store"), "{}", table.stdout);
+    assert!(
+        !table.stdout.starts_with('{'),
+        "the default is a table, not JSON: {}",
+        table.stdout
+    );
+
+    let raw = run(Some(&config), &["status", "--json"], None);
+    assert_eq!(raw.code, 0);
+    let env: serde_json::Value = serde_json::from_str(&raw.stdout).expect("an envelope");
+    assert_eq!(env["success"], true);
+
+    // FR5: a refusal renders and exits 1 through the tree as through
+    // `call` (EC-6).
+    let refused = run(Some(&config), &["embed", "text", "--text", "hello"], None);
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+    assert!(
+        refused.stdout.contains("unimplemented"),
+        "{}",
+        refused.stdout
+    );
+    assert!(
+        refused.stdout.contains("H4"),
+        "it names its hole: {}",
+        refused.stdout
+    );
+}
+
+/// A table has its header on the same stream as its rows, which is the
+/// second of PR #19's do-not-repeat items and the one a redirect would
+/// have exposed.
+#[test]
+fn a_table_keeps_its_header_with_its_rows() {
+    let Some(dir) = socket_dir() else { return };
+    let (_d, config) = config_for(&dir, None);
+    // `query` returns an array of like-shaped objects, which is the shape
+    // that renders as a table. `codebase stats` returns a map and renders
+    // as indented pairs, so it never exercised the table path this test is
+    // named for.
+    let r = run(
+        Some(&config),
+        &[
+            "--graph",
+            "yeomna_self",
+            "query",
+            "--search_text",
+            "recursive parser",
+            "--limit",
+            "3",
+        ],
+        None,
+    );
+    if !r.stdout.contains("hits:") || r.stdout.contains("hits: none") {
+        eprintln!("SKIP: no yeomna_self graph with matching chunks on this cluster");
+        return;
+    }
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stderr.is_empty(), "nothing went to stderr: {}", r.stderr);
+    // Asserting stderr is empty is not enough: it also passes when the
+    // renderer omits the header entirely, which is the failure this test
+    // exists to catch. The header, its rule, and a row have to be on
+    // stdout together and in that order.
+    let lines: Vec<&str> = r
+        .stdout
+        .lines()
+        .skip_while(|l| !l.trim_start().starts_with("graph "))
+        .collect();
+    assert!(
+        lines.len() >= 3,
+        "the table's header is on stdout with its rows: {}",
+        r.stdout
+    );
+    assert!(
+        lines[0].contains("key") && lines[0].contains("rank"),
+        "header: {:?}",
+        lines[0]
+    );
+    assert!(
+        lines[1].trim_start().starts_with("----"),
+        "the rule under the header: {:?}",
+        lines[1]
+    );
+    assert!(
+        !lines[2].trim().is_empty(),
+        "and at least one row after it: {:?}",
+        lines[2]
+    );
+}
+
+/// FR6 and FR7: H8's two commands, through the binary.
+#[test]
+fn tools_reports_and_refuses_to_reach_the_network() {
+    let r = run(None, &["tools", "status"], None);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(r.stdout.contains("analyzer"), "{}", r.stdout);
+    assert!(r.stdout.contains("rust-analyzer"), "{}", r.stdout);
+    assert!(r.stdout.contains("managed tools directory"), "{}", r.stdout);
+
+    // R24: no source, no install, and the message says why.
+    let r = run(None, &["tools", "install", "rust-analyzer"], None);
+    assert_eq!(r.code, 2);
+    assert!(r.stderr.contains("--from"), "{}", r.stderr);
+    assert!(r.stderr.contains("section 5"), "{}", r.stderr);
+
+    let r = run(None, &["tools", "install"], None);
+    assert_eq!(r.code, 2);
+    assert!(r.stderr.contains("needs an analyzer"), "{}", r.stderr);
+
+    let r = run(None, &["tools", "nonsense"], None);
+    assert_eq!(r.code, 2);
+    assert!(r.stderr.contains("status or install"), "{}", r.stderr);
+}
+
+/// `--graph` means one thing to a person, and the contract decides
+/// whether it is a request field or the session's scope.
+#[test]
+fn one_graph_flag_serves_both_kinds_of_verb() {
+    let Some(dir) = socket_dir() else { return };
+    let (_d, config) = config_for(&dir, None);
+
+    // `count` takes its graph from the session.
+    let r = run(
+        Some(&config),
+        &[
+            "--graph",
+            "yeomna_self",
+            "count",
+            "--kind",
+            "file",
+            "--json",
+        ],
+        None,
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let env: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+    assert_eq!(env["data"]["graph"], "yeomna_self");
+
+    // `codebase.stats` carries it as a field, and the same flag reaches
+    // it, which is the collision the contract resolves.
+    let r = run(
+        Some(&config),
+        &["--graph", "yeomna_self", "codebase", "stats", "--json"],
+        None,
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let env: serde_json::Value = serde_json::from_str(&r.stdout).unwrap();
+    assert_eq!(env["data"]["graph"], "yeomna_self");
+}

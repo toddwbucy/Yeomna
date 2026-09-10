@@ -13,6 +13,8 @@ path = "src/main.rs"
 [dependencies]
 yeomna-verbs = { path = "../yeomna-verbs" }
 yeomna-store = { path = "../yeomna-store" }
+# H8: the same resolver the ingest preflight uses.
+yeomna-code = { path = "../yeomna-code" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
