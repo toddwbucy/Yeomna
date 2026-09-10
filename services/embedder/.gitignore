@@ -1,0 +1,5 @@
+# uv.lock is committed on purpose: the resolution is the pin.
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc

@@ -1,0 +1,86 @@
+[Unit]
+# The in-box embedder (spec 022, H4). Mirrors yeomna-daemon.service, which
+# mirrors yeomna-postgres.service. Nothing depends on this unit: an
+# appliance whose embedder is down still ingests, still answers keyword
+# search, and refuses only the verbs that need a vector.
+Description=Yeomna embedder (Unix socket only, GPU 2)
+Documentation=file:///home/todd/git/Yeomna/docs/embedding-contract.md
+
+[Service]
+Type=simple
+# Development runs as the operator, matching the other two units. A
+# deployment gives this a dedicated system user, which is also what makes
+# it immune by category to the logind RemoveIPC class of problem.
+User=todd
+Group=todd
+WorkingDirectory=/home/todd/git/Yeomna/services/embedder
+# The interpreter inside the built virtual environment, not `uv run`.
+# `uv` wants to write a venv under the working directory and a cache under
+# the operator's home, and both are read-only below, with no network to
+# resolve through. Installing the appliance builds the environment
+# (`uv sync --frozen`), and this unit runs the Python that resulted. A
+# service that builds its own dependencies at start is a service that can
+# fail to start for a reason that has nothing to do with the appliance.
+ExecStart=/home/todd/git/Yeomna/services/embedder/.venv/bin/python server.py
+
+# Charter 5.1, and the three layers that hold it. The first is the one
+# that matters, for the same reason RestrictAddressFamilies matters more
+# than listen_addresses on the Postgres unit: the model's own cached
+# modeling code imports `requests`, a network library, into the embedding
+# path, and a private namespace makes that import inert rather than
+# trusted. The offline variables come second and third because a code path
+# that reaches for the network then fails on a variable and says so,
+# instead of failing on the namespace and not saying so.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=HF_HOME=/home/todd/.cache/huggingface
+Environment=YEOMNA_EMBEDDER_SOCKET=/home/todd/.local/share/yeomna/run/embedder.sock
+Environment=YEOMNA_EMBEDDER_DEVICE=cuda:2
+Environment=YEOMNA_EMBEDDER_MAX_TOKENS=16384
+
+# R25: weights are present or this does not start. An unmounted volume is
+# a refusal rather than a 7 GB download into a sealed appliance, which is
+# charter 5.1's third boundary and not a convenience to decide here.
+RequiresMountsFor=/home/todd/.cache/huggingface
+# The allocator setting the 16,384-token ceiling depends on. The service
+# sets it itself with setdefault, because the ceiling it advertises in
+# /v1/info is a promise it has to keep without help, but naming it here
+# documents the dependency where an operator will look.
+Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# The socket lives in a 0700 directory and the file itself is 0600.
+# Filesystem permission is the gate, the same as the store and the daemon.
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+# Read-only rather than absent: the weights live under the operator's
+# cache and this service must be able to read them and unable to add to
+# them.
+ProtectHome=read-only
+ReadWritePaths=/home/todd/.local/share/yeomna/run
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+
+# Two lines the daemon's unit carries and this one cannot, named rather
+# than quietly missing, because an unexplained gap in a hardening list
+# reads as an oversight.
+#
+# MemoryDenyWriteExecute=yes breaks CUDA, which maps writable executable
+# pages for its own kernels.
+# PrivateDevices=yes would hide /dev/nvidia*, leaving the service with no
+# GPU to load onto.
+
+# Like the other two units: a restart loop cannot conjure a card, weights,
+# or a socket directory that is not there, and a service that will not
+# start is a fact an operator should see rather than a symptom that
+# repeats.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

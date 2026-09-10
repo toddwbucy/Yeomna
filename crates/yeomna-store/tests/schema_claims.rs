@@ -214,8 +214,8 @@ async fn claim_4_the_cascade_is_complete() {
         .get(0);
     let vec_literal = format!("[{}]", vec!["0"; 2048].join(","));
     c.execute(
-        "INSERT INTO embeddings (chunk_id, vec, model, model_hash)
-         VALUES ($1, $2::text::halfvec, 'm', 'h')",
+        "INSERT INTO embeddings (chunk_id, vec, model, model_hash, model_revision, task)
+         VALUES ($1, $2::text::halfvec, 'm', 'h', 'rev', 'retrieval.passage')",
         &[&chunk_id, &vec_literal],
     )
     .await
@@ -400,8 +400,9 @@ async fn claim_7_the_pinned_pipeline_shapes_land_losslessly() {
         .get(0);
     let vec_literal = format!("[{}]", vec!["0.5"; 2048].join(","));
     c.execute(
-        "INSERT INTO embeddings (chunk_id, vec, model, model_hash)
-         VALUES ($1, $2::text::halfvec, 'jinaai/jina-embeddings-v4', $3)",
+        "INSERT INTO embeddings (chunk_id, vec, model, model_hash, model_revision, task)
+         VALUES ($1, $2::text::halfvec, 'jinaai/jina-embeddings-v4', $3,
+                 '853c867b65b749f3c3c72a06868140d842e04f06', 'retrieval.passage')",
         &[
             &chunk_id,
             &vec_literal,

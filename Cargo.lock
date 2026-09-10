@@ -3395,11 +3395,13 @@ dependencies = [
  "hyperlocal",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tonic",
  "tower",
  "tracing",
+ "yeomna-chunking",
  "yeomna-proto",
 ]
 
@@ -3452,6 +3454,7 @@ dependencies = [
  "tokio-postgres",
  "tracing",
  "yeomna-chunking",
+ "yeomna-embed",
  "yeomna-keys",
  "yeomna-pipeline",
 ]
@@ -3469,6 +3472,7 @@ dependencies = [
  "tokio-postgres",
  "tracing",
  "yeomna-chunking",
+ "yeomna-embed",
  "yeomna-keys",
  "yeomna-pipeline",
  "yeomna-store",

@@ -1,0 +1,48 @@
+[project]
+name = "yeomna-embedder"
+version = "1.0.0"
+description = "The Yeomna embedding service, yeomna.embedding v1 over a Unix socket"
+readme = "README.md"
+# 3.12 is what the torch and transformers wheels this pin resolves to
+# publish. A newer interpreter is a resolution failure rather than a
+# quiet fallback, which is the same posture the appliance takes to a
+# config file it cannot parse.
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+    # MANDATORY upper bound. transformers 5.x breaks the model's cached
+    # custom code through ROPE_INIT_FUNCTIONS drift, measured by the
+    # spike (spikes/jina-late-loop/README.md, operational notes). The
+    # reference's own >=4.35,<5.0 pin is what let the spike load at all.
+    "transformers>=4.35,<5.0",
+    # The model's own custom code imports all of these. peft carries
+    # MultiAdapterLinear's base class, accelerate is what
+    # from_pretrained's device placement wants, pillow and torchvision
+    # come in through the vision tower the text path never uses, and
+    # requests is a network library the modeling file imports into the
+    # embedding path. The unit's PrivateNetwork=yes is what makes that
+    # import inert.
+    "torch>=2.6,<3.0",
+    "torchvision>=0.21,<1.0",
+    "peft>=0.10,<1.0",
+    "accelerate>=1.0,<2.0",
+    "pillow>=10.0,<13.0",
+    "requests>=2.31,<3.0",
+    "numpy>=1.26,<3.0",
+]
+
+[project.scripts]
+yeomna-embedder = "server:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0,<9.0"]
+
+[tool.uv]
+# The service loads weights from a local snapshot and reaches nothing.
+# Resolution is the one moment this project touches an index, and it
+# happens on a developer machine rather than on the appliance.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+addopts = "-q"

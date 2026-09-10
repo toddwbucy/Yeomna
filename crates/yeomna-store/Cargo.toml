@@ -16,5 +16,7 @@ yeomna-keys = { path = "../yeomna-keys" }
 yeomna-pipeline = { path = "../yeomna-pipeline" }
 
 [dev-dependencies]
+# Only the ingest tests need it, for ChunkPolicy (spec 022).
+yeomna-embed = { path = "../yeomna-embed" }
 tempfile.workspace = true
 yeomna-chunking = { path = "../yeomna-chunking" }

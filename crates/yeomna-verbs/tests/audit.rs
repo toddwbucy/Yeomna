@@ -182,11 +182,15 @@ fn phase_two_verbs() -> Vec<Verb> {
             path: "/nonexistent/tree".into(), // InvalidArgs before any connection
             graph: "audit_graph".into(),
             overwrite: false,
+            embed: false,
+            embed_task: None,
         }),
         Verb::Ingest(IngestRequest {
             path: "/nonexistent/tree".into(), // InvalidArgs
             graph: "audit_graph".into(),
             overwrite: false,
+            embed: false,
+            embed_task: None,
         }),
         Verb::CodebaseDrift(DriftRequest {
             graph: "audit_graph".into(),

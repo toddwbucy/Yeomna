@@ -346,6 +346,7 @@ async fn the_daemon_transport_answers_like_the_embedded_one() {
             port: PORT,
             database: "yeomna".to_string(),
             graph: None,
+            embedder_socket: sockets.path().join("embedder.sock").display().to_string(),
         },
     ));
 
@@ -528,7 +529,14 @@ fn the_tree_renders_a_table_and_json_on_request() {
 
     // FR5: a refusal renders and exits 1 through the tree as through
     // `call` (EC-6).
-    let refused = run(Some(&config), &["embed", "text", "--text", "hello"], None);
+    //
+    // This asked `embed text` and expected it to name H4. **Spec 022 filled
+    // H4**, so it asks a verb that still waits on one: `schema.show` waits
+    // on H7's schema manager. The point of the assertion is the tree
+    // carrying a refusal with the right exit code, not which hole is open,
+    // and the shrinking list of holes is guarded in `read_verbs.rs` where it
+    // belongs.
+    let refused = run(Some(&config), &["schema", "show"], None);
     assert_eq!(refused.code, 1, "{}", refused.stderr);
     assert!(
         refused.stdout.contains("unimplemented"),
@@ -536,9 +544,37 @@ fn the_tree_renders_a_table_and_json_on_request() {
         refused.stdout
     );
     assert!(
-        refused.stdout.contains("H4"),
+        refused.stdout.contains("H7"),
         "it names its hole: {}",
         refused.stdout
+    );
+
+    // And the verb that used to be the refusal here answers now, when the
+    // embedder is running. Skipped rather than failed without it, since an
+    // appliance whose embedder is down is a normal state.
+    let embedded = run(Some(&config), &["embed", "text", "--text", "hello"], None);
+    // Skipped only for the one reason a skip is honest: the embedder is not
+    // there. Skipping on any failure would swallow a regression in
+    // `embed.text` and report it as an absent service.
+    let unreachable = embedded.stdout.contains("did not answer")
+        || embedded.stdout.contains("embedder_socket")
+        || embedded.stdout.contains("still loading");
+    if embedded.code != 0 && unreachable {
+        eprintln!(
+            "SKIP: embed.text needs the embedder running, got: {}",
+            embedded.stdout.lines().next().unwrap_or_default()
+        );
+        return;
+    }
+    assert_eq!(
+        embedded.code, 0,
+        "embed.text failed for a reason that is not an absent embedder: {}{}",
+        embedded.stdout, embedded.stderr
+    );
+    assert!(
+        embedded.stdout.contains("dimension") && embedded.stdout.contains("vector"),
+        "a vector rendered through the tree: {}",
+        embedded.stdout
     );
 }
 
@@ -566,11 +602,13 @@ fn a_table_keeps_its_header_with_its_rows() {
         ],
         None,
     );
+    // The exit code first. Without it a crash, which writes nothing to
+    // stdout, reads as "no matching chunks" and skips.
+    assert_eq!(r.code, 0, "{}{}", r.stdout, r.stderr);
     if !r.stdout.contains("hits:") || r.stdout.contains("hits: none") {
         eprintln!("SKIP: no yeomna_self graph with matching chunks on this cluster");
         return;
     }
-    assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(r.stderr.is_empty(), "nothing went to stderr: {}", r.stderr);
     // Asserting stderr is empty is not enough: it also passes when the
     // renderer omits the header entirely, which is the failure this test

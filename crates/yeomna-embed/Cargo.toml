@@ -20,3 +20,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# The oracle test pools the service's token-level output with the same
+# function the spike validated, and requires the two to agree (spec 022,
+# PRD D3). No cycle: yeomna-chunking depends on nothing here.
+yeomna-chunking = { path = "../yeomna-chunking" }
+tempfile.workspace = true

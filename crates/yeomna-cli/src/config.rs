@@ -34,6 +34,16 @@ pub struct Config {
     /// 0700. Only `--daemon` reads it.
     #[serde(default)]
     pub socket_path: Option<String>,
+    /// Where the in-box embedder listens (spec 022). Beside the other two
+    /// sockets by default, for the same reason: that directory is already
+    /// 0700 and filesystem permission is the gate everywhere here.
+    ///
+    /// The holes ledger noted this key was listed before it existed. It
+    /// exists now. There is deliberately no way to give it a host: charter
+    /// 5.1 makes local embedding a requirement rather than a default, and
+    /// `EmbeddingEndpoint` has no network variant to point one at.
+    #[serde(default)]
+    pub embedder_socket: Option<String>,
 }
 
 impl Config {
@@ -42,6 +52,13 @@ impl Config {
         self.socket_path
             .clone()
             .unwrap_or_else(|| format!("{}/yeomna.sock", self.socket_dir))
+    }
+
+    /// The embedder's socket, named or derived.
+    pub fn embedder_socket(&self) -> String {
+        self.embedder_socket
+            .clone()
+            .unwrap_or_else(|| format!("{}/embedder.sock", self.socket_dir))
     }
 }
 
@@ -68,6 +85,7 @@ impl Default for Config {
             database: default_database(),
             graph: None,
             socket_path: None,
+            embedder_socket: None,
         }
     }
 }
@@ -179,7 +197,8 @@ mod tests {
     #[test]
     fn a_full_file_overrides_every_key() {
         let c: Config = toml::from_str(
-            "socket_dir = \"/run/yeomna\"\nport = 6000\ndatabase = \"other\"\ngraph = \"g\"\n",
+            "socket_dir = \"/run/yeomna\"\nport = 6000\ndatabase = \"other\"\ngraph = \"g\"\n\
+             socket_path = \"/run/yeomna/d.sock\"\nembedder_socket = \"/run/yeomna/e.sock\"\n",
         )
         .unwrap();
         assert_eq!(
@@ -189,7 +208,8 @@ mod tests {
                 port: 6000,
                 database: "other".into(),
                 graph: Some("g".into()),
-                socket_path: None,
+                socket_path: Some("/run/yeomna/d.sock".into()),
+                embedder_socket: Some("/run/yeomna/e.sock".into()),
             }
         );
     }

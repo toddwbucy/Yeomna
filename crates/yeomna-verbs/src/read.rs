@@ -123,20 +123,35 @@ pub async fn orient(s: &Exec<'_>, r: &OrientRequest) -> Result<Value, VerbError>
             )
             .await
             .map_err(db)?;
-        let models: Vec<String> = s
+        // The whole cohort, not only the model (R26, spec 022). Two
+        // vectors from the same model at another revision or under another
+        // LoRA adapter are incomparable, so a reader deciding whether a
+        // graph can be searched with a given query vector needs all three.
+        // More than one row here means the graph holds vectors that cannot
+        // be ranked against each other, which is worth being able to see.
+        let cohorts: Vec<Value> = s
             .client()
             .query(
-                "SELECT DISTINCT e.model FROM embeddings e
+                "SELECT e.model, e.model_revision, e.task, count(*)
+                   FROM embeddings e
                    JOIN chunks c ON c.id = e.chunk_id
                    JOIN nodes n ON n.id = c.node_id
                    JOIN graphs g ON g.id = n.graph_id
-                 WHERE g.name = $1 ORDER BY 1",
+                 WHERE g.name = $1
+                 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3",
                 &[&name],
             )
             .await
             .map_err(db)?
             .iter()
-            .map(|row| row.get(0))
+            .map(|row| {
+                json!({
+                    "model": row.get::<_, String>(0),
+                    "model_revision": row.get::<_, String>(1),
+                    "task": row.get::<_, String>(2),
+                    "embeddings": row.get::<_, i64>(3),
+                })
+            })
             .collect();
         let last: Option<chrono::DateTime<chrono::Utc>> = coverage.get(2);
         graphs.push(json!({
@@ -145,7 +160,7 @@ pub async fn orient(s: &Exec<'_>, r: &OrientRequest) -> Result<Value, VerbError>
             "edges_by_relation_and_basis": tally(&edges),
             "chunks": coverage.get::<_, i64>(0),
             "embeddings": coverage.get::<_, i64>(1),
-            "embedding_models": models,
+            "embedding_cohorts": cohorts,
             "last_ingest": last.map(|t| t.to_rfc3339()),
         }));
     }
@@ -447,8 +462,15 @@ pub async fn recent(s: &Exec<'_>, r: &RecentRequest) -> Result<Value, VerbError>
 /// which is the shape charter section 6 wants.
 pub async fn query(s: &Exec<'_>, r: &QueryRequest) -> Result<Value, VerbError> {
     if r.hybrid {
+        // H4 is filled, so this no longer waits on the embedder. What it
+        // waits on is the fusion itself, which is PRD-embedder Phase 3: one
+        // statement ranking by ts_rank_cd and by vector distance and fusing
+        // the two, with the query vector computed in this verb rather than
+        // accepted from the caller (D7). Naming a closed hole would send a
+        // caller looking in the wrong place.
         return Err(VerbError::Unimplemented(
-            "hybrid ranking needs the embedder, H4. Ask again without it".into(),
+            "hybrid ranking needs the RRF fusion, PRD-embedder Phase 3. The embedder is here, the fusion is not. Ask again without it"
+                .into(),
         ));
     }
     if r.structural {

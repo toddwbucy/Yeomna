@@ -1,31 +1,32 @@
-//! Embedding client — OpenAI-compatible HTTP client for vector embedding
-//! generation.
+//! The embedding client (spec 022, H4).
 //!
-//! Yeomna is **engine-agnostic** at the protocol layer: any embedding engine
-//! that exposes the OpenAI `/v1/embeddings` surface (vLLM, HuggingFace TEI,
-//! a local bridge adapter, llama.cpp-server, ollama where capable) is a
-//! valid backend. Engines speak the same wire shape; the client does not
-//! care which one is running.
+//! Speaks `yeomna.embedding` v1, documented at
+//! `docs/embedding-contract.md`, over HTTP/1.1 with JSON bodies on a Unix
+//! domain socket. Three operations: `GET /v1/info`, `POST /v1/embed`, and
+//! `POST /v1/tokens`.
 //!
-//! Yeomna is **model-bound** at the data layer to Jina V4 (or a future model
-//! with the same capability profile: 2048d, 32k context, multimodal,
-//! late-chunking-capable). Wrong model → invalidated stored vectors. The
-//! engine is fungible, the model is not.
+//! **The socket is the only transport this type can express.** Charter
+//! section 5.1 says embedding is local and says it is a requirement
+//! rather than a configuration default, so [`EmbeddingEndpoint`] holds a
+//! filesystem path and has no variant that could name a host. The
+//! previous shape defaulted to `http://localhost:8087/v1` and that
+//! default, the constant behind it, and the test that pinned it all
+//! retired together (PRD D10).
 //!
-//! Wire protocol: plain HTTP/1.1 JSON, OpenAI-compatible shape.
-//!   - `GET  {base}/models`     → list of available models (used for [`info`])
-//!   - `POST {base}/embeddings` → embedding generation (used for [`embed`])
+//! **The response is always chunked.** There is no single-vector mode.
+//! Late chunking encodes a document in one pass and decides afterwards
+//! where the chunks were, so a response carries chunk vectors with both
+//! their token ranges and their byte spans. [`EmbeddingClient::embed_one`]
+//! is the whole-text case of the same operation rather than a second
+//! shape.
 //!
-//! `task` and `batch_size` are sent as non-standard top-level fields. Engines
-//! that don't recognize them ignore them (per JSON convention). Engines that
-//! do (vLLM-serving-Jina, etc.) use them for retrieval-quality hints.
-//!
-//! Endpoint can be either an HTTP base URL (`http://localhost:8000/v1`) or a
-//! Unix socket path. The Unix socket path is the appliance-native transport
-//! and is where a local adapter (the weaver-bridge pattern) or the future
-//! SPU embedder would expose an OpenAI-compatible surface.
+//! **The service pools, not this client.** PRD D1 rules the fork the
+//! pipeline-libraries PRD deferred. `late_chunk_embeddings` in
+//! `yeomna-chunking` is not the producer any more, it is the oracle the
+//! service is checked against, which is what `POST /v1/tokens` exists
+//! for.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use http::header::CONTENT_TYPE;
@@ -33,124 +34,141 @@ use http::{Method, Request, Uri};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
 use hyperlocal::{UnixClientExt, UnixConnector};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument};
 
-/// Default timeout for embedding requests (5 min for large batches).
+/// Request timeout. A whole-document forward pass on one GPU is slow and
+/// the appliance would rather wait than retry.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
-/// Default connection timeout.
-const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Configuration for the embedding client.
-#[derive(Debug, Clone)]
-pub struct EmbeddingClientConfig {
-    /// Endpoint for the OpenAI-compatible embedding service.
-    pub endpoint: EmbeddingEndpoint,
-    /// Model identifier sent in every request (`model` field of the OpenAI
-    /// embeddings request body). Yeomna is bound to Jina V4 capabilities;
-    /// configure this to match whatever model your engine has loaded.
-    pub model: String,
-    /// Request timeout.
-    pub timeout: Duration,
-    /// Connection timeout.
-    pub connect_timeout: Duration,
-}
+/// The dimension this appliance stores. `embeddings.vec` is
+/// `halfvec(2048)`, which is not a preference: `vector(2048)` was
+/// measured on this cluster to refuse an HNSW index. A service reporting
+/// anything else is refused at connect rather than after an ingest.
+pub const REQUIRED_DIMENSION: u32 = 2048;
 
-/// Endpoint for the embedding service.
+/// Where the embedder answers.
 ///
-/// Both variants speak HTTP/1.1 JSON in the OpenAI-compatible shape; the
-/// only difference is the transport. Unix is the appliance-native seam;
-/// HTTP is the default for everything else today.
-#[derive(Debug, Clone)]
-pub enum EmbeddingEndpoint {
-    /// Unix domain socket path. The server listening on this socket must
-    /// expose `/v1/embeddings` and `/v1/models`.
-    Unix(PathBuf),
-    /// HTTP base URL including the `/v1` prefix
-    /// (e.g. `http://localhost:8000/v1`). The client appends `/embeddings`
-    /// and `/models` to form the full request URI.
-    Tcp(String),
-}
+/// A socket path and nothing else. There is deliberately no way to
+/// construct this from a URL, which is how charter 5.1's local-embedding
+/// requirement is held by the type system rather than by a default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingEndpoint(PathBuf);
 
-/// Default model identifier. Jina V4 is the bound model; future
-/// capability-equivalent models can be substituted by setting this.
-const DEFAULT_MODEL: &str = "jinaai/jina-embeddings-v4";
-/// Default endpoint: the local embedder URL. Port 8087 avoids collisions
-/// with vLLM/uvicorn (8000) and weaver-serve LLM API (8080). Override via
-/// [`EmbeddingClientConfig`] or [`EmbeddingClient::connect_at`]; no
-/// environment variable is consulted by this crate.
-const DEFAULT_ENDPOINT_URL: &str = "http://localhost:8087/v1";
+impl EmbeddingEndpoint {
+    /// Name a socket directly.
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self(path.into())
+    }
 
-impl Default for EmbeddingClientConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: EmbeddingEndpoint::Tcp(DEFAULT_ENDPOINT_URL.to_string()),
-            model: DEFAULT_MODEL.to_string(),
-            timeout: DEFAULT_TIMEOUT,
-            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
-        }
+    /// The socket this endpoint names.
+    pub fn path(&self) -> &Path {
+        &self.0
     }
 }
 
-/// Error type for embedding client operations.
+impl std::fmt::Display for EmbeddingEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.display())
+    }
+}
+
+/// Configuration for the embedding client.
+///
+/// There is no `model` field. One service serves one model, `/v1/info`
+/// says which, and a configured model name could disagree with the
+/// loaded one in a way nothing would notice until two corpora turned out
+/// to be incomparable.
+#[derive(Debug, Clone)]
+pub struct EmbeddingClientConfig {
+    pub endpoint: EmbeddingEndpoint,
+    pub timeout: Duration,
+}
+
+impl EmbeddingClientConfig {
+    /// Point at a socket, with the default timeout.
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self {
+            endpoint: EmbeddingEndpoint::new(path),
+            timeout: DEFAULT_TIMEOUT,
+        }
+    }
+
+    /// Read a socket out of a config value, refusing anything that is not
+    /// one.
+    ///
+    /// This is the path a config file takes, so [`parse_endpoint`]'s
+    /// refusal is reachable by an operator rather than only by a test. It
+    /// also means `unix:///run/yeomna/embedder.sock`, the spelling the
+    /// contract and this crate's own documentation use, resolves to the
+    /// socket rather than to a literal relative path with `unix:` in it.
+    pub fn from_config(value: &str) -> Result<Self, EmbeddingError> {
+        Ok(Self {
+            endpoint: parse_endpoint(value)?,
+            timeout: DEFAULT_TIMEOUT,
+        })
+    }
+}
+
+/// Why an embedding call did not answer.
 #[derive(Debug, thiserror::Error)]
 pub enum EmbeddingError {
-    /// Transport/connection error.
-    #[error("connection error: {0}")]
-    Connection(String),
+    /// The socket was not there, or the transport failed.
+    #[error("embedder unreachable at {endpoint}: {reason}")]
+    Unreachable { endpoint: String, reason: String },
 
-    /// HTTP error from the service.
-    #[error("service error (HTTP {status}): {message}")]
-    Http { status: u16, message: String },
+    /// The service refused, in the contract's error envelope.
+    #[error("embedder refused ({code}): {message}")]
+    Service {
+        status: u16,
+        code: String,
+        message: String,
+    },
 
-    /// Invalid or unparseable response.
-    #[error("invalid response: {0}")]
+    /// The service answered something the contract does not describe.
+    #[error("embedder response invalid: {0}")]
     InvalidResponse(String),
 
-    /// Request timed out.
-    #[error("request timed out after {0}s")]
+    /// The service did not answer in time.
+    #[error("embedder timed out after {0}s")]
     Timeout(u64),
 
-    /// I/O error (socket not found, etc.).
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
 
 impl EmbeddingError {
-    /// Whether this looks like a transient GPU out-of-memory condition that
-    /// might succeed if retried with a smaller batch.
+    /// Whether halving the batch and asking again is worth trying.
     ///
-    /// Heuristic: an HTTP 500 whose body contains an OOM-shaped substring
-    /// from the most common engines (PyTorch's "CUDA out of memory",
-    /// generic "out of memory", or "OutOfMemoryError"). Conservative —
-    /// false negatives just mean we don't halve.
-    fn is_retriable_oom(&self) -> bool {
+    /// Only out-of-memory qualifies. A refusal about the request itself
+    /// is refused just as hard with fewer inputs, and retrying it would
+    /// turn one clear error into several.
+    pub fn is_retriable_oom(&self) -> bool {
+        matches!(self, Self::Service { code, .. } if code == "out-of-memory")
+    }
+
+    /// The contract error code, when the service named one.
+    pub fn code(&self) -> Option<&str> {
         match self {
-            Self::Http {
-                status: 500,
-                message,
-            } => {
-                let m = message.to_ascii_lowercase();
-                m.contains("out of memory")
-                    || m.contains("outofmemoryerror")
-                    || m.contains("cuda oom")
-            }
-            _ => false,
+            Self::Service { code, .. } => Some(code),
+            _ => None,
         }
     }
 }
 
 impl From<hyper_util::client::legacy::Error> for EmbeddingError {
     fn from(e: hyper_util::client::legacy::Error) -> Self {
-        EmbeddingError::Connection(e.to_string())
+        EmbeddingError::Unreachable {
+            endpoint: "the configured socket".into(),
+            reason: e.to_string(),
+        }
     }
 }
 
 impl From<http::Error> for EmbeddingError {
     fn from(e: http::Error) -> Self {
-        EmbeddingError::Connection(e.to_string())
+        EmbeddingError::InvalidResponse(e.to_string())
     }
 }
 
@@ -160,133 +178,213 @@ impl From<serde_json::Error> for EmbeddingError {
     }
 }
 
-/// Provider info derived from the OpenAI `/v1/models` endpoint.
+/// What `GET /v1/info` reports.
 ///
-/// `device` and `dimension` are NOT part of the OpenAI standard; they're
-/// engine-specific and may be `None` depending on the backend. `model_loaded`
-/// is true iff the configured model appears in the engine's `/v1/models`
-/// listing.
+/// `model_revision` is the full model snapshot SHA. It is here rather
+/// than assumed because it is what decides whether two corpora are
+/// comparable, and a service that reloaded a different revision would
+/// otherwise look identical.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProviderInfo {
-    /// Configured model name (echoed from `EmbeddingClientConfig.model`).
-    pub model_name: String,
-    /// Device the model is loaded on (e.g. "cuda:0"). `None` for engines
-    /// that don't expose this via a standard endpoint.
-    #[serde(default)]
-    pub device: Option<String>,
-    /// Whether the configured model appears in the engine's model list.
-    pub model_loaded: bool,
-    /// Embedding dimension. `None` unless the engine advertises it (most
-    /// don't via `/v1/models`); Yeomna expects 2048 for Jina V4 regardless.
-    #[serde(default)]
-    pub dimension: Option<u32>,
+pub struct ServiceInfo {
+    pub model: String,
+    pub model_revision: String,
+    pub dimension: u32,
+    /// The service's real ceiling, not the model's advertised context.
+    /// See the contract's ceiling section: 32k does not fit on this card.
+    pub max_tokens: u32,
+    pub tasks: Vec<String>,
+    pub device: String,
+    /// False while the weights are still loading, in which case `embed`
+    /// refuses with `model-not-loaded` rather than blocking.
+    pub loaded: bool,
 }
 
-/// Client for the embedding service.
+/// One chunk of one input, with both coordinate systems.
 ///
-/// Speaks HTTP/1.1 JSON over Unix domain socket or TCP.
+/// The token range is what the pooling used. The byte span is what the
+/// store holds, since `chunks.start_char` and `chunks.end_char` are byte
+/// offsets. Both ride every chunk because the mapping between them is
+/// where the spike found a defect, so a consumer can check one against
+/// the other rather than trusting it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmbeddedChunk {
+    pub chunk_index: u32,
+    pub total_chunks: u32,
+    pub vector: Vec<f32>,
+    pub start_token: u32,
+    pub end_token: u32,
+    pub start_byte: usize,
+    pub end_byte: usize,
+}
+
+impl EmbeddedChunk {
+    /// The chunk's own text, sliced out of the input this chunk came
+    /// from.
+    ///
+    /// Returns `None` when the span does not land on character
+    /// boundaries, which means the service's offset conversion is wrong
+    /// and is worth surfacing rather than panicking on.
+    pub fn slice<'t>(&self, input: &'t str) -> Option<&'t str> {
+        input.get(self.start_byte..self.end_byte)
+    }
+}
+
+/// One input's chunks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddedInput {
+    /// Position in the request's input array. Redundant with position in
+    /// `results` on purpose, so a mis-ordered response is detectable.
+    pub index: usize,
+    /// Tokens the forward pass saw, prefix excluded.
+    pub token_count: u32,
+    pub chunks: Vec<EmbeddedChunk>,
+}
+
+/// What `POST /v1/embed` returns.
+#[derive(Debug, Clone)]
+pub struct EmbedResult {
+    pub model: String,
+    pub model_revision: String,
+    pub task: String,
+    pub dimension: u32,
+    /// One entry per input, in input order.
+    pub results: Vec<EmbeddedInput>,
+    pub duration_ms: u64,
+}
+
+/// What `POST /v1/tokens` returns. Its only consumer is the oracle test.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenStates {
+    pub model: String,
+    pub model_revision: String,
+    pub task: String,
+    pub dimension: u32,
+    pub token_count: u32,
+    pub prefix_bytes: usize,
+    /// Byte pairs into the caller's own text, prefix already rebased.
+    pub offsets: Vec<(usize, usize)>,
+    /// `token_count` vectors of `dimension` floats.
+    pub hidden_states: Vec<Vec<f32>>,
+}
+
+/// The client.
 #[derive(Clone)]
 pub struct EmbeddingClient {
     config: EmbeddingClientConfig,
-    unix_client: Option<Client<UnixConnector, Full<Bytes>>>,
-    tcp_client: Option<Client<hyper_util::client::legacy::connect::HttpConnector, Full<Bytes>>>,
+    http: Client<UnixConnector, Full<Bytes>>,
+    info: ServiceInfo,
 }
 
 impl EmbeddingClient {
-    /// Connect to the embedding service.
+    /// Connect, and learn what the service is.
     ///
-    /// For Unix sockets, validates the socket file exists. For TCP,
-    /// validates the URL parses. The actual HTTP connection is made
-    /// on the first request.
-    #[instrument(skip_all)]
+    /// This calls `/v1/info`, so a client cannot exist without the
+    /// service answering. That is deliberate: the alternative defers the
+    /// discovery that the model is wrong until vectors are already in
+    /// the store, and there is no re-embed-in-place tool to fix it with
+    /// (T4).
+    ///
+    /// The dimension is checked here against [`REQUIRED_DIMENSION`],
+    /// because `halfvec(2048)` is the column and a mismatch is not
+    /// recoverable at write time in any useful way.
+    #[instrument(skip_all, fields(socket = %config.endpoint))]
     pub async fn connect(config: EmbeddingClientConfig) -> Result<Self, EmbeddingError> {
-        match &config.endpoint {
-            EmbeddingEndpoint::Unix(path) => {
-                if !path.exists() {
-                    return Err(EmbeddingError::Connection(format!(
-                        "socket not found: {}",
-                        path.display()
-                    )));
-                }
-                debug!(socket = %path.display(), "embedding client targeting UDS");
-                let client = Client::unix();
-                info!("embedding client ready (Unix socket)");
-                Ok(Self {
-                    config,
-                    unix_client: Some(client),
-                    tcp_client: None,
-                })
+        let socket = config.endpoint.path();
+        // Not `Path::exists`: that answers false on EACCES too, and this
+        // repo has already shipped one bug that way (CodeRabbit #43).
+        match std::fs::metadata(socket) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(EmbeddingError::Unreachable {
+                    endpoint: config.endpoint.to_string(),
+                    reason: "no socket there. Is yeomna-embedder.service running".into(),
+                });
             }
-            EmbeddingEndpoint::Tcp(addr) => {
-                debug!(addr, "embedding client targeting TCP");
-                let connector = hyper_util::client::legacy::connect::HttpConnector::new();
-                let client = Client::builder(TokioExecutor::new())
-                    .pool_idle_timeout(Duration::from_secs(90))
-                    .build(connector);
-                info!("embedding client ready (TCP)");
-                Ok(Self {
-                    config,
-                    unix_client: None,
-                    tcp_client: Some(client),
-                })
+            Err(e) => {
+                return Err(EmbeddingError::Unreachable {
+                    endpoint: config.endpoint.to_string(),
+                    reason: e.to_string(),
+                });
             }
         }
-    }
 
-    /// Connect to the embedding service with default configuration.
-    pub async fn connect_default() -> Result<Self, EmbeddingError> {
-        Self::connect(EmbeddingClientConfig::default()).await
-    }
-
-    /// Connect to an embedding service at the given Unix socket path.
-    pub async fn connect_unix_at(path: impl Into<PathBuf>) -> Result<Self, EmbeddingError> {
-        let config = EmbeddingClientConfig {
-            endpoint: EmbeddingEndpoint::Unix(path.into()),
-            ..Default::default()
+        let http = Client::unix();
+        let partial = Self {
+            config,
+            http,
+            info: ServiceInfo {
+                model: String::new(),
+                model_revision: String::new(),
+                dimension: 0,
+                max_tokens: 0,
+                tasks: Vec::new(),
+                device: String::new(),
+                loaded: false,
+            },
         };
-        Self::connect(config).await
+        let info = partial.fetch_info().await?;
+
+        if info.dimension != REQUIRED_DIMENSION {
+            return Err(EmbeddingError::InvalidResponse(format!(
+                "the service serves {} dimensions and the store's column is halfvec({}). \
+                 Vectors from this model cannot be written here",
+                info.dimension, REQUIRED_DIMENSION
+            )));
+        }
+
+        info!(
+            model = %info.model,
+            revision = %info.model_revision,
+            device = %info.device,
+            max_tokens = info.max_tokens,
+            loaded = info.loaded,
+            "embedder ready"
+        );
+        Ok(Self { info, ..partial })
     }
 
-    /// Connect to an embedding service at the given endpoint string,
-    /// auto-detecting the transport from the prefix.
-    ///
-    /// - `http://...` → HTTP/TCP endpoint (the base URL,
-    ///   typically including `/v1`)
-    /// - `unix:///path/to/socket`      → Unix domain socket
-    /// - `/path/to/socket`             → Unix domain socket (bare absolute path)
-    ///
-    /// Anything else is rejected with [`EmbeddingError::Connection`].
-    pub async fn connect_at(endpoint_str: &str) -> Result<Self, EmbeddingError> {
-        let endpoint = parse_endpoint(endpoint_str)?;
-        let config = EmbeddingClientConfig {
-            endpoint,
-            ..Default::default()
-        };
-        Self::connect(config).await
+    /// Connect to a socket path.
+    pub async fn connect_at(path: impl Into<PathBuf>) -> Result<Self, EmbeddingError> {
+        Self::connect(EmbeddingClientConfig::at(path)).await
     }
 
-    /// Embed a batch of texts into vectors.
+    /// Connect to whatever a config file named, refusing a URL by name.
+    pub async fn connect_configured(value: &str) -> Result<Self, EmbeddingError> {
+        Self::connect(EmbeddingClientConfig::from_config(value)?).await
+    }
+
+    /// What the service said about itself at connect.
+    pub fn info(&self) -> &ServiceInfo {
+        &self.info
+    }
+
+    /// The socket this client speaks to.
+    pub fn endpoint(&self) -> &EmbeddingEndpoint {
+        &self.config.endpoint
+    }
+
+    /// Embed texts, late-chunked.
     ///
-    /// When `batch_size` is set, the texts are split into chunks of that size
-    /// and sent as multiple HTTP requests. This client-side chunking keeps
-    /// each request small enough to fit within the embedder's VRAM headroom:
-    /// the server's `batch_size` hint isn't always honored as a chunking
-    /// boundary, so the client owns that responsibility. When `batch_size`
-    /// is unset or zero, the entire input is sent in a single request.
-    ///
-    /// Returns one embedding vector per input text, in input order.
-    #[instrument(skip(self, texts), fields(count = texts.len()))]
+    /// `batch_size` splits the inputs across requests, which is how a
+    /// long document list stays inside the card's headroom. On an
+    /// out-of-memory refusal a multi-input batch is halved and retried,
+    /// and results are reassembled by input index so the order does not
+    /// depend on which sub-batch finished first.
+    #[instrument(skip(self, texts), fields(count = texts.len(), task = %task))]
     pub async fn embed(
         &self,
         texts: &[String],
         task: &str,
+        chunking: ChunkPolicy,
         batch_size: Option<u32>,
     ) -> Result<EmbedResult, EmbeddingError> {
         if texts.is_empty() {
             return Ok(EmbedResult {
-                embeddings: Vec::new(),
-                model: self.config.model.clone(),
-                dimension: 0,
+                model: self.info.model.clone(),
+                model_revision: self.info.model_revision.clone(),
+                task: task.to_string(),
+                dimension: self.info.dimension,
+                results: Vec::new(),
                 duration_ms: 0,
             });
         }
@@ -296,47 +394,46 @@ impl EmbeddingClient {
             .map(|n| n as usize)
             .unwrap_or(texts.len());
 
-        // Work queue: (start_index_into_texts, slice). Halving on OOM splits
-        // a slice into two and pushes both back onto the front of the queue.
-        // The BTreeMap keyed by start index reassembles results in input order
-        // regardless of the order in which sub-batches complete.
         use std::collections::{BTreeMap, VecDeque};
         let mut work: VecDeque<(usize, &[String])> = VecDeque::new();
         for (i, batch) in texts.chunks(per_request).enumerate() {
             work.push_back((i * per_request, batch));
         }
 
-        let mut completed: BTreeMap<usize, Vec<Vec<f32>>> = BTreeMap::new();
-        let mut model = self.config.model.clone();
-        let mut dimension = 0u32;
-        let mut total_duration_ms = 0u64;
+        let mut done: BTreeMap<usize, EmbeddedInput> = BTreeMap::new();
+        let model = self.info.model.clone();
+        let revision = self.info.model_revision.clone();
+        let mut total_ms = 0u64;
 
         while let Some((start, batch)) = work.pop_front() {
-            match self.embed_single_request(batch, task, batch_size).await {
-                Ok(result) => {
-                    model = result.model;
-                    if dimension == 0 {
-                        dimension = result.dimension;
-                    } else if result.dimension != dimension {
+            match self.embed_batch(batch, task, chunking).await {
+                Ok(part) => {
+                    // A batch split across requests must come back from one
+                    // cohort. Taking whichever sub-batch answered last would
+                    // silently mix two geometries into one result, and the
+                    // store would record the wrong provenance for half of
+                    // them with no way to tell afterwards.
+                    if part.model != model || part.model_revision != revision {
                         return Err(EmbeddingError::InvalidResponse(format!(
-                            "dimension mismatch across batches: {dimension} vs {}",
-                            result.dimension
+                            "the service answered as {} @ {} and then as {} @ {} within one \
+                             batch. Vectors from two cohorts cannot be compared",
+                            model, revision, part.model, part.model_revision
                         )));
                     }
-                    total_duration_ms = total_duration_ms.saturating_add(result.duration_ms);
-                    completed.insert(start, result.embeddings);
+                    total_ms = total_ms.saturating_add(part.duration_ms);
+                    for mut r in part.results {
+                        // The service indexes within the sub-batch it
+                        // was given, so rebase onto the caller's array.
+                        r.index += start;
+                        done.insert(r.index, r);
+                    }
                 }
                 Err(e) if e.is_retriable_oom() && batch.len() > 1 => {
-                    // GPU OOM with a multi-chunk batch — halve and retry.
-                    // Push the right half first so the left half pops first
-                    // (front of queue); doesn't affect correctness since the
-                    // BTreeMap reassembles by start index, but makes the work
-                    // trace easier to read in logs.
                     let mid = batch.len() / 2;
                     debug!(
                         start,
-                        batch_size = batch.len(),
-                        "embed batch OOM — halving to {} and {}",
+                        inputs = batch.len(),
+                        "embedder out of memory, halving to {} and {}",
                         mid,
                         batch.len() - mid
                     );
@@ -347,249 +444,208 @@ impl EmbeddingClient {
             }
         }
 
-        let all_embeddings: Vec<Vec<f32>> = completed.into_values().flatten().collect();
-
-        Ok(EmbedResult {
-            embeddings: all_embeddings,
-            model,
-            dimension,
-            duration_ms: total_duration_ms,
-        })
-    }
-
-    /// Send a single `POST /embeddings` request for the given texts.
-    ///
-    /// Sends `POST {base}/embeddings` in the OpenAI-compatible shape:
-    /// `{"model": ..., "input": [...]}`. The non-standard `task` hint
-    /// (e.g. `"retrieval.query"`, `"retrieval.passage"` for Jina V4) and
-    /// `batch_size` are sent as non-standard top-level fields — engines
-    /// that don't understand them ignore them.
-    async fn embed_single_request(
-        &self,
-        texts: &[String],
-        task: &str,
-        batch_size: Option<u32>,
-    ) -> Result<EmbedResult, EmbeddingError> {
-        let mut body = serde_json::json!({
-            "model": self.config.model,
-            "input": texts,
-            "encoding_format": "float",
-        });
-        if !task.is_empty() {
-            body["task"] = serde_json::json!(task);
-        }
-        if let Some(bs) = batch_size
-            && bs > 0
-        {
-            body["batch_size"] = serde_json::json!(bs);
-        }
-
-        let started = std::time::Instant::now();
-        let resp = self
-            .request(Method::POST, "/embeddings", Some(&body))
-            .await?;
-        let duration_ms = started.elapsed().as_millis() as u64;
-
-        // OpenAI shape: { "object": "list", "data": [{"object":"embedding","embedding":[...],"index":N}], "model": "...", "usage": {...} }
-        let data = resp["data"].as_array().ok_or_else(|| {
-            EmbeddingError::InvalidResponse(
-                "missing 'data' array in /v1/embeddings response".into(),
-            )
-        })?;
-
-        // Sort by `index` to guarantee input-order alignment regardless of
-        // server-side reordering (some engines parallelize and may reorder).
-        let mut indexed: Vec<(usize, Vec<f32>)> = data
-            .iter()
-            .map(|item| {
-                let idx = item["index"].as_u64().unwrap_or(0) as usize;
-                let embedding: Vec<f32> = item["embedding"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_f64().map(|f| f as f32))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                (idx, embedding)
-            })
-            .collect();
-        indexed.sort_by_key(|(i, _)| *i);
-        let embeddings: Vec<Vec<f32>> = indexed.into_iter().map(|(_, v)| v).collect();
-
-        if embeddings.len() != texts.len() {
+        let results: Vec<EmbeddedInput> = done.into_values().collect();
+        if results.len() != texts.len() {
             return Err(EmbeddingError::InvalidResponse(format!(
-                "expected {} embeddings, got {}",
+                "asked for {} inputs and got {} back",
                 texts.len(),
-                embeddings.len()
+                results.len()
             )));
         }
-
-        // Derive dimension from first non-empty embedding; verify all match.
-        let dimension = embeddings.first().map(|v| v.len() as u32).unwrap_or(0);
-        for (i, emb) in embeddings.iter().enumerate() {
-            if emb.len() as u32 != dimension {
+        for (i, r) in results.iter().enumerate() {
+            if r.index != i {
                 return Err(EmbeddingError::InvalidResponse(format!(
-                    "embedding[{}] has dimension {}, expected {}",
-                    i,
-                    emb.len(),
-                    dimension
+                    "result {i} claims index {}",
+                    r.index
                 )));
             }
         }
 
-        // Engine echoes the model name back in the response; fall back to
-        // the configured one if absent.
-        let model = resp["model"]
-            .as_str()
-            .map(String::from)
-            .unwrap_or_else(|| self.config.model.clone());
-
-        debug!(
-            count = embeddings.len(),
-            dimension,
-            duration_ms,
-            model = %model,
-            "embedding complete"
-        );
-
         Ok(EmbedResult {
-            embeddings,
             model,
-            dimension,
-            duration_ms,
+            model_revision: revision,
+            task: task.to_string(),
+            dimension: self.info.dimension,
+            results,
+            duration_ms: total_ms,
         })
     }
 
-    /// Embed a single text string.
+    /// One document's chunks, which is the shape both ingest paths want.
+    ///
+    /// The convenience lives here rather than only on the pipeline's
+    /// `Embedder` trait so this crate's own tests can reach it without
+    /// depending on the pipeline, which depends on this crate.
+    pub async fn embed_document(
+        &self,
+        text: &str,
+        task: &str,
+        chunking: ChunkPolicy,
+    ) -> Result<Vec<EmbeddedChunk>, EmbeddingError> {
+        let inputs = [text.to_string()];
+        let result = self.embed(&inputs, task, chunking, None).await?;
+        result
+            .results
+            .into_iter()
+            .next()
+            .map(|r| r.chunks)
+            .ok_or_else(|| EmbeddingError::InvalidResponse("no result for the one input".into()))
+    }
+
+    /// One vector for one text, pooled over the whole thing.
+    ///
+    /// This is the single-window case of [`Self::embed`] rather than a
+    /// second shape: the chunk size is the service's ceiling, so the
+    /// windowing rule emits exactly one window clamped to the token
+    /// count. It is what a query wants, and what `embed.text` returns.
     pub async fn embed_one(&self, text: &str, task: &str) -> Result<Vec<f32>, EmbeddingError> {
-        let result = self.embed(&[text.to_string()], task, None).await?;
-        Ok(result.embeddings.into_iter().next().unwrap())
+        let inputs = [text.to_string()];
+        let result = self
+            .embed(
+                &inputs,
+                task,
+                ChunkPolicy::whole_text(self.info.max_tokens),
+                None,
+            )
+            .await?;
+        let chunks = result
+            .results
+            .into_iter()
+            .next()
+            .ok_or_else(|| EmbeddingError::InvalidResponse("no result for the one input".into()))?
+            .chunks;
+        let mut chunks = chunks.into_iter();
+        let first = chunks
+            .next()
+            .ok_or_else(|| EmbeddingError::InvalidResponse("no chunk for the one input".into()))?;
+        if chunks.next().is_some() {
+            return Err(EmbeddingError::InvalidResponse(
+                "one window over the whole text produced more than one chunk".into(),
+            ));
+        }
+        Ok(first.vector)
     }
 
-    /// Query the embedding provider's model availability via OpenAI's
-    /// `/v1/models` endpoint.
+    /// Token-level hidden states, for the oracle test and nothing else.
     ///
-    /// Returns `model_loaded = true` iff the configured model
-    /// (`EmbeddingClientConfig.model`) appears in the engine's listing.
-    /// `device` and `dimension` are not part of the OpenAI standard and
-    /// will be `None` for engines that don't extend the response.
-    #[instrument(skip(self))]
-    pub async fn info(&self) -> Result<ProviderInfo, EmbeddingError> {
-        let resp = self.request(Method::GET, "/models", None).await?;
-
-        let configured_model = &self.config.model;
-
-        // OpenAI shape: { "object": "list", "data": [{"id": "...", ...}, ...] }
-        let data = resp["data"].as_array();
-        let model_loaded = data
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| item["id"].as_str())
-                    .any(|id| id == configured_model)
-            })
-            .unwrap_or(false);
-
-        // Some engines (vLLM, llama.cpp-server) attach extra fields we can
-        // opportunistically read. Standard says no, but if they're there we
-        // surface them.
-        let device = data
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|item| item["id"].as_str() == Some(configured_model.as_str()))
-            })
-            .and_then(|item| item["device"].as_str().map(String::from));
-        let dimension = data
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|item| item["id"].as_str() == Some(configured_model.as_str()))
-            })
-            .and_then(|item| item["dimension"].as_u64().map(|n| n as u32));
-
-        debug!(
-            model = %configured_model,
-            loaded = model_loaded,
-            "provider info retrieved"
-        );
-
-        Ok(ProviderInfo {
-            model_name: configured_model.clone(),
-            device,
-            model_loaded,
-            dimension,
-        })
+    /// Capped by the service at a small token count so it cannot become
+    /// the production path by convenience. See the contract.
+    pub async fn tokens(&self, text: &str, task: &str) -> Result<TokenStates, EmbeddingError> {
+        let body = serde_json::json!({ "input": text, "task": task });
+        let resp = self.request(Method::POST, "/tokens", Some(&body)).await?;
+        serde_json::from_value(resp)
+            .map_err(|e| EmbeddingError::InvalidResponse(format!("/v1/tokens: {e}")))
     }
 
-    /// Check if the service is reachable.
-    ///
-    /// Uses a short timeout so a stalled service returns `false` quickly
-    /// rather than blocking for the full request timeout.
-    pub async fn health_check(&self) -> bool {
-        match tokio::time::timeout(Duration::from_secs(5), self.info()).await {
-            Ok(Ok(_)) => true,
-            Ok(Err(e)) => {
-                warn!(error = %e, "embedding service health check failed");
-                false
-            }
-            Err(_) => {
-                warn!("embedding service health check timed out");
-                false
+    // ---------------------------------------------------------------------
+
+    async fn fetch_info(&self) -> Result<ServiceInfo, EmbeddingError> {
+        let resp = self.request(Method::GET, "/info", None).await?;
+        serde_json::from_value(resp)
+            .map_err(|e| EmbeddingError::InvalidResponse(format!("/v1/info: {e}")))
+    }
+
+    async fn embed_batch(
+        &self,
+        texts: &[String],
+        task: &str,
+        chunking: ChunkPolicy,
+    ) -> Result<EmbedResult, EmbeddingError> {
+        let body = serde_json::json!({
+            "input": texts,
+            "task": task,
+            "chunk_size_tokens": chunking.size_tokens,
+            "chunk_overlap_tokens": chunking.overlap_tokens,
+        });
+
+        let started = std::time::Instant::now();
+        let resp = self.request(Method::POST, "/embed", Some(&body)).await?;
+        let duration_ms = started.elapsed().as_millis() as u64;
+
+        let dimension = resp["dimension"].as_u64().unwrap_or(0) as u32;
+        if dimension != self.info.dimension {
+            return Err(EmbeddingError::InvalidResponse(format!(
+                "the service reported {} dimensions at connect and {dimension} now",
+                self.info.dimension
+            )));
+        }
+        let results: Vec<EmbeddedInput> = serde_json::from_value(resp["results"].clone())
+            .map_err(|e| EmbeddingError::InvalidResponse(format!("/v1/embed results: {e}")))?;
+
+        // Every vector is the declared width, checked here rather than at
+        // the store where the failure would be a Postgres cast error.
+        for r in &results {
+            for c in &r.chunks {
+                if c.vector.len() as u32 != dimension {
+                    return Err(EmbeddingError::InvalidResponse(format!(
+                        "input {} chunk {} has {} floats, expected {dimension}",
+                        r.index,
+                        c.chunk_index,
+                        c.vector.len()
+                    )));
+                }
             }
         }
+
+        // The cohort is read, never defaulted. Falling back to the
+        // connect-time values would make a response that omits them
+        // indistinguishable from one that agrees, so the cross-batch cohort
+        // guard would compare those values against themselves and always
+        // pass, and the pipeline would stamp them into
+        // `embeddings.model_revision` on the strength of a field the service
+        // never sent. There is no re-embed-in-place tool to undo that (T4),
+        // which is why this refuses rather than defaults.
+        let cohort = |field: &str| -> Result<String, EmbeddingError> {
+            resp[field].as_str().map(str::to_string).ok_or_else(|| {
+                EmbeddingError::InvalidResponse(format!(
+                    "/v1/embed answered without a string {field}, so the cohort of these vectors is unknown and they cannot be stored"
+                ))
+            })
+        };
+
+        Ok(EmbedResult {
+            model: cohort("model")?,
+            model_revision: cohort("model_revision")?,
+            task: cohort("task")?,
+            dimension,
+            results,
+            duration_ms,
+        })
     }
 
-    /// Get the configured endpoint.
-    pub fn endpoint(&self) -> &EmbeddingEndpoint {
-        &self.config.endpoint
-    }
-
-    // -----------------------------------------------------------------------
-    // HTTP transport
-    // -----------------------------------------------------------------------
-
-    /// Send an HTTP request to the embedding service.
     async fn request(
         &self,
         method: Method,
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, EmbeddingError> {
-        let uri = self.build_uri(path)?;
+        let uri: Uri =
+            hyperlocal::Uri::new(self.config.endpoint.path(), &format!("/v1{path}")).into();
 
         let body_bytes = match body {
             Some(v) => serde_json::to_vec(v)?,
             None => Vec::new(),
         };
-
         let mut builder = Request::builder().method(method).uri(uri);
         if body.is_some() {
             builder = builder.header(CONTENT_TYPE, "application/json");
         }
-
         let req = builder.body(Full::new(Bytes::copy_from_slice(&body_bytes)))?;
 
         let timeout = self.config.timeout;
-        let response_future = if let Some(ref client) = self.unix_client {
-            client.request(req)
-        } else if let Some(ref client) = self.tcp_client {
-            client.request(req)
-        } else {
-            return Err(EmbeddingError::Connection(
-                "no transport configured".to_string(),
-            ));
-        };
-
-        // One deadline covers both the response headers and the body
-        // collection: a service that returns headers promptly and then
-        // stalls the body must still trip the timeout.
-        let (status, resp_bytes) = tokio::time::timeout(timeout, async {
-            let response = response_future.await?;
+        // One deadline covers headers and body, so a service that
+        // answers promptly and then stalls the body still trips it.
+        let (status, bytes) = tokio::time::timeout(timeout, async {
+            let response = self.http.request(req).await?;
             let status = response.status();
             let bytes = response
                 .into_body()
                 .collect()
                 .await
-                .map_err(|e| EmbeddingError::Connection(e.to_string()))?
+                .map_err(|e| EmbeddingError::Unreachable {
+                    endpoint: self.config.endpoint.to_string(),
+                    reason: e.to_string(),
+                })?
                 .to_bytes();
             Ok::<_, EmbeddingError>((status, bytes))
         })
@@ -597,93 +653,121 @@ impl EmbeddingClient {
         .map_err(|_| EmbeddingError::Timeout(timeout.as_secs()))??;
 
         if !status.is_success() {
-            let message = String::from_utf8_lossy(&resp_bytes).into_owned();
-            return Err(EmbeddingError::Http {
-                status: status.as_u16(),
-                message,
+            return Err(self.service_error(status.as_u16(), &bytes));
+        }
+
+        serde_json::from_slice(&bytes)
+            .map_err(|e| EmbeddingError::InvalidResponse(format!("unparseable response: {e}")))
+    }
+
+    /// Read the contract's error envelope, falling back to the raw body
+    /// when the service answered something else.
+    fn service_error(&self, status: u16, bytes: &[u8]) -> EmbeddingError {
+        let parsed: Option<serde_json::Value> = serde_json::from_slice(bytes).ok();
+        let (code, message) = parsed
+            .as_ref()
+            .and_then(|v| v.get("error"))
+            .map(|e| {
+                (
+                    e.get("code")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("internal")
+                        .to_string(),
+                    e.get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    "internal".to_string(),
+                    String::from_utf8_lossy(bytes).into_owned(),
+                )
             });
-        }
-
-        serde_json::from_slice(&resp_bytes).map_err(|e| {
-            EmbeddingError::InvalidResponse(format!("failed to parse response JSON: {e}"))
-        })
-    }
-
-    /// Build a URI for the given path, using Unix socket or TCP.
-    ///
-    /// For Unix endpoints, the path is appended directly (e.g.
-    /// `/v1/embeddings`). For HTTP endpoints, the path is appended to the
-    /// configured base URL (e.g. `http://localhost:8000/v1` + `/embeddings`).
-    fn build_uri(&self, path: &str) -> Result<Uri, EmbeddingError> {
-        match &self.config.endpoint {
-            EmbeddingEndpoint::Unix(socket) => {
-                // Bridge servers on the Unix socket expose the full /v1/...
-                // path; we add the /v1 prefix here so `path` argument stays
-                // bare (`/embeddings`, `/models`).
-                let full = format!("/v1{}", path);
-                Ok(hyperlocal::Uri::new(socket, &full).into())
-            }
-            EmbeddingEndpoint::Tcp(base) => {
-                // HTTP endpoints already include /v1 in the configured base.
-                let url = format!("{}{}", base.trim_end_matches('/'), path);
-                url.parse()
-                    .map_err(|e| EmbeddingError::Connection(format!("invalid URI: {e}")))
-            }
+        EmbeddingError::Service {
+            status,
+            code,
+            message,
         }
     }
 }
 
-/// Parse an endpoint string into an [`EmbeddingEndpoint`].
+/// Where the chunk boundaries fall, in tokens.
 ///
-/// Recognized prefixes:
-/// - `http://`                       → HTTP/TCP base URL (must include `/v1`)
-/// - `unix:///path/to/socket`        → Unix domain socket
-/// - `/path/to/socket` (bare path)   → Unix domain socket
-///
-/// `https://` is rejected: no TLS connector exists in this crate's
-/// dependency tree, so accepting the scheme would defer the failure to an
-/// obscure connect-time error. Inside the sealed appliance every internal
-/// seam is a Unix socket or localhost HTTP, so TLS support is a deliberate
-/// absence, not a gap.
-fn parse_endpoint(endpoint_str: &str) -> Result<EmbeddingEndpoint, EmbeddingError> {
-    if endpoint_str.starts_with("https://") {
-        Err(EmbeddingError::Connection(
-            "https:// endpoints are not supported: no TLS connector is built into this client"
-                .to_string(),
-        ))
-    } else if endpoint_str.starts_with("http://") {
-        Ok(EmbeddingEndpoint::Tcp(endpoint_str.to_string()))
-    } else if let Some(path) = endpoint_str.strip_prefix("unix://") {
-        Ok(EmbeddingEndpoint::Unix(PathBuf::from(path)))
-    } else if endpoint_str.starts_with('/') {
-        Ok(EmbeddingEndpoint::Unix(PathBuf::from(endpoint_str)))
-    } else {
-        Err(EmbeddingError::Connection(format!(
-            "endpoint must start with http://, unix://, or be an absolute path; got '{endpoint_str}'"
-        )))
+/// These are request fields rather than service settings, so the service
+/// executes a chunking policy and never owns one. The windowing rule is
+/// `late_chunk_embeddings`'s rule, stated in the contract so two
+/// implementations cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkPolicy {
+    pub size_tokens: u32,
+    pub overlap_tokens: u32,
+}
+
+impl ChunkPolicy {
+    /// One window over the whole input, whatever its length, by asking
+    /// for a window at least as wide as the service will accept.
+    pub fn whole_text(max_tokens: u32) -> Self {
+        Self {
+            size_tokens: max_tokens.max(1),
+            overlap_tokens: 0,
+        }
     }
 }
 
-/// Result of an embedding operation.
-#[derive(Debug, Clone)]
-pub struct EmbedResult {
-    /// Embedding vectors, one per input text.
-    pub embeddings: Vec<Vec<f32>>,
-    /// Model identifier used.
-    pub model: String,
-    /// Embedding dimension.
-    pub dimension: u32,
-    /// Wall-clock time in milliseconds.
-    pub duration_ms: u64,
+impl Default for ChunkPolicy {
+    /// The reference's defaults, which the spike measured 29 chunks and
+    /// a clean tiling with over 8,631 tokens.
+    fn default() -> Self {
+        Self {
+            size_tokens: 500,
+            overlap_tokens: 200,
+        }
+    }
 }
 
 impl std::fmt::Debug for EmbeddingClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EmbeddingClient")
             .field("endpoint", &self.config.endpoint)
-            .field("model", &self.config.model)
+            .field("model", &self.info.model)
+            .field("revision", &self.info.model_revision)
             .finish()
     }
+}
+
+/// Read an endpoint out of a config string.
+///
+/// Accepts `unix:///path` and a bare absolute path. Rejects everything
+/// else, including `http://localhost`, because charter 5.1 makes local
+/// embedding a requirement rather than a default and a client that could
+/// name a host would make it a default again.
+pub fn parse_endpoint(s: &str) -> Result<EmbeddingEndpoint, EmbeddingError> {
+    if let Some(path) = s.strip_prefix("unix://") {
+        if path.starts_with('/') {
+            return Ok(EmbeddingEndpoint::new(path));
+        }
+        return Err(EmbeddingError::Unreachable {
+            endpoint: s.to_string(),
+            reason: "unix:// needs an absolute path".into(),
+        });
+    }
+    if s.starts_with('/') {
+        return Ok(EmbeddingEndpoint::new(s));
+    }
+    let reason = if s.starts_with("http://") || s.starts_with("https://") {
+        "the embedder is reached over a Unix socket and cannot be a URL. Charter 5.1 makes \
+         local embedding a requirement rather than a configuration default, so this client \
+         has no network transport to point at one"
+            .to_string()
+    } else {
+        format!("expected unix:///path or an absolute path, got {s:?}")
+    };
+    Err(EmbeddingError::Unreachable {
+        endpoint: s.to_string(),
+        reason,
+    })
 }
 
 #[cfg(test)]
@@ -691,41 +775,108 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_endpoint_http() {
-        let ep = parse_endpoint("http://localhost:8000/v1").unwrap();
-        assert!(matches!(ep, EmbeddingEndpoint::Tcp(ref u) if u == "http://localhost:8000/v1"));
-    }
-
-    #[test]
-    fn parse_endpoint_https_rejected() {
-        // No TLS connector exists, so the scheme fails at parse time with a
-        // clear message rather than at connect time with an obscure one.
-        let err = parse_endpoint("https://api.openai.com/v1").unwrap_err();
-        assert!(err.to_string().contains("TLS"), "got: {err}");
-    }
-
-    #[test]
-    fn parse_endpoint_unix_scheme() {
-        let ep = parse_endpoint("unix:///run/foo/bar.sock").unwrap();
-        match ep {
-            EmbeddingEndpoint::Unix(p) => assert_eq!(p, PathBuf::from("/run/foo/bar.sock")),
-            _ => panic!("expected Unix variant"),
+    fn a_url_is_not_an_endpoint_and_the_error_says_why() {
+        for url in [
+            "http://localhost:8087/v1",
+            "https://api.example.com/v1",
+            "http://10.0.0.5:8087",
+        ] {
+            let e = parse_endpoint(url).expect_err("must refuse");
+            let said = e.to_string();
+            assert!(said.contains("Unix socket"), "{said}");
+            assert!(said.contains("5.1"), "it names the charter: {said}");
         }
     }
 
     #[test]
-    fn parse_endpoint_bare_path() {
-        let ep = parse_endpoint("/run/foo/bar.sock").unwrap();
-        match ep {
-            EmbeddingEndpoint::Unix(p) => assert_eq!(p, PathBuf::from("/run/foo/bar.sock")),
-            _ => panic!("expected Unix variant"),
-        }
+    fn a_socket_path_is_an_endpoint_either_way_it_is_written() {
+        assert_eq!(
+            parse_endpoint("unix:///run/yeomna/embedder.sock")
+                .unwrap()
+                .path(),
+            Path::new("/run/yeomna/embedder.sock")
+        );
+        assert_eq!(
+            parse_endpoint("/run/yeomna/embedder.sock").unwrap().path(),
+            Path::new("/run/yeomna/embedder.sock")
+        );
     }
 
     #[test]
-    fn parse_endpoint_rejects_unknown() {
-        assert!(parse_endpoint("relative/path").is_err());
-        assert!(parse_endpoint("ftp://example.com").is_err());
+    fn a_relative_path_is_refused() {
+        assert!(parse_endpoint("run/embedder.sock").is_err());
+        assert!(parse_endpoint("unix://relative").is_err());
         assert!(parse_endpoint("").is_err());
+    }
+
+    /// The whole-text policy has to produce one window for any input the
+    /// service will accept, which is what makes `embed_one` the
+    /// single-window case rather than a second response shape.
+    #[test]
+    fn whole_text_policy_is_one_window() {
+        let p = ChunkPolicy::whole_text(16384);
+        assert_eq!(p.size_tokens, 16384);
+        assert_eq!(p.overlap_tokens, 0);
+        // The windowing rule: step is size minus overlap floored at 1,
+        // and the first window's end clamps to the token count, so any
+        // n <= size tiles in one window.
+        let size = p.size_tokens as usize;
+        let step = size.saturating_sub(p.overlap_tokens as usize).max(1);
+        for n in [1usize, 7, 500, 16384] {
+            assert_eq!(size.min(n), n, "one window covers {n}");
+            assert!(step >= n, "and no second window starts inside {n}");
+        }
+    }
+
+    #[test]
+    fn a_zero_max_tokens_still_yields_a_usable_policy() {
+        // A service that reported nonsense should not produce a policy
+        // whose step is zero, which would loop forever upstream.
+        assert_eq!(ChunkPolicy::whole_text(0).size_tokens, 1);
+    }
+
+    #[test]
+    fn only_out_of_memory_is_worth_retrying() {
+        let oom = EmbeddingError::Service {
+            status: 503,
+            code: "out-of-memory".into(),
+            message: String::new(),
+        };
+        assert!(oom.is_retriable_oom());
+        for code in [
+            "input-too-large",
+            "unknown-task",
+            "model-not-loaded",
+            "invalid-request",
+        ] {
+            let e = EmbeddingError::Service {
+                status: 400,
+                code: code.into(),
+                message: String::new(),
+            };
+            assert!(!e.is_retriable_oom(), "{code} is not an OOM");
+            assert_eq!(e.code(), Some(code));
+        }
+    }
+
+    #[test]
+    fn a_chunk_slices_the_text_it_came_from() {
+        let c = EmbeddedChunk {
+            chunk_index: 0,
+            total_chunks: 1,
+            vector: vec![],
+            start_token: 0,
+            end_token: 2,
+            start_byte: 0,
+            end_byte: 6,
+        };
+        assert_eq!(c.slice("hello world"), Some("hello "));
+        // A span landing inside a multi-byte character is a service
+        // defect, and it is reported rather than panicked on.
+        let bad = EmbeddedChunk {
+            end_byte: 1,
+            ..c.clone()
+        };
+        assert_eq!(bad.slice("\u{4e16}\u{754c}"), None);
     }
 }

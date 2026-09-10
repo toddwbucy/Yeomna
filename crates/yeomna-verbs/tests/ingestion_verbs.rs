@@ -111,6 +111,8 @@ async fn codebase_ingest_writes_the_graph_and_then_skips_it() {
         path: root.path().to_string_lossy().to_string(),
         graph: G.into(),
         overwrite: true,
+        embed: false,
+        embed_task: None,
     });
 
     let env = s.call(&req).await;
@@ -149,6 +151,8 @@ async fn ingesting_into_an_absent_graph_is_not_found() {
             path: root.path().to_string_lossy().to_string(),
             graph: "iv_never_created".into(),
             overwrite: true,
+            embed: false,
+            embed_task: None,
         }))
         .await;
     assert!(!env.success);
@@ -190,6 +194,8 @@ async fn the_path_is_checked_and_an_empty_tree_is_not_an_error() {
                 path,
                 graph: G.into(),
                 overwrite: true,
+                embed: false,
+                embed_task: None,
             }))
             .await;
         assert!(!env.success);
@@ -204,6 +210,8 @@ async fn the_path_is_checked_and_an_empty_tree_is_not_an_error() {
             path: empty.path().to_string_lossy().to_string(),
             graph: G.into(),
             overwrite: true,
+            embed: false,
+            embed_task: None,
         }))
         .await;
     assert!(env.success, "EC-1: nothing to ingest is a fact");
@@ -237,6 +245,8 @@ async fn ingest_carries_documents_and_their_conforms_links() {
             path: path.clone(),
             graph: G.into(),
             overwrite: true,
+            embed: false,
+            embed_task: None,
         }))
         .await;
     assert!(env.success, "the seeding ingest: {:?}", env.error);
@@ -246,6 +256,8 @@ async fn ingest_carries_documents_and_their_conforms_links() {
             path,
             graph: G.into(),
             overwrite: true,
+            embed: false,
+            embed_task: None,
         }))
         .await;
     assert!(env.success, "{:?}", env.error);
@@ -291,6 +303,8 @@ async fn drift_reports_what_moved_and_changes_nothing() {
             path: path.clone(),
             graph: G.into(),
             overwrite: true,
+            embed: false,
+            embed_task: None,
         }))
         .await;
     assert!(seed.success, "the seeding ingest: {:?}", seed.error);
@@ -357,6 +371,8 @@ async fn validate_finds_what_the_constraints_cannot_express() {
             path: root.path().to_string_lossy().to_string(),
             graph: G.into(),
             overwrite: true,
+            embed: false,
+            embed_task: None,
         }))
         .await;
     assert!(seed.success, "the seeding ingest: {:?}", seed.error);
@@ -418,17 +434,29 @@ async fn validate_finds_what_the_constraints_cannot_express() {
 /// ingest needs, and says so rather than failing obscurely.
 #[tokio::test]
 async fn an_ingest_without_an_endpoint_says_so() {
-    let Some(dir) = socket_dir() else { return };
+    // The graph has to exist for the endpoint check to be the one that
+    // fires, because `sink_for` looks for the graph first. This used to
+    // borrow the dogfood graph `yeomna_self`, so the test passed only on a
+    // machine that happened to have one and would have failed on a fresh
+    // appliance or after the drop a schema bump costs. It owns its graph
+    // now, like every other test in this file.
+    let Some((_owner, scaffold)) = fixtures("iv_no_endpoint", "iv-scaffold").await else {
+        return;
+    };
+    drop(scaffold);
+    let dir = socket_dir().expect("fixtures proved it");
     let Ok(app) = yeomna_store::connect(&dir, PORT, "yeomna_app", "yeomna").await else {
         return;
     };
-    let s = Session::new(app, "iv-no-endpoint").with_graph("yeomna_self");
+    let s = Session::new(app, "iv-no-endpoint").with_graph("iv_no_endpoint");
     let root = tree();
     let env = s
         .call(&Verb::CodebaseIngest(IngestRequest {
             path: root.path().to_string_lossy().to_string(),
-            graph: "yeomna_self".into(),
+            graph: "iv_no_endpoint".into(),
             overwrite: false,
+            embed: false,
+            embed_task: None,
         }))
         .await;
     assert!(!env.success);
@@ -479,6 +507,8 @@ async fn a_file_the_walk_cannot_assess_is_not_reported_missing() {
             path: path.clone(),
             graph: G.into(),
             overwrite: true,
+            embed: false,
+            embed_task: None,
         }))
         .await;
     assert!(seed.success, "the seeding ingest: {:?}", seed.error);
@@ -557,6 +587,8 @@ async fn retire_sweeps_what_the_source_lost_and_refuses_the_rest() {
             path: path.clone(),
             graph: G.into(),
             overwrite: true,
+            embed: false,
+            embed_task: None,
         }))
         .await;
     assert!(seed.success, "the seeding ingest: {:?}", seed.error);
@@ -649,6 +681,8 @@ async fn retire_never_touches_a_present_file_it_could_not_assess() {
             path: path.clone(),
             graph: G.into(),
             overwrite: true,
+            embed: false,
+            embed_task: None,
         }))
         .await;
     assert!(seed.success, "{:?}", seed.error);
@@ -699,6 +733,8 @@ async fn prune_sweeps_orphans_and_finds_none_after_a_clean_retire() {
             path: path.clone(),
             graph: G.into(),
             overwrite: true,
+            embed: false,
+            embed_task: None,
         }))
         .await;
     assert!(seed.success, "{:?}", seed.error);
@@ -777,6 +813,8 @@ async fn every_destructive_verb_leaves_a_record_of_its_call() {
         path: path.clone(),
         graph: G.into(),
         overwrite: true,
+        embed: false,
+        embed_task: None,
     }))
     .await;
 
@@ -813,4 +851,80 @@ async fn every_destructive_verb_leaves_a_record_of_its_call() {
         assert_eq!(args["graph"], G, "{name}: the row says which graph");
         assert_eq!(args["force"], true, "{name}: and that force was given");
     }
+}
+
+/// R26: one cohort per graph, not one model.
+///
+/// `validate` used to accept any graph with at most one distinct
+/// `embeddings.model`. Two vectors from the same model at another revision
+/// or under another LoRA adapter share a name and have incomparable
+/// geometry, so that check reported `ok` on a graph whose vectors cannot be
+/// ranked against a single query vector. Spec 022's columns are what make
+/// the stronger check expressible, and this is the check.
+#[tokio::test]
+async fn validate_refuses_a_graph_holding_two_cohorts() {
+    const G: &str = "iv_cohorts";
+    let Some((owner, s)) = fixtures(G, "iv-cohorts").await else {
+        return;
+    };
+    let gid: i64 = owner
+        .query_one("SELECT id FROM graphs WHERE name = $1", &[&G])
+        .await
+        .unwrap()
+        .get(0);
+    let node: i64 = owner
+        .query_one(
+            "INSERT INTO nodes (graph_id, natural_key, kind, payload)
+             VALUES ($1, 'f', 'file', '{\"path\":\"f.rs\",\"symbol_hash\":\"h\"}'::jsonb)
+             RETURNING id",
+            &[&gid],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let literal = format!("[{}]", vec!["0.1"; 2048].join(","));
+    for (i, (rev, task)) in [("rev-a", "retrieval.passage"), ("rev-b", "code")]
+        .into_iter()
+        .enumerate()
+    {
+        let chunk: i64 = owner
+            .query_one(
+                "INSERT INTO chunks (node_id, chunk_index, text, start_char, end_char)
+                 VALUES ($1, $2, 'text', 0, 4) RETURNING id",
+                &[&node, &(i as i32)],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        owner
+            .execute(
+                "INSERT INTO embeddings (chunk_id, vec, model, model_hash, model_revision, task)
+                 VALUES ($1, $2::text::halfvec, 'same/model', 'h', $3, $4)",
+                &[&chunk, &literal, &rev, &task],
+            )
+            .await
+            .unwrap();
+    }
+
+    let env = s
+        .call(&Verb::CodebaseValidate(GraphScoped { graph: G.into() }))
+        .await;
+    let d = data(&env);
+    assert_eq!(
+        d["ok"], false,
+        "two cohorts cannot be ranked against one query vector: {d}"
+    );
+    let cohorts = d["embedding_cohorts"].as_array().unwrap();
+    assert_eq!(cohorts.len(), 2, "both are named: {cohorts:?}");
+    for c in cohorts {
+        let text = c.as_str().unwrap();
+        assert!(text.starts_with("same/model @ "), "{text}");
+    }
+    assert!(
+        cohorts
+            .iter()
+            .any(|c| c.as_str().unwrap().contains("rev-a"))
+            && cohorts.iter().any(|c| c.as_str().unwrap().contains("code")),
+        "the revision and the task both distinguish a cohort: {cohorts:?}"
+    );
 }

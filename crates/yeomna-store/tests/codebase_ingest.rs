@@ -11,8 +11,13 @@ use serde_json::Value;
 use tempfile::TempDir;
 use tokio_postgres::Client;
 use yeomna_chunking::TokenChunking;
-use yeomna_pipeline::{CodebaseConfig, CodebaseSummary, ingest_codebase};
+use yeomna_pipeline::{CodebaseConfig, CodebaseSummary, HashEmbedder, ingest_codebase};
 use yeomna_store::{PgSink, apply_schema, connect};
+
+/// No embedder in this test, named as a type because `None` alone leaves
+/// the `Embedder` parameter unresolved. Spec 022 made these paths generic
+/// so a test can pass `HashEmbedder` and embed with no GPU.
+const NO_EMBEDDER: Option<&HashEmbedder> = None;
 
 const PORT: u16 = 5433;
 
@@ -96,7 +101,7 @@ async fn ingest(sink: &PgSink, root: &std::path::Path) -> CodebaseSummary {
         root,
         sink,
         &TokenChunking::default(),
-        None,
+        NO_EMBEDDER,
         &CodebaseConfig::default(),
     )
     .await
@@ -410,7 +415,7 @@ async fn dogfood_ingest_this_repository() {
         &root,
         &sink,
         &TokenChunking::default(),
-        None,
+        NO_EMBEDDER,
         &CodebaseConfig {
             semantic_lsp: true,
             ..CodebaseConfig::default()
@@ -525,7 +530,7 @@ async fn go_semantic_pass_degrades_without_gopls() {
         tree.path(),
         &sink,
         &TokenChunking::default(),
-        None,
+        NO_EMBEDDER,
         &CodebaseConfig {
             semantic_lsp: true,
             semantic_timeout: std::time::Duration::from_secs(20),
@@ -560,4 +565,335 @@ async fn go_semantic_pass_degrades_without_gopls() {
         );
         eprintln!("NOTE: gopls absent, exercised the degradation path only");
     }
+}
+
+/// Ingest with vectors, end to end, on a machine with no GPU (spec 022).
+///
+/// This is what the double exists for. Every part of the embedding path
+/// except the model runs here: the trait, the late-chunking call, the byte
+/// spans deciding what a chunk is, the cohort landing on the row, and the
+/// count arriving in the summary. The service-gated tests cover the model.
+#[tokio::test]
+async fn embedding_lands_vectors_with_their_cohort_using_the_double() {
+    let Some((owner, sink)) = fixtures("ci_embed").await else {
+        return;
+    };
+    let tree = scratch_tree();
+    let config = CodebaseConfig {
+        embed: true,
+        embed_task: "code".to_string(),
+        ..Default::default()
+    };
+    let embedder = HashEmbedder::new();
+    let summary = ingest_codebase(
+        tree.path(),
+        &sink,
+        &TokenChunking::default(),
+        Some(&embedder),
+        &config,
+    )
+    .await
+    .expect("ingest with the double succeeds");
+
+    assert!(summary.chunks_written > 0, "chunks landed");
+    assert_eq!(
+        summary.embeddings_written, summary.chunks_written,
+        "one vector per chunk, which is what late chunking produces"
+    );
+    assert_eq!(summary.files_over_ceiling, 0, "the double has no ceiling");
+
+    let row = owner
+        .query_one(
+            "SELECT count(*),
+                    -- The triple, not the model alone. Rows sharing a model
+                    -- with mixed revisions or tasks are two cohorts, and
+                    -- counting only the model would call them one while the
+                    -- min() assertions below still passed (R26).
+                    count(DISTINCT (e.model, e.model_revision, e.task)),
+                    min(e.model), min(e.task),
+                    min(e.model_revision), min(vector_dims(e.vec::vector))
+             FROM embeddings e
+             JOIN chunks c ON c.id = e.chunk_id
+             JOIN nodes n ON n.id = c.node_id
+             JOIN graphs g ON g.id = n.graph_id
+             WHERE g.name = 'ci_embed'",
+            &[],
+        )
+        .await
+        .unwrap();
+    let count: i64 = row.get(0);
+    assert_eq!(count as usize, summary.embeddings_written);
+    assert_eq!(
+        row.get::<_, i64>(1),
+        1,
+        "one cohort in one run, counted over the whole triple"
+    );
+    assert_eq!(
+        row.get::<_, String>(2),
+        "yeomna-test/hash-embedder",
+        "a store holding the double's vectors says so on every row"
+    );
+    assert_eq!(
+        row.get::<_, String>(3),
+        "code",
+        "the task the caller asked for reached the row (R26)"
+    );
+    assert_eq!(row.get::<_, String>(4), "1");
+    assert_eq!(row.get::<_, i32>(5), 2048);
+}
+
+/// The chunk boundaries come from the embedder when embedding is on, which
+/// is the substantive half of late chunking: the document is encoded first
+/// and the pieces are decided afterwards. Proven by the spans, since the
+/// double's whitespace tokens tile differently than the local chunker's.
+#[tokio::test]
+async fn late_chunking_decides_the_boundaries_and_the_spans_slice_the_file() {
+    let Some((owner, sink)) = fixtures("ci_late").await else {
+        return;
+    };
+    let tree = scratch_tree();
+    let embedder = HashEmbedder::new();
+    let config = CodebaseConfig {
+        embed: true,
+        chunking: yeomna_embed::embedding::ChunkPolicy {
+            size_tokens: 6,
+            overlap_tokens: 2,
+        },
+        ..Default::default()
+    };
+    let summary = ingest_codebase(
+        tree.path(),
+        &sink,
+        &TokenChunking::default(),
+        Some(&embedder),
+        &config,
+    )
+    .await
+    .expect("ingest succeeds");
+    assert!(
+        summary.chunks_written > 2,
+        "a 6-token window over these files is several chunks, not one: {}",
+        summary.chunks_written
+    );
+
+    // Every stored chunk's text must be exactly the file's bytes at the
+    // span stored beside it. That is the contract the spike found a defect
+    // in, and it is checked against the file on disk rather than against
+    // the embedder's own claim.
+    let rows = owner
+        .query(
+            "SELECT n.payload->>'path', c.text, c.start_char, c.end_char
+             FROM chunks c
+             JOIN nodes n ON n.id = c.node_id
+             JOIN graphs g ON g.id = n.graph_id
+             WHERE g.name = 'ci_late' ORDER BY c.id",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(!rows.is_empty());
+    for r in &rows {
+        let path: String = r.get(0);
+        let text: String = r.get(1);
+        let start: i32 = r.get(2);
+        let end: i32 = r.get(3);
+        let source = std::fs::read_to_string(tree.path().join(&path)).expect("the file is there");
+        let sliced = source
+            .get(start as usize..end as usize)
+            .unwrap_or_else(|| panic!("{path}: {start}..{end} is not a char boundary"));
+        assert_eq!(
+            sliced, text,
+            "{path}: the span and the stored text disagree"
+        );
+    }
+}
+
+/// Asking for vectors with no embedder is refused at the entry rather than
+/// producing a graph that looks complete and has none (spec 011 EC-4).
+#[tokio::test]
+async fn embedding_without_an_embedder_is_refused_before_anything_is_written() {
+    let Some((owner, sink)) = fixtures("ci_embed_none").await else {
+        return;
+    };
+    let tree = scratch_tree();
+    let config = CodebaseConfig {
+        embed: true,
+        ..Default::default()
+    };
+    let err = ingest_codebase(
+        tree.path(),
+        &sink,
+        &TokenChunking::default(),
+        NO_EMBEDDER,
+        &config,
+    )
+    .await
+    .expect_err("no embedder, and vectors were asked for");
+    assert!(err.to_string().contains("no embedder"), "{err}");
+
+    let nodes: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM nodes n JOIN graphs g ON g.id = n.graph_id
+             WHERE g.name = 'ci_embed_none'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(nodes, 0, "it refused before writing, not partway through");
+}
+
+/// An empty source file does not fail the run (found by dogfooding).
+///
+/// The first embedding ingest over a real tree failed on the whole tree
+/// because one `.rs` file was empty and the embedder refuses an empty input
+/// with `invalid-request`, which propagated as fatal. Real repositories have
+/// empty files: placeholder modules, generated stubs, `__init__.py`. The
+/// local chunker already returns no chunks for blank text, so the embedding
+/// path agrees with it now instead of turning one empty file into a failed
+/// ingest.
+///
+/// Exercised with the double, which refuses a blank input for the same
+/// reason the service does, so this holds without a GPU.
+#[tokio::test]
+async fn an_empty_source_file_does_not_fail_an_embedding_run() {
+    let Some((owner, sink)) = fixtures("ci_embed_empty").await else {
+        return;
+    };
+    let d = TempDir::new().unwrap();
+    std::fs::write(d.path().join("real.rs"), "pub fn a() -> i32 { 1 }\n").unwrap();
+    std::fs::write(d.path().join("empty.rs"), "").unwrap();
+    std::fs::write(d.path().join("blank.rs"), "\n\n   \n").unwrap();
+
+    let embedder = HashEmbedder::new();
+    let config = CodebaseConfig {
+        embed: true,
+        ..Default::default()
+    };
+    let summary = ingest_codebase(
+        d.path(),
+        &sink,
+        &TokenChunking::default(),
+        Some(&embedder),
+        &config,
+    )
+    .await
+    .expect("one empty file is not a failed tree");
+
+    assert_eq!(summary.files_seen, 3);
+    assert_eq!(summary.files_written, 3, "all three files still land");
+    assert_eq!(summary.files_failed, 0);
+    assert!(
+        summary.embeddings_written > 0,
+        "the file with content was still embedded"
+    );
+    assert_eq!(
+        summary.embeddings_written, summary.chunks_written,
+        "and every chunk that exists has a vector"
+    );
+
+    // The empty files are nodes with no chunks, which is what they are
+    // without embedding too. They are not failures and not absences.
+    let empty_with_chunks: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM nodes n
+             JOIN graphs g ON g.id = n.graph_id
+             WHERE g.name = 'ci_embed_empty'
+               AND n.payload->>'path' IN ('empty.rs', 'blank.rs')
+               AND EXISTS (SELECT 1 FROM chunks c WHERE c.node_id = n.id)",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(empty_with_chunks, 0, "nothing to chunk, so nothing chunked");
+}
+
+/// A second ingest without `overwrite` does not abort the run.
+///
+/// The first cut of the chunk and embedding writes treated any
+/// `InsertOutcome::errors` as a rejection and failed the run. But `errors`
+/// counts every row the sink did not create, and without `overwrite` the
+/// insert is `ON CONFLICT DO NOTHING`, so a row that was already there is
+/// indistinguishable from one that was refused. That turned the second
+/// ingest of a changed file into a failed run, and worse, a run that failed
+/// partway through with earlier files already committed.
+///
+/// The check is now gated on `overwrite`, where the insert upserts and a
+/// non-creation can only be a rejection.
+#[tokio::test]
+async fn a_second_ingest_without_overwrite_does_not_abort() {
+    let Some((owner, sink)) = fixtures("ci_no_overwrite").await else {
+        return;
+    };
+    let tree = scratch_tree();
+    let embedder = HashEmbedder::new();
+    let config = CodebaseConfig {
+        overwrite: false,
+        embed: true,
+        ..Default::default()
+    };
+    let first = ingest_codebase(
+        tree.path(),
+        &sink,
+        &TokenChunking::default(),
+        Some(&embedder),
+        &config,
+    )
+    .await
+    .expect("the first run lands");
+    assert!(first.chunks_written > 0);
+    assert_eq!(first.embeddings_written, first.chunks_written);
+
+    // Change one file so it is not hash-skipped, then run again with the
+    // same non-overwrite config. Every chunk row for that file is already
+    // there, which is the condition that used to abort.
+    std::fs::write(
+        tree.path().join("helper.rs"),
+        r#"
+/// A helper that the entry point calls, now with another function beside it.
+pub fn compute_total(values: &[i64]) -> i64 {
+    values.iter().sum()
+}
+
+pub fn compute_mean(values: &[i64]) -> i64 {
+    if values.is_empty() { 0 } else { compute_total(values) / values.len() as i64 }
+}
+
+pub struct Config {
+    pub name: String,
+}
+"#,
+    )
+    .unwrap();
+
+    let second = ingest_codebase(
+        tree.path(),
+        &sink,
+        &TokenChunking::default(),
+        Some(&embedder),
+        &config,
+    )
+    .await
+    .expect("a re-ingest of a changed file is not a failure");
+    assert!(
+        second.files_written <= first.files_written,
+        "nothing new was created, which is what DO NOTHING means"
+    );
+
+    // And the graph is whole rather than half-written.
+    let (nodes, chunks): (i64, i64) = {
+        let row = owner
+            .query_one(
+                "SELECT (SELECT count(*) FROM nodes n JOIN graphs g ON g.id = n.graph_id
+                          WHERE g.name = 'ci_no_overwrite'),
+                        (SELECT count(*) FROM chunks c JOIN nodes n ON n.id = c.node_id
+                          JOIN graphs g ON g.id = n.graph_id WHERE g.name = 'ci_no_overwrite')",
+                &[],
+            )
+            .await
+            .unwrap();
+        (row.get(0), row.get(1))
+    };
+    assert!(nodes > 0 && chunks > 0, "{nodes} nodes, {chunks} chunks");
 }

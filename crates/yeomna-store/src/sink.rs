@@ -460,17 +460,23 @@ impl PgSink {
             return Ok(false);
         };
         let chunk_id: i64 = chunk_row.get(0);
-        let Some(model) = self
-            .client
-            .query_one(
-                "SELECT payload->>'embedding_model' FROM nodes WHERE id = $1",
-                &[&node_id],
-            )
-            .await?
-            .get::<_, Option<String>>(0)
-        else {
-            // EC-1: a parent without a recorded model is data corruption
-            // worth surfacing per document.
+        // Provenance rides the embedding document (spec 022, R26).
+        //
+        // It used to be read from the parent node's payload, which made a
+        // vector's cohort depend on a sibling row written by an earlier
+        // call. Two things were wrong with that. The document ingest path
+        // wrote `embedding_model` and the codebase path never did, so the
+        // first codebase run with embedding on would have rejected every
+        // row. And a rejection here is counted in `errors` and was
+        // discarded by the caller, so the run would have reported
+        // `embeddings_written: 0` and success. The vector and the name of
+        // what produced it now arrive together, so the ordering
+        // dependency is gone rather than documented.
+        let (Some(model), Some(model_revision), Some(task)) = (
+            doc.get("model").and_then(Value::as_str),
+            doc.get("model_revision").and_then(Value::as_str),
+            doc.get("task").and_then(Value::as_str),
+        ) else {
             return Ok(false);
         };
         // A non-numeric element is an explicit rejection, not a NaN
@@ -484,15 +490,17 @@ impl PgSink {
         };
         let literal = format!("[{}]", values.join(","));
         let sql = if overwrite {
-            "INSERT INTO embeddings (chunk_id, vec, model, model_hash)
-             VALUES ($1, $2::text::halfvec, $3, $4)
+            "INSERT INTO embeddings (chunk_id, vec, model, model_hash, model_revision, task)
+             VALUES ($1, $2::text::halfvec, $3, $4, $5, $6)
              ON CONFLICT (chunk_id)
              DO UPDATE SET vec = EXCLUDED.vec,
                            model = EXCLUDED.model,
-                           model_hash = EXCLUDED.model_hash"
+                           model_hash = EXCLUDED.model_hash,
+                           model_revision = EXCLUDED.model_revision,
+                           task = EXCLUDED.task"
         } else {
-            "INSERT INTO embeddings (chunk_id, vec, model, model_hash)
-             VALUES ($1, $2::text::halfvec, $3, $4)
+            "INSERT INTO embeddings (chunk_id, vec, model, model_hash, model_revision, task)
+             VALUES ($1, $2::text::halfvec, $3, $4, $5, $6)
              ON CONFLICT (chunk_id) DO NOTHING"
         };
         let affected = self
@@ -503,7 +511,9 @@ impl PgSink {
                     &chunk_id,
                     &literal,
                     &model,
-                    &yeomna_keys::model_hash(&model),
+                    &yeomna_keys::model_hash(model),
+                    &model_revision,
+                    &task,
                 ],
             )
             .await?;

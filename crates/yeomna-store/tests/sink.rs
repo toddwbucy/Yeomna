@@ -13,6 +13,9 @@ use yeomna_store::{PgSink, StoreError, apply_schema, connect};
 
 const PORT: u16 = 5433;
 const MODEL: &str = "jinaai/jina-embeddings-v4";
+/// The snapshot the spike pinned, and the one the service loads.
+const REVISION: &str = "853c867b65b749f3c3c72a06868140d842e04f06";
+const TASK: &str = "retrieval.passage";
 
 fn socket_dir() -> Option<String> {
     let dir = std::env::var("YEOMNA_TEST_DB").unwrap_or_else(|_| {
@@ -104,6 +107,10 @@ fn chunk_doc(doc_key: &str, i: usize) -> Value {
 }
 
 /// The pinned embedding_doc shape.
+///
+/// The cohort rides the document as of spec 022 (R26). It used to be read
+/// back out of the parent node's payload, which made a vector's provenance
+/// depend on a sibling row written by an earlier call.
 fn embedding_doc(doc_key: &str, i: usize) -> Value {
     let ck = yeomna_keys::chunk_key(doc_key, i);
     json!({
@@ -112,6 +119,9 @@ fn embedding_doc(doc_key: &str, i: usize) -> Value {
         "doc_key": doc_key,
         "parent_key": doc_key,
         "embedding": vec![0.25_f32; 2048],
+        "model": MODEL,
+        "model_revision": REVISION,
+        "task": TASK,
     })
 }
 
@@ -239,20 +249,32 @@ async fn per_document_failures_count_and_survivors_commit() {
 #[tokio::test]
 async fn embedding_rejections_are_per_document() {
     require_sink!(_owner, sink, "sink_embed_errors");
-    // EC-1: parent metadata lacks embedding_model.
-    let mut meta = metadata_doc("docE", 1);
-    meta.as_object_mut().unwrap().remove("embedding_model");
-    sink.insert_documents("documents", &[meta], true)
+    sink.insert_documents("documents", &[metadata_doc("docE", 1)], true)
         .await
         .unwrap();
     sink.insert_documents("chunks", &[chunk_doc("docE", 0)], true)
         .await
         .unwrap();
-    let out = sink
-        .insert_documents("embeddings", &[embedding_doc("docE", 0)], true)
-        .await
-        .unwrap();
-    assert_eq!((out.created, out.errors), (0, 1), "EC-1: no model recorded");
+    // EC-1 as spec 022 rewrote it: the cohort rides the embedding
+    // document, so a document missing any of the three is the rejection.
+    // The old shape read the model out of the parent node's payload, which
+    // meant a correct vector could be dropped because a sibling row was
+    // written without a field, and the codebase ingest path never wrote
+    // it. Each field is dropped on its own so the check covers all three
+    // rather than whichever one a test author picked.
+    for field in ["model", "model_revision", "task"] {
+        let mut doc = embedding_doc("docE", 0);
+        doc.as_object_mut().unwrap().remove(field);
+        let out = sink
+            .insert_documents("embeddings", &[doc], true)
+            .await
+            .unwrap();
+        assert_eq!(
+            (out.created, out.errors),
+            (0, 1),
+            "a vector with no {field} has no recorded cohort"
+        );
+    }
     // EC-2: a chunk_key that does not round-trip through the pinned
     // format. Leading zeros parse but never reconstruct.
     let mut mangled = embedding_doc("docE", 0);
@@ -268,6 +290,45 @@ async fn embedding_rejections_are_per_document() {
         .await
         .unwrap();
     assert_eq!((out.created, out.errors), (0, 1), "unknown chunk counts");
+}
+
+/// R26: the row says which cohort its vector belongs to, and it says so
+/// from the embedding document rather than from a sibling's payload.
+#[tokio::test]
+async fn the_cohort_lands_on_the_row() {
+    require_sink!(owner, sink, "sink_cohort");
+    sink.insert_documents("documents", &[metadata_doc("docF", 1)], true)
+        .await
+        .unwrap();
+    sink.insert_documents("chunks", &[chunk_doc("docF", 0)], true)
+        .await
+        .unwrap();
+    let out = sink
+        .insert_documents("embeddings", &[embedding_doc("docF", 0)], true)
+        .await
+        .unwrap();
+    assert_eq!((out.created, out.errors), (1, 0));
+
+    let row = owner
+        .query_one(
+            "SELECT e.model, e.model_hash, e.model_revision, e.task
+             FROM embeddings e
+             JOIN chunks c ON c.id = e.chunk_id
+             JOIN nodes n ON n.id = c.node_id
+             JOIN graphs g ON g.id = n.graph_id
+             WHERE g.name = 'sink_cohort'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, String>(0), MODEL);
+    assert_eq!(
+        row.get::<_, String>(1),
+        yeomna_keys::model_hash(MODEL),
+        "model_hash still derives through the frozen keys contract"
+    );
+    assert_eq!(row.get::<_, String>(2), REVISION);
+    assert_eq!(row.get::<_, String>(3), TASK);
 }
 
 #[tokio::test]

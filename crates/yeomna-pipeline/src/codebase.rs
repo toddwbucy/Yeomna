@@ -25,9 +25,10 @@ use yeomna_code::{
     AnalysisOptions, AnalyzerOutcome, FileAnalysis, Language, Symbol, analyze_with_fallback,
     cpp_edges, lsp, python_calls, rust_imports, tree_sitter_edges,
 };
-use yeomna_embed::embedding::EmbeddingClient;
+use yeomna_embed::embedding::{ChunkPolicy, EmbeddedChunk, EmbeddingError};
 use yeomna_keys as keys;
 
+use crate::embed::Embedder;
 use crate::orchestrator::PipelineError;
 use crate::probe::IngestProbe;
 use crate::sink::IngestSink;
@@ -54,8 +55,14 @@ pub struct CodebaseConfig {
     /// Skip files larger than this. Generated and vendored blobs are not
     /// worth an analyzer pass.
     pub max_file_bytes: u64,
-    /// The embedding task name passed to the embedder.
+    /// The embedding task name passed to the embedder. It reaches the
+    /// `embeddings.task` column, so it is the corpus half of the pairing a
+    /// query has to match (R26).
     pub embed_task: String,
+    /// Where the late-chunk boundaries fall, in tokens. Sent to the
+    /// service as request fields, so the chunking policy stays here and
+    /// the service executes it rather than owning it.
+    pub chunking: ChunkPolicy,
     /// Run the language servers (rust-analyzer over Rust crates, gopls
     /// over Go modules) for semantically resolved `calls` and
     /// `implements` edges, and for the semantic half of the enrichment
@@ -84,6 +91,7 @@ impl Default for CodebaseConfig {
             embed: false,
             max_file_bytes: 1024 * 1024,
             embed_task: "retrieval.passage".to_string(),
+            chunking: ChunkPolicy::default(),
             semantic_lsp: false,
             semantic_timeout: std::time::Duration::from_secs(180),
         }
@@ -118,6 +126,12 @@ pub struct CodebaseSummary {
     pub chunks_written: usize,
     /// Embeddings written.
     pub embeddings_written: usize,
+    /// Files whose text was above the embedder's context ceiling. They are
+    /// chunked and searchable by keyword and carry no vectors (PRD D5).
+    /// Counted apart from everything else because "present and too long to
+    /// encode" is not "absent", which is the distinction spec 019's drift
+    /// finding was about.
+    pub files_over_ceiling: usize,
     /// Crates and modules the semantic pass indexed, zero when it did
     /// not run or found no server.
     pub semantic_units: usize,
@@ -150,15 +164,21 @@ struct Analyzed {
 }
 
 /// Ingest a source tree into the graph the sink is scoped to.
-pub async fn ingest_codebase<S>(
+///
+/// `embedder` is generic rather than concrete so a test can pass
+/// `HashEmbedder` and exercise this whole path with no GPU. A caller that
+/// wants no embedding passes `None::<&EmbeddingClient>`, naming a type the
+/// inference cannot guess from `None` alone.
+pub async fn ingest_codebase<S, E>(
     root: &Path,
     sink: &S,
     chunker: &(dyn ChunkingStrategy + Send + Sync),
-    embedder: Option<&EmbeddingClient>,
+    embedder: Option<&E>,
     config: &CodebaseConfig,
 ) -> Result<CodebaseSummary, PipelineError>
 where
     S: IngestSink + IngestProbe,
+    E: Embedder,
 {
     if config.embed && embedder.is_none() {
         return Err(PipelineError::Other(
@@ -447,15 +467,62 @@ fn symbol_doc(file_key: &str, s: &Symbol) -> Option<Value> {
     }))
 }
 
+/// One piece of a file: its text, its byte span, and its vector when one
+/// was produced.
+///
+/// Both chunking paths land here, which is what lets the write below be
+/// written once. Under late chunking the boundaries come from the
+/// embedder, because late chunking encodes the document first and decides
+/// afterwards where the pieces were. Without embedding they come from the
+/// local `ChunkingStrategy`, unchanged.
+struct Piece {
+    text: String,
+    start_char: usize,
+    end_char: usize,
+    vector: Option<Vec<f32>>,
+}
+
+/// Turn a document's late chunks into pieces, checking the one thing the
+/// contract promises and this code depends on: that a chunk's byte span
+/// slices the text it came from.
+fn pieces_from_late_chunks(
+    source: &str,
+    chunks: Vec<EmbeddedChunk>,
+    rel_path: &str,
+) -> Result<Vec<Piece>, String> {
+    chunks
+        .into_iter()
+        .map(|c| {
+            let text = c.slice(source).ok_or_else(|| {
+                format!(
+                    "{rel_path}: chunk {} spans bytes {}..{} which do not slice the file. \
+                     The embedder's offset conversion is wrong",
+                    c.chunk_index, c.start_byte, c.end_byte
+                )
+            })?;
+            Ok(Piece {
+                text: text.to_string(),
+                start_char: c.start_byte,
+                end_char: c.end_byte,
+                vector: Some(c.vector),
+            })
+        })
+        .collect()
+}
+
 /// Chunks, their symbol linkage, and optionally their embeddings.
-async fn write_chunks_and_embeddings<S: IngestSink>(
+async fn write_chunks_and_embeddings<S, E>(
     sink: &S,
     file: &Analyzed,
     chunker: &(dyn ChunkingStrategy + Send + Sync),
-    embedder: Option<&EmbeddingClient>,
+    embedder: Option<&E>,
     config: &CodebaseConfig,
     summary: &mut CodebaseSummary,
-) -> Result<(), PipelineError> {
+) -> Result<(), PipelineError>
+where
+    S: IngestSink,
+    E: Embedder,
+{
     // A file that shrinks would leave chunk rows at the higher indices,
     // and their embeddings with them, describing text the file no longer
     // contains. Upsert cannot remove them, so they go first, exactly as
@@ -467,21 +534,65 @@ async fn write_chunks_and_embeddings<S: IngestSink>(
                 .map_err(|e| PipelineError::Sink(Box::new(e)))?;
         }
     }
-    let chunks = chunker.chunk(&file.source);
-    if chunks.is_empty() {
+    // EC-4: embed first when embeddings were asked for, so an unreachable
+    // embedder fails before any chunk row exists. Writing chunks first
+    // would leave text in the store with no vectors beside it, which is
+    // the half-ingest EC-4 exists to prevent.
+    //
+    // Late chunking is why this decides the boundaries too rather than
+    // only the vectors: the document is encoded in one pass and the chunk
+    // vectors are conditioned on all of it, so the pieces are whatever the
+    // pass says they were.
+    // A file with nothing in it has nothing to embed, and asking the
+    // service to embed it would be asking for a refusal. The local
+    // chunker already returns no chunks for blank text, so the embedding
+    // path agrees with it rather than turning an empty file into a failed
+    // run. Found by ingesting a tree with an empty `.rs` file in it, which
+    // real repositories have.
+    let embeddable = embedder.filter(|_| config.embed && !file.source.trim().is_empty());
+    let (pieces, identity) = match embeddable {
+        Some(e) => match e
+            .embed_document(&file.source, &config.embed_task, config.chunking)
+            .await
+        {
+            Ok(chunks) => (
+                pieces_from_late_chunks(&file.source, chunks, &file.rel_path)
+                    .map_err(PipelineError::Other)?,
+                Some(e.identity()),
+            ),
+            // PRD D5: a document above the ceiling is refused by the
+            // service, never truncated. It is still worth having by
+            // keyword, so it is chunked locally, counted, and named. The
+            // coverage gap shows up through `read::health`'s
+            // `chunks_without_embeddings`.
+            Err(EmbeddingError::Service { ref code, .. }) if code == "input-too-large" => {
+                warn!(
+                    path = %file.rel_path,
+                    "over the embedder's context ceiling, keyword only"
+                );
+                summary.files_over_ceiling += 1;
+                (local_pieces(chunker, &file.source), None)
+            }
+            Err(e) => return Err(PipelineError::Embedding(e)),
+        },
+        None => (local_pieces(chunker, &file.source), None),
+    };
+    if pieces.is_empty() {
         return Ok(());
     }
-    let docs: Vec<Value> = chunks
+
+    let total = pieces.len();
+    let docs: Vec<Value> = pieces
         .iter()
         .enumerate()
-        .map(|(i, c)| {
+        .map(|(i, p)| {
             // FR 4: the symbols this chunk covers, by key. The sink
             // resolves them to ids, since only it knows them.
             let symbol_keys: Vec<String> = file
                 .analysis
                 .symbols
                 .iter()
-                .filter(|s| covers(c.start_char, c.end_char, s, &file.source))
+                .filter(|s| covers(p.start_char, p.end_char, s, &file.source))
                 .filter(|s| s.kind.universal_kind().is_some())
                 .map(|s| keys::symbol_key(&file.file_key, &s.qualified_name(), s.start_line))
                 .collect();
@@ -489,56 +600,59 @@ async fn write_chunks_and_embeddings<S: IngestSink>(
                 "_key": keys::chunk_key(&file.file_key, i),
                 "doc_key": file.file_key,
                 "file_key": file.file_key,
-                "text": c.text,
-                "chunk_index": c.chunk_index,
-                "total_chunks": c.total_chunks,
-                "start_char": c.start_char,
-                "end_char": c.end_char,
+                "text": p.text,
+                "chunk_index": i,
+                "total_chunks": total,
+                "start_char": p.start_char,
+                "end_char": p.end_char,
                 "symbol_keys": symbol_keys,
             })
         })
         .collect();
-    // EC-4: embed first when embeddings were asked for, so an
-    // unreachable embedder fails before any chunk row exists. Writing
-    // chunks first would leave text in the store with no vectors beside
-    // it, which is the half-ingest EC-4 exists to prevent.
-    let embedded = if config.embed {
-        let embedder = embedder.expect("checked at entry");
-        let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-        let result = embedder.embed(&texts, &config.embed_task, None).await?;
-        if result.embeddings.len() != chunks.len() {
-            return Err(PipelineError::Other(format!(
-                "embedding count mismatch: expected {}, got {}",
-                chunks.len(),
-                result.embeddings.len()
-            )));
-        }
-        Some(result)
-    } else {
-        None
-    };
 
     let out = sink
         .insert_documents(CHUNKS, &docs, config.overwrite)
         .await
         .map_err(|e| PipelineError::Sink(Box::new(e)))?;
     summary.chunks_written += out.created;
+    // A rejected chunk means this code and the sink disagree about the
+    // document shape, which is a defect here rather than something in the
+    // corpus. Unlike an edge with an unresolved endpoint it is not a
+    // legitimate partial, so it stops the run instead of riding a counter.
+    // `errors` counts every row the sink did not create, and under
+    // `overwrite: false` the insert is `ON CONFLICT DO NOTHING`, so a row
+    // that was already there is indistinguishable from one that was
+    // refused. Only under `overwrite` does the insert upsert, where a
+    // non-creation can only mean a rejection. Checking it unconditionally
+    // made a second ingest of a changed file abort the whole run, which is
+    // worse than the discard it replaced.
+    if config.overwrite && out.errors > 0 {
+        return Err(PipelineError::Other(format!(
+            "{}: the store rejected {} of {} chunk rows",
+            file.rel_path, out.errors, total
+        )));
+    }
 
-    let Some(result) = embedded else {
+    let Some(identity) = identity else {
         return Ok(());
     };
-    let docs: Vec<Value> = result
-        .embeddings
+    let docs: Vec<Value> = pieces
         .iter()
         .enumerate()
-        .map(|(i, e)| {
+        .filter_map(|(i, p)| {
+            let vector = p.vector.as_ref()?;
             let ck = keys::chunk_key(&file.file_key, i);
-            json!({
+            Some(json!({
                 "_key": keys::embedding_key(&ck),
                 "chunk_key": ck,
                 "doc_key": file.file_key,
-                "embedding": e,
-            })
+                "embedding": vector,
+                // R26: the cohort rides the row. It used to be read from
+                // the parent node's payload, which this path never wrote.
+                "model": identity.model,
+                "model_revision": identity.model_revision,
+                "task": config.embed_task,
+            }))
         })
         .collect();
     let out = sink
@@ -546,7 +660,29 @@ async fn write_chunks_and_embeddings<S: IngestSink>(
         .await
         .map_err(|e| PipelineError::Sink(Box::new(e)))?;
     summary.embeddings_written += out.created;
+    if config.overwrite && out.errors > 0 {
+        return Err(PipelineError::Other(format!(
+            "{}: the store rejected {} of {} embedding rows",
+            file.rel_path,
+            out.errors,
+            docs.len()
+        )));
+    }
     Ok(())
+}
+
+/// Chunk with the local strategy, for the paths that produce no vectors.
+fn local_pieces(chunker: &(dyn ChunkingStrategy + Send + Sync), source: &str) -> Vec<Piece> {
+    chunker
+        .chunk(source)
+        .into_iter()
+        .map(|c| Piece {
+            text: c.text,
+            start_char: c.start_char,
+            end_char: c.end_char,
+            vector: None,
+        })
+        .collect()
 }
 
 /// Does a chunk's byte range cover a symbol's lines.
@@ -817,7 +953,7 @@ async fn semantic_lsp_pass<S: IngestSink + IngestProbe>(
                 warn!(
                     path,
                     root = %root.display(),
-                    "extractor returned a path outside the ingest root, so its                      symbol keys will not match the structural pass"
+                    "extractor returned a path outside the ingest root, so its symbol keys will not match the structural pass"
                 );
                 path
             }

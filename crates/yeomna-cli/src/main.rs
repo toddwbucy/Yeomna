@@ -52,6 +52,12 @@ own field names. `yeomna verbs` lists them all.
     yeomna graph neighbors --graph yeomna_self --key foo --direction in
     yeomna list --kind callable --limit 5
 
+`--key=value` says which is which, which is how a value that starts with
+a dash is passed: `--search_text=--help`. A value is read as JSON first,
+so `--limit 5` is a number and `--relations '[\"calls\"]'` is an array,
+falling back to a string. A value that must stay a string despite looking
+like JSON is what `yeomna call` is for.
+
 OPTIONS:
     --graph <name>           scope the session to this graph,
                              overriding the config file's default
@@ -87,7 +93,16 @@ async fn main() -> ExitCode {
     let mut rest = args.iter();
     while let Some(a) = rest.next() {
         match a.as_str() {
+            // `--graph --json` used to consume the next flag as the graph
+            // name, scope the session to a graph called "--json", and drop
+            // the flag, all silently. A missing value is a usage error.
             "--graph" => match rest.next() {
+                Some(g) if g.starts_with("--") => {
+                    return fail(format!(
+                        "--graph needs a name and {g:?} is a flag. Write --graph=<name> if a \
+                         graph is really called that"
+                    ));
+                }
                 Some(g) => {
                     graph = Some(g.clone());
                     // Also offered to the verb, because a request may
@@ -103,6 +118,21 @@ async fn main() -> ExitCode {
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return ExitCode::from(OK);
+            }
+            // `--key=value` says which is which, so a value may start with
+            // `--`. Without it `--text --help` is a bare `text` flag
+            // followed by the help flag, and a value of "--help" is
+            // unreachable. Checked before the bare `--key` arm, since
+            // `--graph=g` has to reach the graph handling too.
+            other if other.starts_with("--") && other.contains('=') => {
+                let (key, value) = other
+                    .trim_start_matches('-')
+                    .split_once('=')
+                    .expect("contains checked above");
+                if key == "graph" {
+                    graph = Some(value.to_string());
+                }
+                flags.push((key.to_string(), Some(value.to_string())));
             }
             // Any other `--key` belongs to the verb being called, and
             // its value is the next argument unless the next argument is
@@ -208,7 +238,8 @@ async fn embedded(verb: Verb, graph: Option<String>, raw_json: bool) -> ExitCode
     };
 
     let mut session = Session::new(client, actor::from_kernel())
-        .with_endpoint(config.socket_dir.clone(), config.port);
+        .with_endpoint(config.socket_dir.clone(), config.port)
+        .with_embedder(config.embedder_socket());
     if let Some(g) = graph.or(config.graph) {
         session = session.with_graph(g);
     }

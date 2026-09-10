@@ -12,31 +12,110 @@
 //! behavior change wearing a refactor's clothes. These tests are what the
 //! migration has to keep passing.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use yeomna_embed::embedding::{EmbeddingClientConfig, EmbeddingEndpoint};
+use yeomna_embed::embedding::{
+    ChunkPolicy, EmbeddingClientConfig, EmbeddingError, REQUIRED_DIMENSION, parse_endpoint,
+};
 use yeomna_embed::extraction::{ExtractOptions, ExtractionClientConfig, ExtractionEndpoint};
 
+/// This test used to pin the TCP default at `http://localhost:8087/v1`.
+/// It now pins its absence, which is the whole of PRD-embedder D10.
+///
+/// Charter 5.1: "Embedding is local. The embedder is GPU-resident on the
+/// same machine, so document text is never transmitted to an embedding
+/// API. This is a requirement, not a configuration default." Moving the
+/// default to Unix would have left a key an operator could point
+/// anywhere, and a requirement a config key can turn off is a
+/// preference. The variant is gone instead, so the refusal below is a
+/// property of the type rather than of a default.
 #[test]
-fn embedding_defaults_are_the_shipped_values() {
-    let c = EmbeddingClientConfig::default();
-    // Port 8087 is deliberate: it dodges vLLM and uvicorn on 8000 and the
-    // weaver-serve LLM API on 8080. Moving it is a deployment decision,
-    // not a tidy-up.
-    let EmbeddingEndpoint::Tcp(url) = c.endpoint else {
-        panic!("the default endpoint is TCP, since the Unix seam is opt-in");
-    };
-    assert_eq!(url, "http://localhost:8087/v1");
-    // The bound model, matching the golden model_hash inputs in
-    // yeomna-keys and the vectors the store's halfvec(2048) column holds.
-    assert_eq!(c.model, "jinaai/jina-embeddings-v4");
+fn the_embedder_endpoint_cannot_be_a_url() {
+    for url in [
+        "http://localhost:8087/v1",
+        "https://api.openai.com/v1",
+        "http://192.168.0.203:8087",
+    ] {
+        let e = parse_endpoint(url).expect_err("a URL is not an endpoint");
+        let said = e.to_string();
+        assert!(said.contains("Unix socket"), "{said}");
+        assert!(
+            said.contains("5.1"),
+            "the refusal names why, not just that: {said}"
+        );
+    }
+}
+
+#[test]
+fn embedding_config_points_at_a_socket_and_keeps_the_lift_timeout() {
+    let c = EmbeddingClientConfig::at("/run/yeomna/embedder.sock");
+    assert_eq!(c.endpoint.path(), Path::new("/run/yeomna/embedder.sock"));
     assert_eq!(
         c.timeout,
         Duration::from_secs(300),
-        "5 min for large batches"
+        "5 min, since a whole-document forward pass on one card is slow"
     );
-    assert_eq!(c.connect_timeout, Duration::from_secs(10));
+    assert_eq!(
+        parse_endpoint("unix:///run/yeomna/embedder.sock")
+            .unwrap()
+            .path(),
+        c.endpoint.path(),
+        "both spellings name the same socket"
+    );
+}
+
+/// The refusal has to be reachable from a config file, not only from a
+/// test.
+///
+/// The first cut handed the config string straight to `PathBuf`, so
+/// `parse_endpoint` had no production caller: a URL became a literal
+/// relative path and the operator got "no socket there" instead of the
+/// reason there could not be one. Worse, `unix:///run/...`, the spelling
+/// this crate's own documentation and the contract both use, became a
+/// relative path with `unix:` in it. `from_config` is the seam the config
+/// takes now.
+#[test]
+fn a_config_value_goes_through_the_validator_that_explains_it() {
+    let e = EmbeddingClientConfig::from_config("http://localhost:8087/v1")
+        .expect_err("a URL is refused, and the config is where that matters");
+    assert!(matches!(e, EmbeddingError::Unreachable { .. }));
+    assert!(e.to_string().contains("5.1"), "{e}");
+
+    for spelling in [
+        "unix:///run/yeomna/embedder.sock",
+        "/run/yeomna/embedder.sock",
+    ] {
+        let c = EmbeddingClientConfig::from_config(spelling).expect("both spellings resolve");
+        assert_eq!(
+            c.endpoint.path(),
+            Path::new("/run/yeomna/embedder.sock"),
+            "{spelling} must reach the socket, not a path containing the scheme"
+        );
+    }
+}
+
+/// The dimension is not a preference. `embeddings.vec` is
+/// `halfvec(2048)` because `vector(2048)` was measured on this cluster to
+/// refuse an HNSW index, so a service serving another width has nowhere
+/// to write and is refused at connect rather than after an ingest.
+#[test]
+fn the_required_dimension_matches_the_store_column() {
+    assert_eq!(REQUIRED_DIMENSION, 2048);
+}
+
+/// The reference's chunking defaults, which the spike measured at 29
+/// chunks tiling 8,631 tokens with no gap.
+#[test]
+fn the_chunk_policy_defaults_are_the_measured_ones() {
+    let p = ChunkPolicy::default();
+    assert_eq!(p.size_tokens, 500);
+    assert_eq!(p.overlap_tokens, 200);
+    // The whole-text policy is what makes `embed_one` the single-window
+    // case of `embed` rather than a second response shape.
+    let w = ChunkPolicy::whole_text(16384);
+    assert_eq!(w.size_tokens, 16384);
+    assert_eq!(w.overlap_tokens, 0);
 }
 
 #[test]

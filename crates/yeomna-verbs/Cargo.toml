@@ -20,6 +20,7 @@ yeomna-store = { path = "../yeomna-store" }
 # them (spec 019). No cycle: the pipeline knows nothing of the verbs.
 yeomna-pipeline = { path = "../yeomna-pipeline" }
 yeomna-chunking = { path = "../yeomna-chunking" }
+yeomna-embed = { path = "../yeomna-embed" }
 # retire turns a path back into the key the graph stores it under.
 yeomna-keys = { path = "../yeomna-keys" }
 

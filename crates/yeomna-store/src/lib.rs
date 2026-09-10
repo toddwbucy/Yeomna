@@ -37,7 +37,15 @@ pub const SCHEMA_SQL: &str = include_str!("../schema.sql");
 /// edges carry the source's own words and the first corpus speaks
 /// kebab. Structural stays closed. Same cost, same path: re-stamp the
 /// template, recreate, re-ingest.
-pub const SCHEMA_VERSION: &str = "1.2.0";
+///
+/// 1.3.0 (spec 022, R26): `embeddings` gains `model_revision` and `task`,
+/// both `NOT NULL`, so a row says which cohort its vector belongs to.
+/// `model` and `model_hash` identify the weights by name, and the same
+/// name at another revision or under another LoRA adapter is a different
+/// geometry nothing else would notice. A 1.2.0 database holds vectors
+/// whose cohort is unrecorded, which is the drift a version bump exists
+/// to refuse. Same cost, same path.
+pub const SCHEMA_VERSION: &str = "1.3.0";
 
 /// Error type for store operations.
 #[derive(Debug, thiserror::Error)]

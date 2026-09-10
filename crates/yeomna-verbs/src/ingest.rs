@@ -20,6 +20,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 use yeomna_chunking::TokenChunking;
+use yeomna_embed::embedding::EmbeddingClient;
 use yeomna_pipeline::{
     CodebaseConfig, DocumentsConfig, NativeExtractor, drift as run_drift, ingest_codebase,
     ingest_documents, link_conforms,
@@ -88,6 +89,47 @@ fn pipeline_error(e: yeomna_pipeline::PipelineError) -> VerbError {
     VerbError::Internal(format!("ingest failed: {e}"))
 }
 
+/// The task a corpus is embedded at when the request names none.
+const CORPUS_TASK: &str = "retrieval.passage";
+
+/// Connect to the embedder when the request asked for vectors.
+///
+/// Connecting here, before the walk, is EC-4's ordering at the verb level:
+/// an ingest that wanted vectors and cannot have them fails before it
+/// writes anything, rather than leaving a graph that looks complete and
+/// has no vectors in it. The task is checked against what the service
+/// serves for the same reason, since a corpus embedded under an adapter
+/// the operator did not mean is not fixable without a re-ingest.
+async fn embedder_for(
+    s: &Exec<'_>,
+    wanted: bool,
+    task: &str,
+) -> Result<Option<EmbeddingClient>, VerbError> {
+    if !wanted {
+        return Ok(None);
+    }
+    let client = s.embedder().await?;
+    // A client connects while the weights are still loading, on purpose,
+    // so a session opens whether or not the service is warm. An ingest
+    // cannot start on one: `/v1/embed` would refuse with
+    // `model-not-loaded` after the first file's nodes had committed, which
+    // is the half-ingest EC-4 exists to prevent. Checked here, before the
+    // walk, for the same reason the task is.
+    if !client.info().loaded {
+        return Err(VerbError::Internal(format!(
+            "the embedder at {} is still loading its weights. Ask again in a moment",
+            client.endpoint()
+        )));
+    }
+    if !client.info().tasks.iter().any(|t| t == task) {
+        return Err(VerbError::InvalidArgs(format!(
+            "the embedder does not serve task {task:?}. It serves {}",
+            client.info().tasks.join(", ")
+        )));
+    }
+    Ok(Some(client))
+}
+
 /// `codebase.ingest`: a tree of source into the graph (FR1).
 pub async fn codebase_ingest(
     s: &Exec<'_>,
@@ -95,14 +137,24 @@ pub async fn codebase_ingest(
     r: &IngestRequest,
 ) -> Result<Value, VerbError> {
     let root = readable_tree(&r.path)?;
+    let task = r.embed_task.as_deref().unwrap_or(CORPUS_TASK);
+    let embedder = embedder_for(s, r.embed, task).await?;
     let sink = sink_for(s, endpoint, &r.graph).await?;
     let config = CodebaseConfig {
         overwrite: r.overwrite,
+        embed: r.embed,
+        embed_task: task.to_string(),
         ..Default::default()
     };
-    let summary = ingest_codebase(root, &sink, &TokenChunking::default(), None, &config)
-        .await
-        .map_err(pipeline_error)?;
+    let summary = ingest_codebase(
+        root,
+        &sink,
+        &TokenChunking::default(),
+        embedder.as_ref(),
+        &config,
+    )
+    .await
+    .map_err(pipeline_error)?;
     Ok(json!({
         "graph": r.graph,
         "path": r.path,
@@ -116,6 +168,7 @@ pub async fn codebase_ingest(
         "edges_rejected": summary.edges_rejected,
         "chunks_written": summary.chunks_written,
         "embeddings_written": summary.embeddings_written,
+        "files_over_ceiling": summary.files_over_ceiling,
     }))
 }
 
@@ -131,9 +184,13 @@ pub async fn ingest(
     r: &IngestRequest,
 ) -> Result<Value, VerbError> {
     let root = readable_tree(&r.path)?;
+    let task = r.embed_task.as_deref().unwrap_or(CORPUS_TASK);
+    let embedder = embedder_for(s, r.embed, task).await?;
     let sink = sink_for(s, endpoint, &r.graph).await?;
     let config = DocumentsConfig {
         overwrite: r.overwrite,
+        embed: r.embed,
+        embed_task: task.to_string(),
         ..Default::default()
     };
     let docs = ingest_documents(
@@ -141,6 +198,7 @@ pub async fn ingest(
         &sink,
         &NativeExtractor::new(),
         &TokenChunking::default(),
+        embedder.as_ref(),
         &config,
     )
     .await
@@ -159,6 +217,8 @@ pub async fn ingest(
             "files_oversized": docs.files_oversized,
             "collisions": docs.collisions,
             "chunks_written": docs.chunks_written,
+            "embeddings_written": docs.embeddings_written,
+            "docs_over_ceiling": docs.docs_over_ceiling,
             "blocks_seen": docs.blocks_seen,
             "blocks_refused": docs.blocks_refused,
             "nodes_declared": docs.nodes_declared,
@@ -278,19 +338,32 @@ pub async fn codebase_validate(s: &Exec<'_>, r: &GraphScoped) -> Result<Value, V
         .await
         .map_err(db)?;
 
-    let models: Vec<String> = s
+    // One cohort per graph, not one model (R26, spec 022). Two vectors
+    // from the same model at another revision or under another LoRA
+    // adapter share a name and have incomparable geometry, so a graph
+    // holding two cohorts cannot be ranked against a single query vector.
+    // Checking only the model would report `ok` on exactly that graph.
+    let cohorts: Vec<String> = s
         .client()
         .query(
-            "SELECT DISTINCT em.model FROM embeddings em
+            "SELECT DISTINCT em.model, em.model_revision, em.task
+             FROM embeddings em
              JOIN chunks c ON c.id = em.chunk_id
              JOIN nodes n ON n.id = c.node_id
-             WHERE n.graph_id = $1 ORDER BY 1",
+             WHERE n.graph_id = $1 ORDER BY 1, 2, 3",
             &[&g],
         )
         .await
         .map_err(db)?
         .iter()
-        .map(|row| row.get(0))
+        .map(|row| {
+            format!(
+                "{} @ {} / {}",
+                row.get::<_, String>(0),
+                row.get::<_, String>(1),
+                row.get::<_, String>(2)
+            )
+        })
         .collect();
 
     let incomplete_files = s
@@ -307,7 +380,7 @@ pub async fn codebase_validate(s: &Exec<'_>, r: &GraphScoped) -> Result<Value, V
 
     let stray: i64 = stray_symbols.get(0);
     let incomplete: Vec<String> = incomplete_files.iter().map(|row| row.get(0)).collect();
-    let ok = cross_graph_total == 0 && stray == 0 && incomplete.is_empty() && models.len() <= 1;
+    let ok = cross_graph_total == 0 && stray == 0 && incomplete.is_empty() && cohorts.len() <= 1;
     Ok(json!({
         "graph": r.graph,
         "ok": ok,
@@ -317,7 +390,7 @@ pub async fn codebase_validate(s: &Exec<'_>, r: &GraphScoped) -> Result<Value, V
             "sample": cross_graph.iter().map(|row| row.get::<_, String>(0)).collect::<Vec<_>>(),
         },
         "chunks_naming_foreign_symbols": stray,
-        "embedding_models": models,
+        "embedding_cohorts": cohorts,
         "file_nodes_missing_path_or_hash": incomplete,
     }))
 }

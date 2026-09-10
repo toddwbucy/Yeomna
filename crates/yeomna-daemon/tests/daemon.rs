@@ -46,6 +46,10 @@ async fn start(store_dir: &str, graph: Option<&str>) -> Daemon {
         port: PORT,
         database: "yeomna".to_string(),
         graph: graph.map(str::to_string),
+        // No embedder in these tests. A session still opens, because it
+        // connects per call rather than holding a client, so only the
+        // verbs that need a vector notice.
+        embedder_socket: dir.path().join("embedder.sock").display().to_string(),
     };
     let task = tokio::spawn(yeomna_daemon::server::serve(listener, settings));
     Daemon {

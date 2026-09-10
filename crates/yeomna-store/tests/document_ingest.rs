@@ -12,10 +12,15 @@ use tokio_postgres::Client;
 use yeomna_chunking::TokenChunking;
 use yeomna_keys as keys;
 use yeomna_pipeline::{
-    CodebaseConfig, DocumentsConfig, NativeExtractor, ingest_codebase, ingest_documents,
-    link_conforms,
+    CodebaseConfig, DocumentsConfig, HashEmbedder, NativeExtractor, ingest_codebase,
+    ingest_documents, link_conforms,
 };
 use yeomna_store::{PgSink, apply_schema, connect};
+
+/// No embedder in this test, named as a type because `None` alone leaves
+/// the `Embedder` parameter unresolved. Spec 022 made these paths generic
+/// so a test can pass `HashEmbedder` and embed with no GPU.
+const NO_EMBEDDER: Option<&HashEmbedder> = None;
 
 const PORT: u16 = 5433;
 
@@ -172,6 +177,7 @@ async fn run_documents(root: &std::path::Path, sink: &PgSink) -> yeomna_pipeline
         sink,
         &NativeExtractor::new(),
         &TokenChunking::default(),
+        NO_EMBEDDER,
         &DocumentsConfig::default(),
     )
     .await
@@ -397,7 +403,7 @@ async fn placeholders_promote_declarations_fuse_and_conforms_links() {
         root.path(),
         &sink,
         &TokenChunking::default(),
-        None,
+        NO_EMBEDDER,
         &CodebaseConfig::default(),
     )
     .await
@@ -592,7 +598,7 @@ async fn weavertools_document_graph_census() {
         root,
         &sink,
         &TokenChunking::default(),
-        None,
+        NO_EMBEDDER,
         &CodebaseConfig::default(),
     )
     .await

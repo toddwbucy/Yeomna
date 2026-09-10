@@ -128,7 +128,16 @@ async fn orient_surveys_a_graph_as_v_q3_ruled() {
     assert_eq!(g["nodes_by_kind"]["document"], 1);
     assert_eq!(g["nodes_by_kind"]["callable"], 1);
     assert_eq!(g["chunks"], 2);
-    assert_eq!(g["embeddings"], 0, "nothing embeds until H4");
+    // H4 is filled, so this graph having no vectors means this graph was
+    // seeded without them, not that the appliance cannot embed. A graph
+    // with chunks and no embeddings is the coverage gap `orient` exists to
+    // show, and an empty cohort list is what says nothing produced any.
+    assert_eq!(g["embeddings"], 0, "this graph was seeded without vectors");
+    assert_eq!(
+        g["embedding_cohorts"],
+        json!([]),
+        "no vectors, so no cohort to report"
+    );
     // `is_some()` here would always hold, since the key is written even
     // when the value is null. The timestamp itself is the claim.
     let last = g["last_ingest"]
@@ -302,7 +311,9 @@ async fn query_ranks_with_ts_rank_cd_and_refuses_what_it_cannot_do() {
     assert_eq!(hits[0]["key"], "docA");
 
     // A requested ranking mode that cannot run is refused, not ignored.
-    for (hybrid, structural, waits_for) in [(true, false, "H4"), (false, true, "H9")] {
+    // `hybrid` waits on the fusion, which is PRD-embedder Phase 3, not on
+    // H4: the embedder is filled. `structural` still waits on H9.
+    for (hybrid, structural, waits_for) in [(true, false, "Phase 3"), (false, true, "H9")] {
         let env = s
             .call(&Verb::Query(QueryRequest {
                 search_text: "parser".into(),
@@ -430,19 +441,18 @@ async fn a_later_phase_verb_names_the_phase_it_waits_for() {
     // them: 013 took the graph and database verbs, 014 the writes and
     // sql, 019 the ingesting half of Phase 6, 020 the destructive half.
     // **No verb refuses by phase any more.** What is left waits on a
-    // hole (H4's embedder, H7's schema manager, H9's graph embeddings),
-    // which is a capability the appliance does not have rather than a
-    // surface that routes around the verb layer, and that distinction is
-    // what T3's clause turns on.
+    // hole (H7's schema manager, H9's graph embeddings), which is a
+    // capability the appliance does not have rather than a surface that
+    // routes around the verb layer, and that distinction is what T3's
+    // clause turns on.
+    //
+    // **H4 left this list in spec 022.** `embed.text` is implemented, so
+    // it no longer refuses by name. What it does when this session has no
+    // embedder socket is asserted below, separately, because "the service
+    // is not configured here" and "this appliance cannot embed" are
+    // different answers and only the first one is true now.
     let cases = [
         (Verb::SchemaShow(Empty {}), "H7"),
-        (
-            Verb::EmbedText(EmbedTextRequest {
-                text: "hello".into(),
-                task: None,
-            }),
-            "H4",
-        ),
         (
             Verb::GraphEmbedEmbed(GraphKey {
                 graph: "verbs_later".into(),
@@ -457,6 +467,58 @@ async fn a_later_phase_verb_names_the_phase_it_waits_for() {
         let msg = env.error.unwrap();
         assert!(msg.starts_with("unimplemented"), "{msg}");
         assert!(msg.contains(phase), "names its phase: {msg}");
+    }
+}
+
+/// `embed.text` is implemented, and a session that was told no embedder
+/// socket says which config key to set rather than claiming the appliance
+/// has no embedder (spec 022).
+///
+/// This is the other half of the shrinking-refusal guard above. The guard
+/// has fired four times in this project and each time it was right, so the
+/// case it stopped covering gets its own assertion rather than being
+/// deleted.
+#[tokio::test]
+async fn embed_text_without_a_configured_socket_names_the_key() {
+    require!(_o, s, "verbs_embed_unset");
+    let env = s
+        .call(&Verb::EmbedText(EmbedTextRequest {
+            text: "hello".into(),
+            task: None,
+        }))
+        .await;
+    assert!(!env.success);
+    let msg = env.error.unwrap();
+    assert!(
+        msg.starts_with("internal"),
+        "the appliance's own service, not the caller's mistake: {msg}"
+    );
+    assert!(msg.contains("embedder_socket"), "it names the key: {msg}");
+    assert!(
+        !msg.contains("H4") && !msg.starts_with("unimplemented"),
+        "H4 is filled, so this is not a hole any more: {msg}"
+    );
+}
+
+/// An empty text is refused before the embedder is reached, so the refusal
+/// does not depend on a service being up. A zero vector has no cosine and
+/// would answer every query equally badly from inside an HNSW index.
+#[tokio::test]
+async fn an_empty_text_is_refused_before_the_embedder_is_asked() {
+    require!(_o, s, "verbs_embed_empty");
+    for text in ["", "   \n\t "] {
+        let env = s
+            .call(&Verb::EmbedText(EmbedTextRequest {
+                text: text.into(),
+                task: None,
+            }))
+            .await;
+        assert!(!env.success);
+        let msg = env.error.unwrap();
+        assert!(
+            msg.starts_with("invalid-args"),
+            "the caller's, not ours: {msg}"
+        );
     }
 }
 
