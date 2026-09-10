@@ -21,7 +21,10 @@ pub fn envelope(e: &Envelope) -> String {
             out.push_str(&value(data, 0));
         }
         (None, Some(err)) => {
-            out.push_str(err);
+            // Through the sanitizer like anything else: an error can carry
+            // a key or a path the caller supplied, and a caller is not
+            // always a person typing.
+            out.push_str(&printable(err));
             out.push('\n');
         }
         (None, None) => {
@@ -165,11 +168,49 @@ fn shared_columns(items: &[Value]) -> Option<Vec<String>> {
 /// loses nothing that was not already available.
 const MAX_CELL: usize = 72;
 
+/// Make a string safe to write to a terminal.
+///
+/// Everything here came out of the store, and what is in the store came
+/// out of an ingested corpus, which means it is not this program's text.
+/// A chunk of source containing an escape sequence would otherwise reach
+/// the terminal as a command: clear the screen, move the cursor, change
+/// the title, or worse on terminals with more ambitious escapes. Rendering
+/// is the boundary where corpus text becomes terminal output, so it is
+/// where the escaping belongs.
+///
+/// Tab, newline, and carriage return become one space, because they are
+/// ordinary in source text and a table row cannot contain them. Every
+/// other control character, DEL, and the C1 range become a visible
+/// `\xNN`, so the value is neither obeyed nor silently dropped. `--json`
+/// prints the bytes as they are for anything that needs them.
+fn printable(text: &str) -> String {
+    if !text
+        .chars()
+        .any(|c| c.is_control() || ('\u{80}'..='\u{9f}').contains(&c))
+    {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\t' | '\n' | '\r' => out.push(' '),
+            c if c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// A scalar as a cell: strings without their quotes, null as a dash,
 /// everything else as JSON writes it.
+///
+/// Strings go through [`printable`], which is the single funnel every
+/// value that reaches stdout passes through.
 fn scalar(v: &Value) -> String {
     match v {
-        Value::String(s) => s.clone(),
+        Value::String(s) => printable(s),
         Value::Null => "-".to_string(),
         other => other.to_string(),
     }
@@ -180,8 +221,11 @@ fn scalar(v: &Value) -> String {
 /// Newlines become spaces before the cut, because a cell containing one
 /// breaks the row it is in and the alignment of every row after it.
 fn cell(v: &Value) -> String {
+    // `scalar` has already turned every control character into a space or
+    // a visible escape, so a run of whitespace is all that is left to
+    // collapse and no cell can carry a line break into a row.
     let raw = scalar(v);
-    let flat = if raw.contains(['\n', '\r', '\t']) {
+    let flat = if raw.contains("  ") || raw.starts_with(' ') || raw.ends_with(' ') {
         raw.split_whitespace().collect::<Vec<_>>().join(" ")
     } else {
         raw
@@ -282,6 +326,42 @@ mod tests {
             "header, rule, and one row, not a row per newline: {out}"
         );
         assert!(out.contains("one two three"), "{out}");
+    }
+
+    /// Corpus text is not this program's text, and a terminal obeys
+    /// escape sequences. Nothing that came out of the store reaches stdout
+    /// able to command the terminal it is printed to.
+    #[test]
+    fn control_characters_from_the_corpus_cannot_reach_the_terminal() {
+        let hostile = "before\u{1b}[2Jafter\u{7}\u{7f}\u{9b}end";
+        // Through a table cell.
+        let out = array(&[json!({"text": hostile})], 0);
+        assert!(!out.contains('\u{1b}'), "no ESC survives: {out:?}");
+        assert!(!out.contains('\u{7}'), "no BEL survives: {out:?}");
+        assert!(!out.contains('\u{7f}'), "no DEL survives: {out:?}");
+        assert!(!out.contains('\u{9b}'), "no C1 CSI survives: {out:?}");
+        assert!(out.contains("\\x1b"), "it is visible instead: {out:?}");
+        assert!(out.contains("before") && out.contains("end"), "{out:?}");
+
+        // Through the scalar path, which is not a table at all.
+        let out = value(&json!({"k": hostile}), 0);
+        assert!(!out.contains('\u{1b}'), "{out:?}");
+        assert!(out.contains("\\x1b"), "{out:?}");
+
+        // Through an error, which can carry a key the caller supplied.
+        let e = yeomna_verbs::error_envelope(
+            "get",
+            &yeomna_verbs::VerbError::NotFound(format!("no document named {hostile:?}")),
+        );
+        let out = envelope(&e);
+        assert!(!out.contains('\u{1b}'), "{out:?}");
+
+        // And a value with no control characters is untouched, so the
+        // sanitizer is not quietly rewriting ordinary text.
+        assert_eq!(
+            printable("plain \u{4e16}\u{754c} text"),
+            "plain \u{4e16}\u{754c} text"
+        );
     }
 
     #[test]
