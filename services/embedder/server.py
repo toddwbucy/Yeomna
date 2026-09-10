@@ -696,6 +696,19 @@ class Model:
                 f"the forward pass returned {hidden.shape[0]} hidden states for "
                 f"{len(ids)} tokens"
             )
+        # The width, checked here and not only assumed from the contract.
+        # YEOMNA_EMBEDDER_MODEL accepts a snapshot path, so a model of
+        # another width can be loaded, and every response would still
+        # report DIMENSION while carrying vectors of that other width. The
+        # Rust client refuses a mismatch before anything is stored, so this
+        # does not reach halfvec(2048), but a service that reports a
+        # dimension it is not serving is lying to a caller that has no way
+        # to check. Refuse rather than report.
+        if hidden.shape[1] != DIMENSION:
+            raise internal(
+                f"the model produced {hidden.shape[1]}-wide hidden states and this "
+                f"service serves {DIMENSION}. Load a model of the right width"
+            )
         # Drop the prefix. token_count excludes the prefix tokens, so the
         # windows, the offsets, and the hidden states must all be the
         # same token_count things or /v1/tokens would not be an oracle
@@ -821,10 +834,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
     HTTP/1.1 with an explicit `Connection: close`. A single-threaded
     server that kept connections alive would let one idle client hold the
     only worker, and a socket setup costs nothing next to a forward pass.
+
+    `Connection: close` alone does not close the hole it was written for.
+    A client that connects and then sends nothing has not reached the point
+    where the header applies: `StreamRequestHandler` is still blocked
+    reading the request line, with the default timeout of None, and it
+    holds the only worker until that client disconnects. The unit carries
+    `Restart=no`, so an operator would have to notice and restart. The
+    timeout below is what actually closes it, and
+    `BaseHTTPRequestHandler` turns the resulting error into a closed
+    connection.
+
+    Ten seconds, which is generous for a local client writing a header and
+    far short of the request timeout: a slow forward pass is slow after the
+    body has arrived, and this deadline is only on the read.
     """
 
     protocol_version = "HTTP/1.1"
     server_version = "yeomna-embedder/1"
+    timeout = 10
     sys_version = ""
 
     def address_string(self) -> str:

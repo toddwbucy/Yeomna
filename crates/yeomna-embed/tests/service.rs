@@ -401,30 +401,77 @@ async fn a_multi_input_batch_reassembles_in_input_order() {
     assert_eq!(whole.model_revision, batched.model_revision);
 }
 
-/// EC-2's accepting half, which only its refusing half was covered.
+/// EC-2's accepting half, at the ceiling rather than near it.
 ///
-/// The ceiling is a refusal boundary, and a boundary needs both sides: a
-/// service that refused one token below its advertised ceiling would pass
-/// the refusal test and still be wrong.
+/// The ceiling is a refusal boundary and a boundary needs both sides. A
+/// service that refused everything above 14k while advertising 16,384 would
+/// pass the refusal test and still be wrong, and that is not a hypothetical
+/// here: under the default CUDA allocator the real ceiling measured about
+/// 14k, which is why the service sets `expandable_segments` itself.
+///
+/// The input is grown until the service reports a token count at the
+/// ceiling, rather than guessed at, because how text maps to tokens is the
+/// tokenizer's business and not this test's.
 #[tokio::test]
-async fn an_input_at_the_ceiling_is_accepted() {
+async fn an_input_at_the_advertised_ceiling_is_accepted() {
     let Some(c) = client().await else { return };
-    // Ask for something the service will report a token count for, then
-    // check the reported count against the ceiling rather than guessing how
-    // text maps to tokens.
-    let text = "token ".repeat(2000);
-    let chunks = c
-        .embed_document(&text, "retrieval.passage", ChunkPolicy::default())
+    let ceiling = c.info().max_tokens;
+
+    // One probe to learn the ratio, then one attempt at the ceiling, then a
+    // short climb. Bounded, so a tokenizer that behaves unexpectedly makes
+    // this fail rather than loop.
+    let probe = c
+        .tokens("word ".repeat(80).trim(), "retrieval.passage")
         .await
-        .expect("well under the ceiling");
-    assert!(!chunks.is_empty());
-    assert!(
-        chunks.last().unwrap().end_token <= c.info().max_tokens,
-        "the pass stayed inside the ceiling it advertises"
-    );
+        .expect("a small probe answers");
+    let per_word = f64::from(probe.token_count) / 80.0;
+    let mut words = ((f64::from(ceiling) / per_word).floor() as usize).max(1);
+
+    let mut at_ceiling = None;
+    for _ in 0..12 {
+        let text = "word ".repeat(words);
+        let text = text.trim();
+        match c
+            .embed_document(text, "retrieval.passage", ChunkPolicy::whole_text(ceiling))
+            .await
+        {
+            Ok(chunks) => {
+                let reached = chunks.last().expect("one window").end_token;
+                if reached >= ceiling {
+                    at_ceiling = Some((reached, chunks));
+                    break;
+                }
+                // Still short: close the remaining gap in one step.
+                let missing = ceiling - reached;
+                words += ((f64::from(missing) / per_word).ceil() as usize).max(1);
+            }
+            Err(e) if e.code() == Some("input-too-large") => {
+                // Overshot. Step back by the overshoot the message implies,
+                // conservatively.
+                words -= (words / 50).max(1);
+            }
+            Err(e) => panic!("unexpected refusal below the ceiling: {e}"),
+        }
+    }
+
+    let (reached, chunks) = at_ceiling.unwrap_or_else(|| {
+        panic!("could not build an input reaching the advertised ceiling of {ceiling} tokens")
+    });
     assert_eq!(
-        chunks.last().unwrap().end_byte,
-        text.len(),
-        "and covered the whole input"
+        reached, ceiling,
+        "an input at exactly the ceiling is accepted, not refused"
     );
+    assert_eq!(chunks.len(), 1, "one window over the whole thing");
+    for ch in &chunks {
+        assert_eq!(ch.vector.len() as u32, REQUIRED_DIMENSION);
+    }
+
+    // And one token past it is refused, so the boundary is the boundary
+    // rather than a floor the service happens to sit above.
+    let over = format!("{} word", "word ".repeat(words).trim());
+    let e = c
+        .embed_document(&over, "retrieval.passage", ChunkPolicy::whole_text(ceiling))
+        .await
+        .expect_err("past the ceiling");
+    assert_eq!(e.code(), Some("input-too-large"), "{e}");
 }

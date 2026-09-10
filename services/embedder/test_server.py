@@ -639,6 +639,42 @@ def test_an_unknown_path_is_not_an_operation(served):
     assert body["error"]["code"] == "invalid-request"
 
 
+def test_a_silent_client_cannot_hold_the_only_worker(served):
+    """A connection that sends nothing releases the worker on its own.
+
+    The server handles one request at a time. Without a read deadline a
+    client that connects and never sends a request line blocks the only
+    worker until it disconnects, and the unit does not restart. The
+    handler's `timeout` is what bounds it.
+    """
+    assert server.Handler.timeout is not None
+    assert server.Handler.timeout <= 30, "a deadline a person would wait for"
+
+    # Connect, send nothing, and leave it open. The next request must still
+    # be answered rather than queueing behind the silent one.
+    silent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    silent.connect(str(served.path))
+    try:
+        status, body = served.request("GET", "/v1/info")
+        assert status == 200, body
+    finally:
+        silent.close()
+
+
+def test_the_hidden_width_is_checked_not_assumed():
+    """A model of another width is refused rather than reported as 2048.
+
+    `YEOMNA_EMBEDDER_MODEL` accepts a snapshot path, so a model of another
+    width can be loaded, and every response would still report `DIMENSION`
+    while carrying vectors of that other width. Asserted over the source,
+    because provoking it needs a second model on the card.
+    """
+    text = Path(server.__file__).read_text()
+    assert "hidden.shape[1] != DIMENSION" in text, (
+        "the width check is what keeps /v1/info honest about what it serves"
+    )
+
+
 def test_a_known_path_reached_the_wrong_way_is_405_not_404(served):
     """A routing mistake is distinguishable from an unknown path.
 

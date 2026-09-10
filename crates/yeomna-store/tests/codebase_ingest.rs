@@ -604,7 +604,13 @@ async fn embedding_lands_vectors_with_their_cohort_using_the_double() {
 
     let row = owner
         .query_one(
-            "SELECT count(*), count(DISTINCT e.model), min(e.model), min(e.task),
+            "SELECT count(*),
+                    -- The triple, not the model alone. Rows sharing a model
+                    -- with mixed revisions or tasks are two cohorts, and
+                    -- counting only the model would call them one while the
+                    -- min() assertions below still passed (R26).
+                    count(DISTINCT (e.model, e.model_revision, e.task)),
+                    min(e.model), min(e.task),
                     min(e.model_revision), min(vector_dims(e.vec::vector))
              FROM embeddings e
              JOIN chunks c ON c.id = e.chunk_id
@@ -617,7 +623,11 @@ async fn embedding_lands_vectors_with_their_cohort_using_the_double() {
         .unwrap();
     let count: i64 = row.get(0);
     assert_eq!(count as usize, summary.embeddings_written);
-    assert_eq!(row.get::<_, i64>(1), 1, "one cohort in one run");
+    assert_eq!(
+        row.get::<_, i64>(1),
+        1,
+        "one cohort in one run, counted over the whole triple"
+    );
     assert_eq!(
         row.get::<_, String>(2),
         "yeomna-test/hash-embedder",

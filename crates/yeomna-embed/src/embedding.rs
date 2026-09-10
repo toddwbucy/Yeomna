@@ -587,16 +587,26 @@ impl EmbeddingClient {
             }
         }
 
+        // The cohort is read, never defaulted. Falling back to the
+        // connect-time values would make a response that omits them
+        // indistinguishable from one that agrees, so the cross-batch cohort
+        // guard would compare those values against themselves and always
+        // pass, and the pipeline would stamp them into
+        // `embeddings.model_revision` on the strength of a field the service
+        // never sent. There is no re-embed-in-place tool to undo that (T4),
+        // which is why this refuses rather than defaults.
+        let cohort = |field: &str| -> Result<String, EmbeddingError> {
+            resp[field].as_str().map(str::to_string).ok_or_else(|| {
+                EmbeddingError::InvalidResponse(format!(
+                    "/v1/embed answered without a string {field}, so the cohort of these vectors is unknown and they cannot be stored"
+                ))
+            })
+        };
+
         Ok(EmbedResult {
-            model: resp["model"]
-                .as_str()
-                .unwrap_or(&self.info.model)
-                .to_string(),
-            model_revision: resp["model_revision"]
-                .as_str()
-                .unwrap_or(&self.info.model_revision)
-                .to_string(),
-            task: resp["task"].as_str().unwrap_or(task).to_string(),
+            model: cohort("model")?,
+            model_revision: cohort("model_revision")?,
+            task: cohort("task")?,
             dimension,
             results,
             duration_ms,

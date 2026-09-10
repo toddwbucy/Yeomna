@@ -49,33 +49,108 @@ fn is_sql(body: &str) -> bool {
     KEYWORDS.iter().any(|k| upper.contains(k))
 }
 
-/// Every string literal on one line, roughly. Good enough for a lint: it
-/// wants no false negatives on the shape being hunted, and its own
-/// negative test proves it still detects.
-fn literals(line: &str) -> Vec<String> {
+/// Every string literal in a whole file, with the line it opened on.
+///
+/// Whole-file rather than line-by-line, which is the difference between a
+/// lint that works and one that does not. A literal whose continuation
+/// backslash is missing **spans two source lines**, so a line-by-line scan
+/// never sees the text before the break and the indentation after it in the
+/// same string, and passes the exact malformed literal it exists to reject.
+/// A raw string (`r"..."`, `r#"..."#`) is skipped: escapes mean nothing
+/// inside one and none of them here is a message.
+fn literals(text: &str) -> Vec<(usize, String)> {
+    let bytes: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '"' {
+    let mut line = 1usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == '\n' {
+            line += 1;
+            i += 1;
             continue;
         }
+        // A line comment: nothing in it is a literal, and a `"` inside one
+        // would otherwise open a literal that swallows the rest of the file.
+        if c == '/' && bytes.get(i + 1) == Some(&'/') {
+            while i < bytes.len() && bytes[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // A raw string, in either of its forms. Skipped by finding its
+        // matching terminator so its contents cannot be mistaken for a
+        // normal literal's.
+        if c == 'r' && matches!(bytes.get(i + 1), Some('"') | Some('#')) {
+            let mut hashes = 0usize;
+            let mut j = i + 1;
+            while bytes.get(j) == Some(&'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if bytes.get(j) == Some(&'"') {
+                let close: String = std::iter::once('"')
+                    .chain(std::iter::repeat_n('#', hashes))
+                    .collect();
+                let rest: String = bytes[j + 1..].iter().collect();
+                let end = rest
+                    .find(&close)
+                    .map(|at| j + 1 + rest[..at].chars().count());
+                let stop = end.unwrap_or(bytes.len());
+                line += bytes[i..stop].iter().filter(|c| **c == '\n').count();
+                i = stop + close.chars().count();
+                continue;
+            }
+        }
+        // A char literal, so `'"'` does not open a string.
+        if c == '\'' && bytes.get(i + 1) == Some(&'"') && bytes.get(i + 2) == Some(&'\'') {
+            i += 3;
+            continue;
+        }
+        if c != '"' {
+            i += 1;
+            continue;
+        }
+        let opened = line;
         let mut body = String::new();
-        while let Some(c) = chars.next() {
-            match c {
+        i += 1;
+        while i < bytes.len() {
+            match bytes[i] {
                 '\\' => {
                     // Keep the escape as written, so `\n` in a source
                     // fixture stays two characters and does not read as a
-                    // line break followed by indentation.
-                    body.push('\\');
-                    if let Some(n) = chars.next() {
-                        body.push(n);
+                    // line break followed by indentation. A backslash before
+                    // a real newline is the continuation this lint is about,
+                    // and Rust removes the newline and the indentation, so
+                    // the literal is recorded the way Rust sees it.
+                    if bytes.get(i + 1) == Some(&'\n') {
+                        line += 1;
+                        i += 2;
+                        while matches!(bytes.get(i), Some(' ') | Some('\t')) {
+                            i += 1;
+                        }
+                        continue;
                     }
+                    body.push('\\');
+                    if let Some(n) = bytes.get(i + 1) {
+                        body.push(*n);
+                    }
+                    i += 2;
                 }
-                '"' => break,
-                c => body.push(c),
+                '"' => {
+                    i += 1;
+                    break;
+                }
+                c => {
+                    if c == '\n' {
+                        line += 1;
+                    }
+                    body.push(c);
+                    i += 1;
+                }
             }
         }
-        out.push(body);
+        out.push((opened, body));
     }
     out
 }
@@ -90,6 +165,19 @@ fn literals(line: &str) -> Vec<String> {
 /// between two non-space characters, not preceded by an escape, is the
 /// thing being hunted.
 fn has_collapsed_run(body: &str) -> bool {
+    // The split form: a real newline inside the literal followed by
+    // indentation. That is exactly what a missing continuation backslash
+    // leaves, and it reaches a reader as a line break and a wall of spaces
+    // in the middle of a sentence.
+    for (i, _) in body.match_indices('\n') {
+        let after = &body[i + 1..];
+        let spaces = after.len() - after.trim_start_matches([' ', '\t']).len();
+        if spaces >= RUN.len() && after[spaces..].starts_with(|c: char| c != '\n') {
+            return true;
+        }
+    }
+    // The joined form: the same mistake after something has put the literal
+    // back on one line, which is how it reached this repository twice.
     let bytes = body.as_bytes();
     let mut i = 0;
     while let Some(rel) = body[i..].find(RUN) {
@@ -98,7 +186,8 @@ fn has_collapsed_run(body: &str) -> bool {
         let before = &body[..at];
         let after_is_text = body[end..].chars().next().is_some_and(|c| c != ' ');
         let before_is_text = before.chars().next_back().is_some_and(|c| c != ' ');
-        // `\n`, `\r`, `\t` immediately before the run means a fixture.
+        // `\n`, `\r`, `\t` immediately before the run means a fixture,
+        // where the indentation is the point.
         let after_escape = before.len() >= 2
             && bytes[before.len() - 2] == b'\\'
             && matches!(bytes[before.len() - 1], b'n' | b'r' | b't');
@@ -130,16 +219,17 @@ fn no_message_carries_a_collapsed_continuation() {
                 }
                 scanned += 1;
                 let text = std::fs::read_to_string(&path).expect("readable");
-                for (n, line) in text.lines().enumerate() {
-                    for body in literals(line) {
-                        if has_collapsed_run(&body) && !is_sql(&body) {
-                            offenders.push(format!(
-                                "{}:{}: {}",
-                                path.display(),
-                                n + 1,
-                                body.chars().take(90).collect::<String>()
-                            ));
-                        }
+                for (line, body) in literals(&text) {
+                    if has_collapsed_run(&body) && !is_sql(&body) {
+                        offenders.push(format!(
+                            "{}:{}: {}",
+                            path.display(),
+                            line,
+                            body.chars()
+                                .take(90)
+                                .collect::<String>()
+                                .replace('\n', "<NL>")
+                        ));
                     }
                 }
             }
@@ -173,10 +263,54 @@ fn the_lint_catches_a_planted_collapse() {
     // A source fixture's escaped newline is two characters, not a break.
     assert!(!has_collapsed_run("fn a() {\\n    1\\n}"));
 
-    // And the extractor: a literal is read out of a line the way the scan
-    // reads it, escapes intact.
-    let found = literals(r#"let a = "one   two"; let b = "fine";"#);
-    assert_eq!(found, vec!["one   two".to_string(), "fine".to_string()]);
+    // The split form, which is the one a line-by-line scan cannot see and
+    // the one this lint exists for. A literal whose continuation backslash
+    // is missing spans two source lines, so the text before the break and
+    // the indentation after it are only in the same string if the whole file
+    // was parsed.
+    assert!(has_collapsed_run(
+        "hybrid ranking needs the fusion.\n             The embedder is here"
+    ));
+    // And a literal that was written across lines *with* its backslash
+    // reaches the lint already joined, because the extractor removes the
+    // newline and the indentation the way Rust does.
+    let joined = literals("let m = \"one part \\\n             and the rest\";");
+    assert_eq!(joined.len(), 1, "{joined:?}");
+    assert_eq!(joined[0].1, "one part and the rest");
+    assert!(!has_collapsed_run(&joined[0].1));
+
+    // Without the backslash the same shape survives into the literal, and
+    // the lint catches it.
+    let split = literals("let m = \"one part\n             and the rest\";");
+    assert_eq!(split.len(), 1, "{split:?}");
+    assert!(
+        has_collapsed_run(&split[0].1),
+        "the missing backslash is the whole point: {:?}",
+        split[0].1
+    );
+
+    // The extractor, on the shapes that would otherwise confuse it.
+    let found = literals(r##"let a = "one   two"; let b = "fine";"##);
+    assert_eq!(
+        found.iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(),
+        vec!["one   two".to_string(), "fine".to_string()]
+    );
+    // A `"` inside a line comment does not open a literal.
+    let commented = literals("// a quote \" here\nlet a = \"real\";");
+    assert_eq!(
+        commented.iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(),
+        vec!["real".to_string()]
+    );
+    // A char literal holding a quote does not either.
+    let charred = literals("if c == '\"' { } let a = \"real\";");
+    assert_eq!(
+        charred.iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(),
+        vec!["real".to_string()]
+    );
+    // The line number is where the literal opened.
+    let numbered = literals("fn a() {}\nfn b() {}\nlet m = \"here\";");
+    assert_eq!(numbered[0].0, 3);
+
     assert!(is_sql("SELECT id FROM nodes   WHERE x = 1"));
     assert!(!is_sql("the embedder does not serve that task"));
 }
