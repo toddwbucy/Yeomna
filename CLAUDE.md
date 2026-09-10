@@ -11,7 +11,7 @@ Beneath it sit `docs/PRD-postgres-store.md`, `docs/PRD-pipeline-libraries.md`,
 and review notes alongside each.
 
 Code: a Cargo workspace, edition 2024, toolchain pinned by
-`rust-toolchain.toml`, eleven crates, COUNT tests, plus one Python service
+`rust-toolchain.toml`, eleven crates, 446 tests, plus one Python service
 at `services/embedder/`. **The Rust side of the
 pipeline-libraries PRD is complete** (phases 1 through 5, specs 001 through
 005): chunking, keys, batch, proto, embed, code, and pipeline are all lifted

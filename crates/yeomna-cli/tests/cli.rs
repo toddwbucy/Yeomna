@@ -529,7 +529,14 @@ fn the_tree_renders_a_table_and_json_on_request() {
 
     // FR5: a refusal renders and exits 1 through the tree as through
     // `call` (EC-6).
-    let refused = run(Some(&config), &["embed", "text", "--text", "hello"], None);
+    //
+    // This asked `embed text` and expected it to name H4. **Spec 022 filled
+    // H4**, so it asks a verb that still waits on one: `schema.show` waits
+    // on H7's schema manager. The point of the assertion is the tree
+    // carrying a refusal with the right exit code, not which hole is open,
+    // and the shrinking list of holes is guarded in `read_verbs.rs` where it
+    // belongs.
+    let refused = run(Some(&config), &["schema", "show"], None);
     assert_eq!(refused.code, 1, "{}", refused.stderr);
     assert!(
         refused.stdout.contains("unimplemented"),
@@ -537,10 +544,27 @@ fn the_tree_renders_a_table_and_json_on_request() {
         refused.stdout
     );
     assert!(
-        refused.stdout.contains("H4"),
+        refused.stdout.contains("H7"),
         "it names its hole: {}",
         refused.stdout
     );
+
+    // And the verb that used to be the refusal here answers now, when the
+    // embedder is running. Skipped rather than failed without it, since an
+    // appliance whose embedder is down is a normal state.
+    let embedded = run(Some(&config), &["embed", "text", "--text", "hello"], None);
+    if embedded.code == 0 {
+        assert!(
+            embedded.stdout.contains("dimension") && embedded.stdout.contains("vector"),
+            "a vector rendered through the tree: {}",
+            embedded.stdout
+        );
+    } else {
+        eprintln!(
+            "SKIP: embed.text needs the embedder running, got: {}",
+            embedded.stdout.lines().next().unwrap_or_default()
+        );
+    }
 }
 
 /// A table has its header on the same stream as its rows, which is the

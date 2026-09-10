@@ -18,9 +18,18 @@
 use std::path::{Path, PathBuf};
 
 /// The run of spaces that means a continuation collapsed. Two spaces
-/// happen legitimately (a column pad, a sentence break in older style), so
-/// the threshold is three, which no intentional message has.
+/// happen legitimately (a sentence break in older style), so the threshold
+/// is three.
 const RUN: &str = "   ";
+
+/// The shortest literal this lint judges.
+///
+/// A collapsed continuation always spans two source lines, and two lines of
+/// Rust at any normal indentation is far longer than this. What is shorter
+/// is padding: a rendered table row like `"key   depth"` is column
+/// alignment, and a test that pins one is asserting the alignment. Spec
+/// 021's renderer tests are full of them, and they are correct.
+const MIN_PROSE: usize = 60;
 
 fn crates_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -165,6 +174,9 @@ fn literals(text: &str) -> Vec<(usize, String)> {
 /// between two non-space characters, not preceded by an escape, is the
 /// thing being hunted.
 fn has_collapsed_run(body: &str) -> bool {
+    if body.len() < MIN_PROSE {
+        return false;
+    }
     // The split form: a real newline inside the literal followed by
     // indentation. That is exactly what a missing continuation backslash
     // leaves, and it reaches a reader as a line break and a wall of spaces
@@ -254,12 +266,24 @@ fn the_lint_catches_a_planted_collapse() {
     assert!(has_collapsed_run(
         "hybrid ranking needs the fusion.              The embedder is here"
     ));
-    assert!(has_collapsed_run("a b   c"));
     // Two spaces are not a collapse.
-    assert!(!has_collapsed_run("one sentence.  Another one."));
+    assert!(!has_collapsed_run(
+        "one sentence.  Another one, and enough text to be judged as prose at all."
+    ));
     // Leading and trailing runs are padding, not a collapse.
-    assert!(!has_collapsed_run("   indented"));
-    assert!(!has_collapsed_run("trailing   "));
+    assert!(!has_collapsed_run(
+        "   indented, and long enough that the length rule is not what excused it."
+    ));
+    assert!(!has_collapsed_run(
+        "trailing, and long enough that the length rule is not what excused it.   "
+    ));
+    // A rendered table row is column alignment, and a test pinning one is
+    // asserting that alignment. Short, which is how it is told apart from a
+    // message that lost a line break.
+    assert!(!has_collapsed_run("key   depth"));
+    assert!(!has_collapsed_run("----  -----"));
+    assert!(!has_collapsed_run("bbbb  12"));
+    assert!(!has_collapsed_run("a b   c"));
     // A source fixture's escaped newline is two characters, not a break.
     assert!(!has_collapsed_run("fn a() {\\n    1\\n}"));
 
@@ -274,14 +298,22 @@ fn the_lint_catches_a_planted_collapse() {
     // And a literal that was written across lines *with* its backslash
     // reaches the lint already joined, because the extractor removes the
     // newline and the indentation the way Rust does.
-    let joined = literals("let m = \"one part \\\n             and the rest\";");
+    let joined = literals(
+        "let m = \"a message long enough to have been written across two \\\n                      source lines, which is what makes it prose\";",
+    );
     assert_eq!(joined.len(), 1, "{joined:?}");
-    assert_eq!(joined[0].1, "one part and the rest");
+    assert_eq!(
+        joined[0].1,
+        "a message long enough to have been written across two source lines, \
+         which is what makes it prose"
+    );
     assert!(!has_collapsed_run(&joined[0].1));
 
     // Without the backslash the same shape survives into the literal, and
     // the lint catches it.
-    let split = literals("let m = \"one part\n             and the rest\";");
+    let split = literals(
+        "let m = \"a message long enough to have been written across two\n                      source lines, which is what makes it prose\";",
+    );
     assert_eq!(split.len(), 1, "{split:?}");
     assert!(
         has_collapsed_run(&split[0].1),
