@@ -195,6 +195,18 @@ fn phase_two_verbs() -> Vec<Verb> {
         Verb::CodebaseValidate(GraphScoped {
             graph: "audit_graph".into(), // clean and side-effect free
         }),
+        // -- Phase 6b (spec 020). Both force-gated, so both refuse here
+        // and the refusal is what the row records.
+        Verb::CodebaseRetire(RetireRequest {
+            graph: "audit_graph".into(),
+            prefix: "nothing/".into(),
+            path: "/nonexistent/tree".into(),
+            force: false, // Denied at the force gate
+        }),
+        Verb::CodebasePrune(DropScoped {
+            graph: "audit_graph".into(),
+            force: false, // Denied at the force gate
+        }),
     ]
 }
 

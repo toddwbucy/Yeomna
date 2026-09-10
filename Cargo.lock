@@ -3468,6 +3468,7 @@ dependencies = [
  "tokio-postgres",
  "tracing",
  "yeomna-chunking",
+ "yeomna-keys",
  "yeomna-pipeline",
  "yeomna-store",
 ]

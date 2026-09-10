@@ -465,8 +465,17 @@ pub struct IngestRequest {
 #[serde(deny_unknown_fields)]
 pub struct RetireRequest {
     pub graph: String,
-    /// Retire everything under this path prefix.
+    /// Retire under this path prefix, and only what the tree no longer
+    /// has. An empty prefix is refused, since it would name the whole
+    /// graph.
     pub prefix: String,
+    /// The working tree to compare against (R23, spec 020). The
+    /// captured shape had no path, which predates D3's ruling that
+    /// retire removes nodes whose sources are gone: without a tree the
+    /// verb would have to take a prefix on faith and could delete the
+    /// graph's record of source that is still there. A tree that cannot
+    /// be walked is a refusal rather than a licence to sweep.
+    pub path: String,
     #[serde(default)]
     pub force: bool,
 }

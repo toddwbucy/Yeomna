@@ -425,9 +425,15 @@ async fn get_reports_ambiguity_rather_than_choosing() {
 async fn a_later_phase_verb_names_the_phase_it_waits_for() {
     require!(_o, s, "verbs_later");
     // EC-1: reachable through dispatch, refused by name, never a panic.
-    // This list shrinks as phases land: 013 the graph and database verbs,
-    // 014 the writes and sql, 019 the ingesting half of Phase 6, so only
-    // the destructive half of Phase 6 still refuses by phase.
+    //
+    // This list shrank as the phases landed, and spec 020 emptied it of
+    // them: 013 took the graph and database verbs, 014 the writes and
+    // sql, 019 the ingesting half of Phase 6, 020 the destructive half.
+    // **No verb refuses by phase any more.** What is left waits on a
+    // hole (H4's embedder, H7's schema manager, H9's graph embeddings),
+    // which is a capability the appliance does not have rather than a
+    // surface that routes around the verb layer, and that distinction is
+    // what T3's clause turns on.
     let cases = [
         (Verb::SchemaShow(Empty {}), "H7"),
         (
@@ -438,11 +444,11 @@ async fn a_later_phase_verb_names_the_phase_it_waits_for() {
             "H4",
         ),
         (
-            Verb::CodebasePrune(DropScoped {
+            Verb::GraphEmbedEmbed(GraphKey {
                 graph: "verbs_later".into(),
-                force: false,
+                key: "anything".into(),
             }),
-            "Phase 6b",
+            "H9",
         ),
     ];
     for (verb, phase) in cases {

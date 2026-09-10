@@ -533,3 +533,284 @@ async fn a_file_the_walk_cannot_assess_is_not_reported_missing() {
     );
     assert_eq!(counts(&owner, G).await, before, "drift still wrote nothing");
 }
+
+/// FR1 through FR4 and EC-1, EC-2, EC-6: retire sweeps what the tree no
+/// longer has, refuses without force, refuses a wildcard, and refuses a
+/// tree it cannot walk.
+#[tokio::test]
+async fn retire_sweeps_what_the_source_lost_and_refuses_the_rest() {
+    const G: &str = "iv_retire";
+    let Some((owner, s)) = fixtures(G, "iv-retire").await else {
+        return;
+    };
+    let root = TempDir::new().unwrap();
+    std::fs::create_dir_all(root.path().join("old")).unwrap();
+    std::fs::write(root.path().join("keep.rs"), "pub fn keep() {}\n").unwrap();
+    std::fs::write(
+        root.path().join("old/gone.rs"),
+        "pub fn gone() -> i64 {\n    1\n}\n",
+    )
+    .unwrap();
+    let path = root.path().to_string_lossy().to_string();
+    let seed = s
+        .call(&Verb::CodebaseIngest(IngestRequest {
+            path: path.clone(),
+            graph: G.into(),
+            overwrite: true,
+        }))
+        .await;
+    assert!(seed.success, "the seeding ingest: {:?}", seed.error);
+    let before = counts(&owner, G).await;
+
+    let retire = |prefix: &str, tree: &str, force: bool| {
+        Verb::CodebaseRetire(RetireRequest {
+            graph: G.into(),
+            prefix: prefix.into(),
+            path: tree.into(),
+            force,
+        })
+    };
+
+    // FR1: no force, no sweep.
+    let env = s.call(&retire("old/", &path, false)).await;
+    assert!(!env.success);
+    assert!(env.error.unwrap().starts_with("denied"));
+    assert_eq!(counts(&owner, G).await, before, "the refusal swept nothing");
+
+    // EC-6: an empty prefix would name the whole graph.
+    let env = s.call(&retire("   ", &path, true)).await;
+    assert!(!env.success);
+    let msg = env.error.unwrap();
+    assert!(
+        msg.starts_with("invalid-args") && msg.contains("every file"),
+        "{msg}"
+    );
+
+    // EC-2: a tree that cannot be walked would make every file look
+    // gone, and that is a refusal rather than a licence to sweep.
+    let env = s.call(&retire("old/", "/nonexistent/tree", true)).await;
+    assert!(!env.success);
+    assert!(env.error.unwrap().starts_with("invalid-args"));
+    assert_eq!(counts(&owner, G).await, before, "still nothing swept");
+
+    // EC-1: the files are all still there, so there is nothing to
+    // retire even with force.
+    let env = s.call(&retire("old/", &path, true)).await;
+    assert!(env.success, "{:?}", env.error);
+    assert_eq!(data(&env)["retired"], json!([]), "{}", data(&env));
+    assert_eq!(data(&env)["swept"]["nodes"], 0);
+    assert_eq!(counts(&owner, G).await, before);
+
+    // FR2: now the file is gone, and retire takes its family.
+    std::fs::remove_file(root.path().join("old/gone.rs")).unwrap();
+    let env = s.call(&retire("old/", &path, true)).await;
+    assert!(env.success, "{:?}", env.error);
+    let d = data(&env);
+    assert_eq!(d["retired"], json!(["old/gone.rs"]), "{d}");
+    assert!(
+        d["swept"]["nodes"].as_i64().unwrap() >= 2,
+        "the file node and the symbol it declared: {d}"
+    );
+    let after = counts(&owner, G).await;
+    assert!(after.0 < before.0, "nodes went: {before:?} then {after:?}");
+
+    // The file outside the prefix is untouched, and so is the graph's
+    // record of it.
+    let env = s
+        .call(&Verb::CodebaseDrift(DriftRequest {
+            graph: G.into(),
+            path: path.clone(),
+        }))
+        .await;
+    let d = data(&env);
+    assert_eq!(d["clean"], true, "what remains matches the tree: {d}");
+    assert_eq!(
+        d["missing"],
+        json!([]),
+        "the retired file is no longer known"
+    );
+}
+
+/// FR3: a file that is present and could not be assessed is never
+/// retired. This is the guard spec 019's round one made necessary, and
+/// it is the one that would have deleted live knowledge.
+#[tokio::test]
+async fn retire_never_touches_a_present_file_it_could_not_assess() {
+    const G: &str = "iv_retire_unassessed";
+    let Some((owner, s)) = fixtures(G, "iv-retire-unassessed").await else {
+        return;
+    };
+    let root = TempDir::new().unwrap();
+    std::fs::create_dir_all(root.path().join("src")).unwrap();
+    std::fs::write(root.path().join("src/big.rs"), "pub fn b() {}\n").unwrap();
+    let path = root.path().to_string_lossy().to_string();
+    let seed = s
+        .call(&Verb::CodebaseIngest(IngestRequest {
+            path: path.clone(),
+            graph: G.into(),
+            overwrite: true,
+        }))
+        .await;
+    assert!(seed.success, "{:?}", seed.error);
+    let before = counts(&owner, G).await;
+    assert!(before.0 > 0);
+
+    // Present, and past the size limit, so drift cannot assess it.
+    std::fs::write(
+        root.path().join("src/big.rs"),
+        "pub fn b() {}\n".repeat(100_000),
+    )
+    .unwrap();
+
+    let env = s
+        .call(&Verb::CodebaseRetire(RetireRequest {
+            graph: G.into(),
+            prefix: "src/".into(),
+            path: path.clone(),
+            force: true,
+        }))
+        .await;
+    assert!(env.success, "{:?}", env.error);
+    assert_eq!(
+        data(&env)["retired"],
+        json!([]),
+        "a present file is not gone, whatever the analyzer could do with it"
+    );
+    assert_eq!(
+        counts(&owner, G).await,
+        before,
+        "the graph's record of source that is still there survived"
+    );
+}
+
+/// FR5 and EC-3, EC-4: prune sweeps the orphans a retire would leave if
+/// it ever left any, refuses without force, and finds nothing after a
+/// retire that took the family.
+#[tokio::test]
+async fn prune_sweeps_orphans_and_finds_none_after_a_clean_retire() {
+    const G: &str = "iv_prune";
+    let Some((owner, s)) = fixtures(G, "iv-prune").await else {
+        return;
+    };
+    let root = tree();
+    let path = root.path().to_string_lossy().to_string();
+    let seed = s
+        .call(&Verb::CodebaseIngest(IngestRequest {
+            path: path.clone(),
+            graph: G.into(),
+            overwrite: true,
+        }))
+        .await;
+    assert!(seed.success, "{:?}", seed.error);
+
+    let prune = |force: bool| {
+        Verb::CodebasePrune(DropScoped {
+            graph: G.into(),
+            force,
+        })
+    };
+
+    // FR5: no force, no sweep.
+    let env = s.call(&prune(false)).await;
+    assert!(!env.success);
+    assert!(env.error.unwrap().starts_with("denied"));
+
+    // EC-3: a real ingest leaves no orphans.
+    let env = s.call(&prune(true)).await;
+    assert!(env.success, "{:?}", env.error);
+    assert_eq!(data(&env)["swept"]["nodes"], 0, "{}", data(&env));
+
+    // Plant the orphan class: a file node deleted without its symbols,
+    // which is what a half-finished retire would leave.
+    owner
+        .execute(
+            "DELETE FROM nodes n USING graphs g
+             WHERE g.id = n.graph_id AND g.name = $1 AND n.kind = 'file'
+               AND n.natural_key = 'helper_rs'",
+            &[&G],
+        )
+        .await
+        .unwrap();
+    let orphans: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM nodes n JOIN graphs g ON g.id = n.graph_id
+             WHERE g.name = $1 AND n.payload->>'file_key' = 'helper_rs'",
+            &[&G],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(orphans > 0, "the fixture planted orphans");
+
+    let env = s.call(&prune(true)).await;
+    assert!(env.success, "{:?}", env.error);
+    let d = data(&env);
+    assert_eq!(d["swept"]["nodes"], orphans, "{d}");
+    assert!(
+        !d["sample"].as_array().unwrap().is_empty(),
+        "the sample names what went: {d}"
+    );
+
+    // EC-4: nothing left to prune.
+    let env = s.call(&prune(true)).await;
+    assert_eq!(data(&env)["swept"]["nodes"], 0);
+}
+
+/// FR8 and the point of the phase: nothing in the dispatch refuses by
+/// phase any more, and every destructive verb leaves its audit row.
+/// T3's falsifying clause named `codebase retire` producing no
+/// verb-layer record. It produces one.
+#[tokio::test]
+async fn every_destructive_verb_leaves_a_record_of_its_call() {
+    const G: &str = "iv_t3";
+    const ACTOR: &str = "iv-t3";
+    let Some((owner, s)) = fixtures(G, ACTOR).await else {
+        return;
+    };
+    owner
+        .execute("DELETE FROM audit_log WHERE actor = $1", &[&ACTOR])
+        .await
+        .unwrap();
+    let root = tree();
+    let path = root.path().to_string_lossy().to_string();
+    s.call(&Verb::CodebaseIngest(IngestRequest {
+        path: path.clone(),
+        graph: G.into(),
+        overwrite: true,
+    }))
+    .await;
+
+    for verb in [
+        Verb::CodebaseRetire(RetireRequest {
+            graph: G.into(),
+            prefix: "helper".into(),
+            path: path.clone(),
+            force: true,
+        }),
+        Verb::CodebasePrune(DropScoped {
+            graph: G.into(),
+            force: true,
+        }),
+    ] {
+        let name = verb.wire_name();
+        let env = s.call(&verb).await;
+        assert!(env.success, "{name}: {:?}", env.error);
+        let row = owner
+            .query_one(
+                "SELECT actor, outcome, args::text FROM audit_log
+                 WHERE actor = $1 AND verb = $2 ORDER BY id DESC LIMIT 1",
+                &[&ACTOR, &name],
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{name} left no audit row: {e}"));
+        assert_eq!(row.get::<_, String>(0), ACTOR);
+        assert_eq!(
+            row.get::<_, Option<String>>(1).as_deref(),
+            Some("ok"),
+            "{name}"
+        );
+        let args: serde_json::Value = serde_json::from_str(&row.get::<_, String>(2)).unwrap();
+        assert_eq!(args["graph"], G, "{name}: the row says which graph");
+        assert_eq!(args["force"], true, "{name}: and that force was given");
+    }
+}
