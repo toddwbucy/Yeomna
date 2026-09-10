@@ -352,17 +352,51 @@ fn json_value(raw: Option<&str>) -> Value {
     }
 }
 
-/// Commands sharing the first word the caller typed, so a near miss gets
-/// a short list rather than the whole contract (EC-1).
+/// Edit distance, for suggesting a command the caller nearly typed.
+///
+/// Two rows rather than a full matrix, since only the previous row is ever
+/// read. Bounded by the wire names, which are short.
+fn distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut row = vec![0usize; b.len() + 1];
+    for (i, ca) in a.chars().enumerate() {
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != *cb);
+            row[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(row[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut row);
+    }
+    prev[b.len()]
+}
+
+/// Commands the caller nearly typed, so a near miss gets a short list
+/// rather than the whole contract (EC-1).
+///
+/// A prefix match catches a truncation (`grap`), and edit distance catches
+/// a typo, which a prefix match alone does not: `grph` is one edit from
+/// `graph` and `garph` is two, because a transposition costs two here. The
+/// budget scales with the word's length, so it admits a transposition in a
+/// five-letter root without letting a three-letter one match everything.
 fn nearest(positional: &[String]) -> String {
     let Some(first) = positional.first() else {
         return String::new();
     };
-    let close: Vec<String> = WIRE_NAMES
+    let typed = first.as_str();
+    if typed.is_empty() {
+        return String::new();
+    }
+    let budget = typed.chars().count().div_ceil(3).clamp(1, 3);
+    let mut close: Vec<String> = WIRE_NAMES
         .iter()
-        .filter(|n| n.starts_with(first.as_str()) || n.split('.').next() == Some(first.as_str()))
+        .filter(|n| {
+            let root = n.split('.').next().unwrap_or(n);
+            n.starts_with(typed) || root == typed || distance(root, typed) <= budget
+        })
         .map(|n| format!("  yeomna {}", n.replace('.', " ")))
         .collect();
+    close.dedup();
     if close.is_empty() {
         String::new()
     } else {

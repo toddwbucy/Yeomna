@@ -94,6 +94,14 @@ pub fn status() -> String {
 /// Why an install did not happen.
 #[derive(Debug)]
 pub enum InstallError {
+    /// The name is not one of the analyzers this appliance spawns.
+    ///
+    /// Checked because the name becomes a path component under the managed
+    /// directory, so an unchecked one could carry `..` or be absolute and
+    /// place a binary anywhere the process can write. The check lives in
+    /// [`install_in`] rather than only in the CLI, so the library is safe
+    /// whatever calls it.
+    UnknownAnalyzer(String),
     /// R24: fetching over the network is a charter question, not a
     /// convenience, and this command does not decide it.
     NoSource,
@@ -110,6 +118,11 @@ impl std::fmt::Display for InstallError {
                  Fetching from upstream is not implemented on purpose: a byte arriving\n\
                  from the network into a sealed appliance is a charter section 5 question\n\
                  and not a convenience, and it waits for a ruling (R24)."
+            ),
+            InstallError::UnknownAnalyzer(name) => write!(
+                f,
+                "{name:?} is not an analyzer this appliance spawns. It knows {}",
+                ANALYZERS.join(", ")
             ),
             InstallError::NotAFile(p) => write!(f, "{p} is not a file"),
             InstallError::Io(e) => write!(f, "{e}"),
@@ -133,6 +146,13 @@ pub fn install(analyzer: &str, from: Option<&str>) -> Result<String, InstallErro
 /// tests run in parallel. The same split `resolve_and_probe_in` uses,
 /// and for the same reason.
 pub fn install_in(dir: &Path, analyzer: &str, from: Option<&str>) -> Result<String, InstallError> {
+    // The name becomes a path component below, so it is checked against the
+    // closed list before anything touches the filesystem. Without this,
+    // `../../..` or an absolute path would place a binary outside the
+    // managed directory.
+    if !ANALYZERS.contains(&analyzer) {
+        return Err(InstallError::UnknownAnalyzer(analyzer.to_string()));
+    }
     let Some(from) = from else {
         return Err(InstallError::NoSource);
     };
@@ -209,5 +229,39 @@ mod tests {
         let e = install_in(Path::new("/tmp"), "gopls", Some("/nonexistent/binary"))
             .expect_err("must refuse");
         assert!(matches!(e, InstallError::NotAFile(_)));
+    }
+
+    /// The analyzer name is a path component, so it cannot be the caller's
+    /// to choose. Refused before the filesystem is touched, and refused in
+    /// the library rather than only at the CLI.
+    #[test]
+    fn install_refuses_a_name_that_is_not_an_analyzer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let managed = dir.path().join("tools");
+        let binary = dir.path().join("payload");
+        std::fs::write(&binary, b"#!/bin/sh\ntrue\n").unwrap();
+        let source = binary.to_string_lossy().to_string();
+
+        for name in [
+            "../../../tmp/escaped",
+            "/tmp/absolute",
+            "rust-analyzer/../evil",
+            "clangd",
+            "",
+        ] {
+            let e = install_in(&managed, name, Some(&source))
+                .expect_err("a name that is not an analyzer must be refused");
+            assert!(
+                matches!(e, InstallError::UnknownAnalyzer(_)),
+                "{name:?} gave {e:?}"
+            );
+            assert!(
+                !managed.exists(),
+                "{name:?} reached the filesystem before being refused"
+            );
+        }
+        // And nothing landed anywhere the traversal aimed at.
+        assert!(!Path::new("/tmp/escaped").exists());
+        assert!(!Path::new("/tmp/absolute").exists());
     }
 }

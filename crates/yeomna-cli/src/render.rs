@@ -86,7 +86,7 @@ fn array(items: &[Value], depth: usize) -> String {
             .iter()
             .map(|it| {
                 cols.iter()
-                    .map(|c| scalar(it.get(c).unwrap_or(&Value::Null)))
+                    .map(|c| cell(it.get(c).unwrap_or(&Value::Null)))
                     .collect()
             })
             .collect();
@@ -136,7 +136,7 @@ fn array(items: &[Value], depth: usize) -> String {
 /// scalar fields.
 fn shared_columns(items: &[Value]) -> Option<Vec<String>> {
     let first = items.first()?.as_object()?;
-    if first.is_empty() || first.values().any(|v| v.is_array() || v.is_object()) {
+    if first.is_empty() {
         return None;
     }
     let cols: Vec<String> = first.keys().cloned().collect();
@@ -145,9 +145,25 @@ fn shared_columns(items: &[Value]) -> Option<Vec<String>> {
         if obj.len() != cols.len() || cols.iter().any(|c| !obj.contains_key(c)) {
             return None;
         }
+        // Every row is checked, not only the first. A nested value in a
+        // later row would otherwise be serialized into a cell as raw JSON,
+        // which is a table that lies about its shape rather than a list
+        // that admits it.
+        if obj.values().any(|v| v.is_array() || v.is_object()) {
+            return None;
+        }
     }
     Some(cols)
 }
+
+/// The widest a table cell gets before it is cut.
+///
+/// `query` returns whole chunks of source in a `text` column, and one of
+/// those in a cell makes a table that no terminal can lay out and no
+/// person can read. This view exists for the person typing, and `--json`
+/// prints the value in full for anything that needs it, so cutting here
+/// loses nothing that was not already available.
+const MAX_CELL: usize = 72;
 
 /// A scalar as a cell: strings without their quotes, null as a dash,
 /// everything else as JSON writes it.
@@ -157,6 +173,24 @@ fn scalar(v: &Value) -> String {
         Value::Null => "-".to_string(),
         other => other.to_string(),
     }
+}
+
+/// A cell, on one line and inside the width.
+///
+/// Newlines become spaces before the cut, because a cell containing one
+/// breaks the row it is in and the alignment of every row after it.
+fn cell(v: &Value) -> String {
+    let raw = scalar(v);
+    let flat = if raw.contains(['\n', '\r', '\t']) {
+        raw.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        raw
+    };
+    if flat.chars().count() <= MAX_CELL {
+        return flat;
+    }
+    let kept: String = flat.chars().take(MAX_CELL - 3).collect();
+    format!("{kept}...")
 }
 
 #[cfg(test)]
@@ -203,6 +237,51 @@ mod tests {
         );
         let out = array(&[json!({"a": {"nested": 1}})], 0);
         assert!(!out.contains("----"), "no table for nested values: {out}");
+        // A nested value in a later row disqualifies the table too, which
+        // checking only the first element would have missed.
+        for later in [json!({"a": {"nested": 2}}), json!({"a": [1, 2]})] {
+            let out = array(&[json!({"a": 1}), later.clone()], 0);
+            assert!(
+                !out.contains("----"),
+                "no table when a later row nests: {out}"
+            );
+            assert!(
+                !out.contains("nested") || !out.contains("  a  "),
+                "and the nested value is not serialized into a cell: {out}"
+            );
+        }
+    }
+
+    /// A cell wide enough to break the table is cut, and a cell with a
+    /// newline in it is flattened first, because either one destroys the
+    /// alignment of every row after it. `--json` still prints the value in
+    /// full, so nothing is lost that was not already reachable.
+    #[test]
+    fn a_wide_or_multiline_cell_does_not_break_the_table() {
+        let long = "x".repeat(500);
+        let out = array(
+            &[
+                json!({"k": "a", "v": long}),
+                json!({"k": "b", "v": "short"}),
+            ],
+            0,
+        );
+        for line in out.lines() {
+            assert!(
+                line.chars().count() < 120,
+                "no line is wider than a terminal: {} chars",
+                line.chars().count()
+            );
+        }
+        assert!(out.contains("..."), "the cut is marked: {out}");
+
+        let out = array(&[json!({"k": "a", "v": "one\ntwo\nthree"})], 0);
+        assert_eq!(
+            out.lines().count(),
+            3,
+            "header, rule, and one row, not a row per newline: {out}"
+        );
+        assert!(out.contains("one two three"), "{out}");
     }
 
     #[test]

@@ -475,6 +475,32 @@ fn a_near_miss_suggests_rather_than_dumping_the_tree() {
     );
 }
 
+/// A misspelled root, not only a misspelled leaf.
+///
+/// The first cut matched a root by prefix or equality, so `grph` and
+/// `garph` produced no suggestion at all and EC-1's promise held only for
+/// callers who spelled the first word correctly. Edit distance is what
+/// closes that, and a transposition costs two, so the budget has to admit
+/// two on a five-letter root.
+#[test]
+fn a_misspelled_root_still_gets_its_neighbours() {
+    for typo in ["grph", "garph", "codbase", "datbase"] {
+        let r = run(None, &[typo, "list"], None);
+        assert_eq!(r.code, 2, "{typo}: {}", r.stderr);
+        assert!(
+            r.stderr.contains("Did you mean"),
+            "{typo} suggested nothing: {}",
+            r.stderr
+        );
+    }
+    // And a root that resembles nothing gets the whole-list pointer rather
+    // than a list of everything.
+    let r = run(None, &["zzzzzzzz", "list"], None);
+    assert_eq!(r.code, 2);
+    assert!(!r.stderr.contains("Did you mean"), "{}", r.stderr);
+    assert!(r.stderr.contains("yeomna verbs"), "{}", r.stderr);
+}
+
 /// FR4 and FR5: a table by default, the envelope with `--json`, both to
 /// stdout, and the exit code the same either way.
 #[test]
@@ -523,17 +549,58 @@ fn the_tree_renders_a_table_and_json_on_request() {
 fn a_table_keeps_its_header_with_its_rows() {
     let Some(dir) = socket_dir() else { return };
     let (_d, config) = config_for(&dir, None);
+    // `query` returns an array of like-shaped objects, which is the shape
+    // that renders as a table. `codebase stats` returns a map and renders
+    // as indented pairs, so it never exercised the table path this test is
+    // named for.
     let r = run(
         Some(&config),
-        &["--graph", "yeomna_self", "codebase", "stats"],
+        &[
+            "--graph",
+            "yeomna_self",
+            "query",
+            "--search_text",
+            "recursive parser",
+            "--limit",
+            "3",
+        ],
         None,
     );
-    if !r.stdout.contains("nodes_by_kind") {
-        eprintln!("SKIP: no yeomna_self graph on this cluster");
+    if !r.stdout.contains("hits:") || r.stdout.contains("hits: none") {
+        eprintln!("SKIP: no yeomna_self graph with matching chunks on this cluster");
         return;
     }
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(r.stderr.is_empty(), "nothing went to stderr: {}", r.stderr);
+    // Asserting stderr is empty is not enough: it also passes when the
+    // renderer omits the header entirely, which is the failure this test
+    // exists to catch. The header, its rule, and a row have to be on
+    // stdout together and in that order.
+    let lines: Vec<&str> = r
+        .stdout
+        .lines()
+        .skip_while(|l| !l.trim_start().starts_with("graph "))
+        .collect();
+    assert!(
+        lines.len() >= 3,
+        "the table's header is on stdout with its rows: {}",
+        r.stdout
+    );
+    assert!(
+        lines[0].contains("key") && lines[0].contains("rank"),
+        "header: {:?}",
+        lines[0]
+    );
+    assert!(
+        lines[1].trim_start().starts_with("----"),
+        "the rule under the header: {:?}",
+        lines[1]
+    );
+    assert!(
+        !lines[2].trim().is_empty(),
+        "and at least one row after it: {:?}",
+        lines[2]
+    );
 }
 
 /// FR6 and FR7: H8's two commands, through the binary.
