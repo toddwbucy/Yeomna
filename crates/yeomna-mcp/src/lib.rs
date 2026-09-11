@@ -75,7 +75,7 @@ fn list_tools() -> Value {
 
 /// `tools/call`: build the verb request, run it on the target, and map
 /// the outcome per D7.
-async fn call_tool(target: &Target, params: Option<&Value>) -> Response {
+async fn call_tool(target: &Target, params: Option<&Value>, slots: &Semaphore) -> Response {
     let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
         return Response::Error(RpcError::new(
             INVALID_PARAMS,
@@ -107,6 +107,11 @@ async fn call_tool(target: &Target, params: Option<&Value>) -> Response {
     // fields. This layer builds the shape and reads none of it.
     let request = json!({"verb": tool.name, "args": arguments});
 
+    // The ceiling is taken here and nowhere else. `tools/list` and
+    // `server/discover` are answered from a compiled-in contract with no
+    // process behind them, so making them queue behind eight running
+    // verbs would be a ceiling on the wrong thing.
+    let _permit = slots.acquire().await;
     let mut running = match target::start(target, &request).await {
         Ok(r) => r,
         Err(e) => return Response::Error(RpcError::new(rpc::INTERNAL_ERROR, e)),
@@ -149,14 +154,19 @@ enum Response {
 }
 
 /// Handle one request, metadata checked first.
-async fn handle(target: &Target, method: &str, params: Option<&Value>) -> Response {
+async fn handle(
+    target: &Target,
+    method: &str,
+    params: Option<&Value>,
+    slots: &Semaphore,
+) -> Response {
     if let Err(e) = check_meta(params) {
         return Response::Error(e);
     }
     match method {
         "server/discover" => Response::Result(discover()),
         "tools/list" => Response::Result(list_tools()),
-        "tools/call" => call_tool(target, params).await,
+        "tools/call" => call_tool(target, params, slots).await,
         other => Response::Error(RpcError::new(
             METHOD_NOT_FOUND,
             format!("Unknown method: {other}"),
@@ -210,9 +220,10 @@ where
         if !writable.load(Ordering::SeqCst) {
             break;
         }
-        // Reap finished work as we go, so a long session does not
-        // accumulate a handle per call, and so a handler that panicked
-        // still answers rather than leaving its id unanswered forever.
+        // Prune finished work so a long session does not accumulate a
+        // handle per call. Answering for a handler that died is the
+        // supervisor's job and not this loop's, because this loop spends
+        // its life blocked on the next line.
         reap(&mut tasks, &tx, false).await;
 
         let line = match lines.next_line().await {
@@ -315,29 +326,46 @@ where
         tasks.push((
             id.clone(),
             tokio::spawn(async move {
-                // Cancellation covers every method, not only `tools/call`.
-                // Dropping the handler future drops the child with it,
-                // and the command carries `kill_on_drop`.
-                let response = tokio::select! {
-                    // A dropped sender resolves to `Err`, which is not a
-                    // cancellation. The pattern disables that branch so
-                    // only a real signal wins.
-                    Ok(()) = cancel => Response::Silent,
-                    r = async {
-                        let _permit = slots.acquire().await;
-                        handle(&target, &method, params.as_ref()).await
-                    } => r,
-                };
-                in_flight.lock().await.remove(&id_key(&task_id));
-                match response {
-                    Response::Result(r) => {
-                        let _ = tx.send(result_response(&task_id, r));
+                let worker_tx = tx.clone();
+                let worker_id = task_id.clone();
+                // **The handler runs under a supervisor**, so a panic in
+                // it answers the moment it happens. Reaping from the read
+                // loop cannot do that: the loop is blocked on the next
+                // line, so an id would go unanswered until the client
+                // sent something else or closed the stream, and a client
+                // waiting on that answer sends nothing.
+                let worker = tokio::spawn(async move {
+                    // Cancellation covers every method, not only
+                    // `tools/call`. Dropping the handler future drops the
+                    // child with it, and the command carries
+                    // `kill_on_drop`.
+                    let response = tokio::select! {
+                        // A dropped sender resolves to `Err`, which is
+                        // not a cancellation. The pattern disables that
+                        // branch so only a real signal wins.
+                        Ok(()) = cancel => Response::Silent,
+                        r = handle(&target, &method, params.as_ref(), &slots) => r,
+                    };
+                    match response {
+                        Response::Result(r) => {
+                            let _ = worker_tx.send(result_response(&worker_id, r));
+                        }
+                        Response::Error(e) => {
+                            let _ = worker_tx.send(error_response(Some(&worker_id), &e));
+                        }
+                        Response::Silent => {}
                     }
-                    Response::Error(e) => {
-                        let _ = tx.send(error_response(Some(&task_id), &e));
-                    }
-                    Response::Silent => {}
+                });
+                if let Err(e) = worker.await {
+                    let _ = tx.send(error_response(
+                        Some(&task_id),
+                        &RpcError::new(
+                            INTERNAL_ERROR,
+                            format!("the server failed while handling this request: {e}"),
+                        ),
+                    ));
                 }
+                in_flight.lock().await.remove(&id_key(&task_id));
             }),
         ));
     }
@@ -361,9 +389,10 @@ where
 
 /// Collect finished handlers, answering for any that died.
 ///
-/// A panicking handler never reaches its own `tx.send`, so without this
-/// its id is never answered and the client waits forever. `drain` is true
-/// at end of input, where every remaining task is awaited to completion.
+/// Each handler already answers for itself, panics included, through the
+/// supervisor it runs under. This is memory hygiene plus a backstop for
+/// the supervisor itself. `drain` is true at end of input, where every
+/// remaining task is awaited to completion.
 async fn reap(
     tasks: &mut Vec<(Value, tokio::task::JoinHandle<()>)>,
     tx: &mpsc::UnboundedSender<Value>,

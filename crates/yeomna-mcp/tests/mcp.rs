@@ -627,6 +627,82 @@ async fn a_message_that_is_not_an_object_is_refused_rather_than_dropped() {
 }
 
 #[tokio::test]
+async fn answering_from_the_contract_does_not_queue_behind_running_calls() {
+    // The concurrency ceiling exists for calls that spawn a process.
+    // `tools/list` is answered from a compiled-in enum with nothing
+    // behind it, so making it wait for eight running verbs would be a
+    // ceiling on the wrong thing.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let body = format!("cat > /dev/null\nsleep 3\nprintf '%s' '{OK_ENVELOPE}'\nexit 0");
+    let mut c = Client::start(local(d.path(), &body));
+    // Fill every slot and then some.
+    for id in 100..110 {
+        c.send(&request(
+            id,
+            "tools/call",
+            json!({"name": "status", "arguments": {}}),
+        ))
+        .await;
+    }
+    c.send(&request(111, "tools/list", json!({}))).await;
+    let started = std::time::Instant::now();
+    let r = c.recv().await;
+    assert_eq!(r["id"], 111, "the contract answered first: {}", r["id"]);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "it waited on the running calls"
+    );
+}
+
+#[tokio::test]
+async fn a_child_that_answers_without_reading_its_input_is_not_a_send_failure() {
+    // A verb that refuses early answers and exits without draining its
+    // stdin, which breaks the pipe under the write. Reporting that as
+    // "cannot send the request" would throw away a good envelope and name
+    // the wrong thing.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    // Never reads stdin at all, and exits at once.
+    let body = format!("printf '%s' '{OK_ENVELOPE}'\nexit 0");
+    let mut c = Client::start(local(d.path(), &body));
+    // A large argument makes the unread write big enough to block and
+    // then break, rather than fitting in the pipe buffer unnoticed.
+    let big = "x".repeat(500_000);
+    c.send(&request(
+        112,
+        "tools/call",
+        json!({"name": "query", "arguments": {"search_text": big}}),
+    ))
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r["result"]["isError"], false, "got {r}");
+    assert_eq!(r["result"]["structuredContent"]["data"]["actor"], "todd");
+}
+
+#[tokio::test]
+async fn an_answer_past_the_ceiling_is_refused_rather_than_truncated() {
+    // The embedder PRD's D5 reasoning, applied here: half an envelope is
+    // malformed rather than smaller, and handing a model a fragment with
+    // nothing saying so is worse than an error.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let body =
+        "cat > /dev/null\ndd if=/dev/zero bs=1048576 count=17 2>/dev/null | tr '\\0' 'x'\nexit 0";
+    let mut c = Client::start(local(d.path(), body));
+    c.send(&request(
+        113,
+        "tools/call",
+        json!({"name": "status", "arguments": {}}),
+    ))
+    .await;
+    let r = c.recv().await;
+    let m = r["error"]["message"].as_str().unwrap_or_default();
+    assert!(m.contains("larger than this surface carries"), "got {r}");
+    assert!(m.contains("refused rather than truncated"), "got {m:?}");
+}
+
+#[tokio::test]
 async fn more_calls_than_slots_all_complete() {
     // The concurrency ceiling bounds how many children exist at once. It
     // must not lose or stall the ones beyond it.

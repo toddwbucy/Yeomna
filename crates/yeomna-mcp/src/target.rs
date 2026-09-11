@@ -33,6 +33,16 @@ const CALLER_OR_MACHINE: i32 = 2;
 /// a JSON-RPC error, which lands in the model's context.
 const STDERR_KEPT: usize = 8 * 1024;
 
+/// The largest answer this layer will carry.
+///
+/// Matched to the daemon's frame cap (R21 D5), so the two ways into the
+/// appliance agree about how large an answer can be rather than each
+/// picking a number. **Over the cap is a refusal, never a truncation**,
+/// on the embedder PRD's D5 reasoning: a truncated envelope is not a
+/// smaller answer, it is a malformed one, and handing a model half a
+/// JSON document with nothing saying so is worse than an error.
+const STDOUT_LIMIT: usize = 16 * 1024 * 1024;
+
 /// ssh's own failure. `yeomna call` returns only 0, 1, or 2, so 255 is
 /// distinguishable in practice, and the warrant is what the CLI chooses
 /// to return rather than anything ssh reserves.
@@ -212,9 +222,27 @@ impl Running {
                 Ok(())
             }
         };
+        // stdout is kept whole up to the cap, because it carries the
+        // envelope. Past the cap the bytes are dropped and `overflowed`
+        // is set, so the call refuses rather than parsing a fragment. The
+        // pipe keeps being read either way, because a child that fills it
+        // blocks and never exits.
+        let mut overflowed = false;
         let out = async {
             if let Some(p) = stdout_pipe.as_mut() {
-                let _ = p.read_to_end(&mut stdout_buf).await;
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match p.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if stdout_buf.len() + n > STDOUT_LIMIT {
+                                overflowed = true;
+                            } else {
+                                stdout_buf.extend_from_slice(&chunk[..n]);
+                            }
+                        }
+                    }
+                }
             }
         };
         // Drained to the end, retained up to a cap. Draining is what
@@ -238,14 +266,26 @@ impl Running {
             }
         };
         let (sent, (), ()) = tokio::join!(send, out, err);
-        if let Err(e) = sent {
-            return Outcome::Failed(format!("cannot send the request: {e}"));
+        if overflowed {
+            return Outcome::Failed(format!(
+                "the answer is larger than this surface carries, which is {} MiB. It is \
+                 refused rather than truncated, because half an envelope is malformed rather \
+                 than smaller. Narrow the request, with a limit or a kind",
+                STDOUT_LIMIT / (1024 * 1024)
+            ));
         }
 
         let status = match self.child.wait().await {
             Ok(s) => s,
             Err(e) => return Outcome::Failed(format!("could not run the call: {e}")),
         };
+        // **A write failure is not reported over the child's own answer.**
+        // A child that refuses early answers and exits without reading
+        // the rest of its input, which breaks the pipe under us. Reporting
+        // that as "cannot send the request" would throw away a perfectly
+        // good envelope and name the wrong thing. The send error is only
+        // surfaced when the child produced nothing usable.
+        let send_failed = sent.err();
         let stdout = String::from_utf8_lossy(&stdout_buf);
         let stderr = String::from_utf8_lossy(&stderr_buf);
         let code = status.code();
@@ -263,22 +303,28 @@ impl Running {
         match code {
             Some(ANSWERED) => match envelope(&stdout) {
                 Ok(v) => Outcome::Answered(v),
-                Err(e) => Outcome::Failed(e),
+                Err(e) => Outcome::Failed(with_send_note(e, send_failed)),
             },
             Some(REFUSED) => match envelope(&stdout) {
                 Ok(v) => Outcome::Refused(v),
                 // A refusal that produced no envelope is not a refusal
                 // this layer can hand a model. EC-1: never an empty
                 // success.
-                Err(_) if stdout.trim().is_empty() => Outcome::Failed(format!(
-                    "the call failed and said nothing on stdout. Its error output began: {}",
-                    first_line(&stderr, "")
+                Err(_) if stdout.trim().is_empty() => Outcome::Failed(with_send_note(
+                    format!(
+                        "the call failed and said nothing on stdout. Its error output began: {}",
+                        first_line(&stderr, "")
+                    ),
+                    send_failed,
                 )),
-                Err(e) => Outcome::Failed(e),
+                Err(e) => Outcome::Failed(with_send_note(e, send_failed)),
             },
-            Some(CALLER_OR_MACHINE) => Outcome::Failed(format!(
-                "the call was refused before it ran: {}",
-                first_line(&stderr, &stdout)
+            Some(CALLER_OR_MACHINE) => Outcome::Failed(with_send_note(
+                format!(
+                    "the call was refused before it ran: {}",
+                    first_line(&stderr, &stdout)
+                ),
+                send_failed,
             )),
             // EC-3. Named as the transport, and naming the destination,
             // so a caller does not debug the wrong machine.
@@ -295,6 +341,15 @@ impl Running {
                 first_line(&stderr, &stdout)
             )),
         }
+    }
+}
+
+/// Append what went wrong sending the request, when something did and the
+/// child's own answer did not explain the failure on its own.
+fn with_send_note(why: String, send_failed: Option<std::io::Error>) -> String {
+    match send_failed {
+        Some(e) => format!("{why} (the request also failed to send: {e})"),
+        None => why,
     }
 }
 
