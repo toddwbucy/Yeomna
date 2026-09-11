@@ -489,9 +489,12 @@ re-including a verb costs nothing that removing it did not already pay.
 - **Error mapping.** A refusal arrives as `isError: true` with the
   envelope's message readable, and an unknown tool arrives as a
   JSON-RPC error.
-- **Cancellation.** A cancelled call terminates and reaps its child and
-  sends nothing further for that id, and stdin EOF does the same for every
-  in-flight call.
+- **Cancellation, and end of input, which are not the same.** A cancelled
+  call terminates and reaps its child and sends nothing further for that
+  id. **Stdin EOF does the opposite**: it stops accepting new requests and
+  then finishes and answers every call already in flight, per D10 as
+  amended. Both are tested, because the first build conflated them and the
+  prose here outlived the fix.
 - **Protocol conformance, by transcript rather than by reading.**
   `resultType` present on every result, the two required `_meta` fields
   enforced with `-32602`, and `-32021` and `-32022` used only with their

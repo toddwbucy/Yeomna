@@ -23,6 +23,16 @@ use tokio::process::{Child, Command};
 const ANSWERED: i32 = 0;
 const REFUSED: i32 = 1;
 const CALLER_OR_MACHINE: i32 = 2;
+/// How much of a child's error output is kept.
+///
+/// The pipe is always drained to the end, because a child that fills it
+/// blocks and never exits. What is bounded is what is *retained*: only
+/// the first line ever reaches a message, and an ingest that logs can
+/// produce megabytes. Keeping it all would buffer that for nothing and,
+/// worse, the empty-stdout branch below used to put the whole of it into
+/// a JSON-RPC error, which lands in the model's context.
+const STDERR_KEPT: usize = 8 * 1024;
+
 /// ssh's own failure. `yeomna call` returns only 0, 1, or 2, so 255 is
 /// distinguishable in practice, and the warrant is what the CLI chooses
 /// to return rather than anything ssh reserves.
@@ -207,9 +217,24 @@ impl Running {
                 let _ = p.read_to_end(&mut stdout_buf).await;
             }
         };
+        // Drained to the end, retained up to a cap. Draining is what
+        // keeps the child from blocking, and retaining is what would
+        // otherwise grow without bound. stdout is kept whole, because it
+        // carries the envelope the caller is owed.
         let err = async {
             if let Some(p) = stderr_pipe.as_mut() {
-                let _ = p.read_to_end(&mut stderr_buf).await;
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match p.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let room = STDERR_KEPT.saturating_sub(stderr_buf.len());
+                            if room > 0 {
+                                stderr_buf.extend_from_slice(&chunk[..n.min(room)]);
+                            }
+                        }
+                    }
+                }
             }
         };
         let (sent, (), ()) = tokio::join!(send, out, err);
@@ -246,8 +271,8 @@ impl Running {
                 // this layer can hand a model. EC-1: never an empty
                 // success.
                 Err(_) if stdout.trim().is_empty() => Outcome::Failed(format!(
-                    "the call failed and said nothing on stdout. Its error output was: {:?}",
-                    stderr.trim()
+                    "the call failed and said nothing on stdout. Its error output began: {}",
+                    first_line(&stderr, "")
                 )),
                 Err(e) => Outcome::Failed(e),
             },
@@ -299,4 +324,48 @@ pub async fn start(target: &Target, request: &Value) -> Result<Running, String> 
         is_ssh: target.is_ssh(),
         body,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A child that exits 1, writes nothing to stdout, and floods stderr.
+    fn noisy(dir: &std::path::Path) -> Target {
+        let p = dir.join("noisy");
+        std::fs::write(
+            &p,
+            "#!/bin/sh\ncat > /dev/null\ni=0\nwhile [ $i -lt 4000 ]; do \
+             echo 'a long line of error output that adds up quickly' >&2; i=$((i+1)); done\n\
+             exit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Target::local().with_program(p.display().to_string())
+    }
+
+    #[tokio::test]
+    async fn a_failure_message_stays_small_however_much_the_child_wrote() {
+        // The empty-stdout branch used to put the whole of stderr into a
+        // JSON-RPC error, and that error lands in the model's context.
+        // This child writes roughly 190 KB of it.
+        let d = tempfile::tempdir().unwrap();
+        let mut running = start(
+            &noisy(d.path()),
+            &serde_json::json!({"verb": "status", "args": {}}),
+        )
+        .await
+        .unwrap();
+        let out = running.finish().await;
+        let Outcome::Failed(why) = out else {
+            panic!("a child that exits 1 with no stdout is a failure, got {out:?}");
+        };
+        assert!(
+            why.len() < 2_000,
+            "the message carried {} bytes of the child's noise",
+            why.len()
+        );
+        assert!(why.contains("said nothing on stdout"), "got {why:?}");
+    }
 }

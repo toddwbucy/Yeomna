@@ -149,8 +149,18 @@ async fn tools_list_is_the_contract_minus_the_excluded_verb() {
     let tools = r["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 41);
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    // The wire response binds the order too, not only the unit test that
+    // builds the list. Contract order is `WIRE_NAMES`, minus R29.
+    let want: Vec<&str> = yeomna_verbs::WIRE_NAMES
+        .iter()
+        .copied()
+        .filter(|w| !tools::EXCLUDED.contains(w))
+        .collect();
+    assert_eq!(
+        names, want,
+        "tools/list is the contract table, in its order"
+    );
     assert!(!names.contains(&"sql"), "sql is on the surface (R29)");
-    assert!(names.contains(&"query"), "the abstractions are all here");
     for t in tools {
         assert!(!t["description"].as_str().unwrap().is_empty());
         assert_eq!(t["inputSchema"]["type"], "object");
@@ -325,6 +335,43 @@ async fn the_child_sees_end_of_input_after_exactly_one_request() {
     .await;
     let r = c.recv().await;
     assert_eq!(r["result"]["isError"], false, "the call completed: {r}");
+}
+
+#[tokio::test]
+async fn a_large_envelope_arrives_whole() {
+    // Review raised stdout truncation. There is none, and this is what
+    // says so: stdout is read to the end and kept entire, because it
+    // carries the envelope the caller is owed. Only stderr is bounded,
+    // and only in what it retains.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let filler = "x".repeat(200_000);
+    let envelope = format!(
+        r#"{{"success":true,"command":"get","data":{{"body":"{filler}"}},"timestamp":"t"}}"#
+    );
+    let script_body = format!("cat > /dev/null\nprintf '%s' '{envelope}'\nexit 0");
+    let mut c = Client::start(
+        Target::local().with_program(
+            script(d.path(), "yeomna", &script_body)
+                .display()
+                .to_string(),
+        ),
+    );
+    c.send(&request(
+        90,
+        "tools/call",
+        json!({"name": "get", "arguments": {"kind": "k", "key": "v"}}),
+    ))
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r["result"]["isError"], false, "got {r}");
+    assert_eq!(
+        r["result"]["structuredContent"]["data"]["body"]
+            .as_str()
+            .map(str::len),
+        Some(200_000),
+        "the envelope survived whole"
+    );
 }
 
 #[tokio::test]
