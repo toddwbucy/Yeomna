@@ -1,5 +1,15 @@
 # The Holes Ledger
 
+Status: v2.4, 2026-09-11. **The MCP front end is specified and MCP is
+unparked for the stdio case** (PR #57): `docs/PRD-mcp-front-end.md` and
+spec 024, documents only, no code yet. It is a new surface rather than a
+hole, since no verb refuses for want of it. The transport is stdio with
+ssh as the remote leg, chosen so that a call from a second machine lands
+here as a real uid and every audit row stays kernel-named. The streamable
+HTTP transport is Phase 3 and **blocked on ruling what an actor is when it
+is not a uid**, which pairs with R22. R29 is open and gates an
+implementation that exposes `sql`.
+
 Status: v2.3, 2026-09-10. **H4 is filled and this appliance embeds.**
 H1, H3, H6, H8, and H10 retired as well, M2 measured, and `embed.text`
 answers instead of naming a hole. H8 and H2's Phase 7 went with PR #51,
@@ -360,6 +370,7 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R26 | The cohort rides the embeddings row | **Proposed in spec 022, implemented as proposed.** `embeddings` gains `model_revision` and `task`, both `NOT NULL`, and SCHEMA_VERSION goes to 1.3.0. `model` and `model_hash` identify the weights by name, and the same name at another revision or under another LoRA adapter is a different geometry that nothing else would notice: a corpus embedded at `text-matching` and queried at `retrieval.query` returns plausible nonsense rather than an error. The provenance also moved onto the embedding document, out of the parent node's payload, which is what made the silent-drop defect possible. Cost is a drop, a re-apply, a template re-stamp, and a re-ingest, which under T4 is what schema changes cost here and is why they are affordable |
 | R27 | The embedder backend is Python behind the contract | **Proposed in spec 022, implemented as proposed.** jina-v4 ships custom modeling code, a Qwen2.5-VL backbone, and LoRA adapters selected per task, so reimplementing it in Candle is new construction whose only deliverable is the same vectors, and inherit-do-not-author points the other way. The service is replaceable because the contract is narrow: three operations, one of which exists only for a test. Recorded cost: Python in the box is a supply chain, seven packages and a committed lockfile, and `PrivateNetwork=yes` is what makes that supply chain unable to act at run time. The HTTP server is the standard library, because fastapi and uvicorn would be four more packages for a service the GPU already serializes |
 | R28 | Does the `code` task need a query and passage split | **Open, raised by spec 022's build.** The model's snapshot fixes two prompt prefixes and forces the query one for `text-matching` whatever it is asked. For `code` it fixes nothing, so the service uses the query prompt for both halves and says so. Whether that is right is a retrieval-quality question about whether ingested code is a passage: if it is, the contract grows `code.passage` and `code.query`, the pairing table gains one line, and every code corpus embedded under the old answer is a re-ingest away from the new one. Cheap to hold open, because R26 put the task on every embeddings row, so whichever way it is ruled a reader can tell which corpora were embedded under which answer |
+| R29 | Does `sql` belong on a model-controlled surface | **Open, raised by spec 024's review.** D6 exposes all 42 verbs as MCP tools because a curated subset is a second contract that drifts, and the 2026-07-28 revision forbids a per-connection tool set anyway. But MCP tools are model-controlled by design while charter section 6 forbids a raw query surface, so a verb a human can type is not the same object as a tool a model may choose. `sql` is already scoped by R17 and R17a, refusing KG-pattern targets at runtime, and the CLI exposes it today. A ruling against it changes D6's count, FR2's census and its success criterion (41 with `sql` named as the excluded wire name and a test asserting it is absent rather than merely uncounted), and nothing else, because the derivation walks `WIRE_NAMES` and an exclusion is a filter over it. **It gates merging an implementation that exposes `sql` and does not gate the spec**, which is why PR #57 merged with it open |
 
 ## Two open items that spec 023 opened
 

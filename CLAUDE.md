@@ -59,6 +59,53 @@ before touching the embedding path:
   tail out of vector search while leaving it in keyword search with
   nothing saying so.
 
+**MCP is unparked for the stdio case, and specified rather than built**
+(PR #57, merged 2026-09-11). `docs/PRD-mcp-front-end.md` and spec 024 are
+documents only: no crate exists yet. Read the PRD before writing any of
+it, because five things in it are load bearing and one of them corrects a
+claim the first draft got wrong.
+
+- **The transport is stdio and the remote leg is ssh, chosen for the actor
+  rather than for convenience** (D1, D2). A call from another machine
+  lands here as a real uid, so `crates/yeomna-verbs/src/actor.rs` names it
+  from `/proc/self/status` the way it does locally and every audit row
+  stays kernel-named. No listener opens, no credential is authored, no
+  schema version is spent, and no charter amendment is needed.
+- **The streamable HTTP transport is Phase 3 and it is blocked, not
+  merely unscheduled.** Over a network there is no `SO_PEERCRED`, so every
+  remote call would land in the log as one service account. Keeping the
+  log honest means `Session` gains a way to be told who it is, which
+  `actor.rs` exists to refuse, plus an `audit_log` schema change and the
+  charter's second named opening. **This pairs with R22 and neither should
+  be ruled alone.**
+- **The request travels on stdin, never in argv** (D12). ssh joins its
+  command arguments into one string and hands it to a shell on the far
+  side, so a request carrying a quote, a backtick, or a dollar sign would
+  be interpreted there. Request text is corpus-derived and
+  caller-supplied. Both targets invoke `yeomna call -`, write one request,
+  and close stdin, because `yeomna call -` reads until end of input and
+  omitting the close hangs the call rather than failing it.
+- **A session-scoped verb takes its graph from the target's config, not
+  from the tool's arguments** (D13). `QueryRequest` carries no `graph`
+  field and `hybrid` reads `s.graph()`, so reaching a KG for
+  `query --hybrid` needs a config naming both `database` and `graph`. The
+  `graph.*` family does carry the field and takes it from arguments. The
+  first draft of D13 said the graph is always a request field, which is
+  false and would have failed the spec's own acceptance criterion.
+- **The tool list is derived from the contract** (D5), the third time that
+  argument has been settled the same way. `schema_for!(Verb)` yields a
+  `oneOf` whose entries carry the variant doc comments as tool
+  descriptions, so the 42 doc comments finally reach a caller. Measured
+  caveat: `args` arrives as a `$ref` into a root-level `$defs`, so an
+  `inputSchema` is not liftable straight out of its entry, and a builder
+  who assumes otherwise ships 42 dangling references that no count test
+  can see.
+
+**R29 is open and it gates the implementation, not the spec**: whether
+`sql` belongs on a surface that is model-controlled by design, when
+charter section 6 forbids a raw query surface. Do not expose `sql` as an
+MCP tool before that is ruled.
+
 **Hybrid query is built** (spec 023), so `query --hybrid` fuses keyword
 and vector ranking by reciprocal rank fusion in one statement, which is
 the claim the store PRD has carried since it was drafted. The query
