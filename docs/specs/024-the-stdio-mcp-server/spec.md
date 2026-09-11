@@ -91,6 +91,23 @@ wrong to schedule it here.
 - `server/discover` returning a `DiscoverResult` with `supportedVersions`
   and the `tools` capability, since the modern era has no `initialize`
   handshake.
+- **Build finding, 2026-09-11, amending this spec: the server must speak
+  both eras.** As written, this spec was modern-only, and a modern-only
+  server is unreachable from a client that opens with an `initialize`
+  handshake. That is not hypothetical: Claude Code 2.1.268 opened that way
+  and the registration failed with `-32602: params._meta is required`,
+  because metadata was checked before the method was even looked at. The
+  specification's own compatibility matrix names the cell, legacy client
+  against modern server, and says such a client has "no fall-forward
+  mechanism". A dual-era server is explicitly permitted and it is the only
+  thing that makes this surface usable. So: `initialize` is answered with
+  an `InitializeResult`, `notifications/initialized` is accepted silently,
+  `ping` is answered in both eras, and the era selected by a handshake is
+  remembered for the life of the process, which is what that revision
+  scopes it to. Metadata is required in the modern era and not sent in the
+  older one, and the modern-only fields (`resultType`, the per-response
+  server identity, the caching hints) are not sent into the older era at
+  all.
 - `resultType` on every result. The revision requires it, `"complete"` is
   what this server returns, and it is easy to omit because the field
   belongs to the envelope MCP wraps rather than to anything Yeomna
@@ -234,7 +251,17 @@ wrong to schedule it here.
   `server/discover`, `tools/list`, a successful `tools/call`, and a
   `tools/call` that returns `isError: true`. A refusal is a result and so
   it carries `resultType` too.
-- **FR14** A request missing `protocolVersion` or `clientCapabilities`,
+- **FR14a** An `initialize` request is answered with an
+  `InitializeResult` naming a negotiated version, the `tools` capability,
+  and this server's identity. A version this server knows is echoed back,
+  and one it does not know gets its newest handshake version as a
+  counter-offer rather than a refusal, which is what the older lifecycle
+  asks for. Afterwards every request works with no metadata on any of them.
+- **FR14b** The older era is sent no field belonging to the newer one: no
+  `resultType`, no per-response server identity, no caching hints.
+- **FR14c** `ping` is answered in both eras, because its absence is a hang
+  rather than an error.
+- **FR14** In the modern era, a request missing `protocolVersion` or `clientCapabilities`,
   or carrying either malformed, is rejected with `-32602`. A version this
   server does not support is rejected with `-32022` listing what it does
   support. **Build finding:** the `-32021` case has no trigger on this
@@ -385,8 +412,8 @@ DON'T:
 
 - `cargo build`, `cargo test` (3x, cluster up), `cargo clippy
   --all-targets`, `cargo fmt --check`, all clean.
-- Tests cover FR1 through FR18, FR2a, FR2b, and FR3a included, and EC-1
-  through EC-11.
+- Tests cover FR1 through FR18, FR2a, FR2b, FR3a, and FR14a through
+  FR14c, and EC-1 through EC-11.
 - An end-to-end check from the laptop: `yeomna-mcp --ssh olympus`, a
   `tools/list`, a `query --hybrid` tool call against the `weavertools`
   graph, and the audit row read back on the appliance. **Which database

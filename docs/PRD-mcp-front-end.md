@@ -1,7 +1,7 @@
 # PRD: The MCP Front End
 
 Parent: `README.md`, the Yeomna Charter, sections 5.2 and 6.
-Status: v0.6, 2026-09-11. Phases 1 and 2 built, and they are all the phases there are.
+Status: v0.7, 2026-09-11. Phases 1 and 2 built, and they are all the phases there are.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually. These govern prose. Rust, JSON,
@@ -13,6 +13,7 @@ and SQL keep their syntax.
 |---|---|---|
 | 0.1 | 2026-09-10 | First draft. Unparks MCP for the stdio case only, on Todd's direction, and front-loads thirteen decisions plus one open ruling. |
 | 0.2 | 2026-09-10 | Review pass. D7 gained `resultType` and the ssh-255 distinction, D10 became the fuller cancellation rule, and D12 and D13 are new: the request travels on stdin rather than argv, and the target owns which database a call reaches. The argv finding was a real defect. |
+| 0.7 | 2026-09-11 | **D0 added: both protocol eras.** The surface failed to connect, because it was built modern-only against a revision that dropped the `initialize` handshake while the client in front of it still opens that way. The compatibility matrix predicting this was read during the build and filed as background rather than as a requirement. |
 | 0.6 | 2026-09-11 | **Phase 3 removed, and the actor question withdrawn.** Both were mistakes of scope. A front end that authenticates callers must hold state, and state is a second database, which "one store, one engine" puts outside this box: it is a separate product, not a later phase. And the actor was never open, since V3 already rules it the kernel's answer with no client-supplied field to spoof. The draft's proposed actor pair would have added that field. |
 | 0.5 | 2026-09-11 | Built as spec 024. **D10 amended by a build finding**: end of input finishes in-flight work rather than cancelling it, because the first build's reading lost answers for calls that had already committed. Everything else built as decided. |
 | 0.4 | 2026-09-11 | **R29 ruled by Todd: tool abstractions only, `sql` excluded by name.** D6 goes to 41 of 42 and the R29 section records the reasoning, including that the exclusion rests on section 6's sentence and on authorship rather than on a hazard, since R17a already makes the corpus structurally unreachable. The verb itself is untouched and stays reachable through `yeomna call` and the CLI. |
@@ -269,6 +270,26 @@ workspace. It stays outside the no-SQL lint's allowlist and contains no
 SQL.
 
 ### Resolved Design Decisions
+
+**D0. Both protocol eras, because one of them is what clients speak.**
+Added 2026-09-11 after the surface failed to connect. This PRD was written
+against the 2026-07-28 revision, which made the core stateless and dropped
+the `initialize` handshake, and a server implementing only that revision is
+unreachable from a client that opens the older way. Claude Code 2.1.268
+does, and the registration failed with `-32602: params._meta is required`.
+The revision's own compatibility matrix names that cell and says such a
+client has no fall-forward mechanism, so the server has to meet it. Both
+eras are served, the era a handshake selects is remembered for the life of
+the process, and no field from the newer revision is sent into the older
+one. The cost is a handshake rather than a second implementation, because
+the tool surface is two operations and does not vary across any of these
+revisions.
+
+**The lesson worth keeping is about reading.** The matrix that predicted
+this was read during the build and recorded in the PRD as background, under
+"what the revision changed and why it helps". It was treated as context
+rather than as a requirement, which is how a spec ends up correct against a
+document and wrong against the world.
 
 **D1. stdio, and no networked transport in this product.** stdio needs no
 listener, no charter amendment, no authorization framework, and no schema
