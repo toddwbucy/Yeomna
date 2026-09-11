@@ -101,10 +101,32 @@ claim the first draft got wrong.
   who assumes otherwise ships 42 dangling references that no count test
   can see.
 
-**R29 is open and it gates the implementation, not the spec**: whether
-`sql` belongs on a surface that is model-controlled by design, when
-charter section 6 forbids a raw query surface. Do not expose `sql` as an
-MCP tool before that is ruled.
+**R29 is ruled (Todd, 2026-09-11): tool abstractions only, so the MCP
+surface carries 41 of the 42 and `sql` is excluded by name.** MCP defines
+tools as model-controlled, meaning the model discovers and invokes them
+from context, so the difference from the CLI is authorship: a person who
+types a statement decided those bytes, while a model composes them and
+leaves an audit row whose actor is true and whose authorship has thinned.
+The charter sentence honored is section 6's "Nobody writes SQL".
+
+Three things about that exclusion matter when building it:
+
+- **The verb is untouched.** `sql` stays in the contract at 42 wire names
+  and stays reachable through `yeomna call` and the CLI tree. Only this
+  surface omits it, and the omission is not a claim the verb is unsafe.
+  R17a already refuses the appliance's own footing, templates, and any
+  kg-pattern database by catalog probe, under a role with no grant on any
+  KG table, so the corpus was structurally unreachable before this ruling.
+- **The exclusion covers dispatch, not only the list.** Filtering the tool
+  list while dispatching from the whole enum would ship a tool nobody
+  advertises and anybody can call, which is the side door T3 forbids.
+- **The census names the absence rather than counting to it.** A count of
+  41 passes if some other verb went missing while `sql` was present. This
+  is FR3a's lesson in a second place: a count cannot see an identity
+  problem.
+
+It is a principle rather than a one-off, so a future verb that hands raw
+text to the engine is excluded by the same rule without a new ruling.
 
 **Hybrid query is built** (spec 023), so `query --hybrid` fuses keyword
 and vector ranking by reciprocal rank fusion in one statement, which is

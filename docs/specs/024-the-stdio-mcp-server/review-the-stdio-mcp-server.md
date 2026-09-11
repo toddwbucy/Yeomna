@@ -85,6 +85,20 @@ filter over the contract rather than a second table. What the PRD does
 instead is make the dependency mechanical: a ruling against `sql` changes
 D6's count, FR2's census and its success criterion, and nothing else.
 
+**Ruled 2026-09-11, after the merge: tool abstractions only, `sql`
+excluded.** The referral was the right call and the ruling came back in one
+exchange. Two things were learned in the discussion that the finding had
+not raised. The ruling does not rest on blast radius, because R17a had
+already closed that: `sql` refuses the appliance's own footing, templates,
+and any kg-pattern database by catalog probe, under a role holding no grant
+on any KG table, so the corpus was structurally unreachable. It rests on
+authorship, which is the axis MCP's model-controlled definition creates and
+the CLI does not have. And the exclusion needed two requirements the
+finding's "conditional allowlist" framing would have missed: it has to
+cover dispatch as well as the list, or the result is a tool nobody
+advertises and anybody can call, and the census has to name the absence
+rather than count to it, since 41 passes if a different verb went missing.
+
 ## Exchange two, four applied, one of them a wrong claim
 
 **D13 was false for a class of verbs.** It had said the graph is always a

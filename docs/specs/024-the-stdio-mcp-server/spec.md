@@ -1,15 +1,15 @@
 # Specification: 024 The stdio MCP Server
 
-Parent PRD: `docs/PRD-mcp-front-end.md` v0.3, Phases 1 and 2.
+Parent PRD: `docs/PRD-mcp-front-end.md` v0.4, Phases 1 and 2.
 Owner: epic #21 (the holes ledger) as a new surface rather than a hole,
 since no verb refuses for want of this. Ruled by that PRD's D1 through
-D13. **R29 proposed** on whether `sql` belongs on a model-controlled
-surface, which gates merging an implementation that exposes `sql` and
-does not gate this spec.
-Status: draft, 2026-09-10. Revised twice the same day for CodeRabbit's
-protocol and transport findings. Round one: six applied, one referred to
-Todd. Round two: four applied, one of which corrected a wrong claim about
-where a session-scoped verb gets its graph.
+D13, and by **R29, ruled by Todd 2026-09-11: tool abstractions only, so
+`sql` is excluded from this surface by name.** The verb itself is
+untouched and stays reachable through `yeomna call` and the CLI tree.
+Status: draft, 2026-09-11. Revised twice on 2026-09-10 for CodeRabbit's
+protocol and transport findings (round one: six applied, one referred to
+Todd, round two: four applied, one of which corrected a wrong claim about
+where a session-scoped verb gets its graph), then again for R29's ruling.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually. These govern prose. Rust, JSON,
@@ -93,7 +93,16 @@ log is not the record section 6 promises.
   belongs to the envelope MCP wraps rather than to anything Yeomna
   produces. Results also carry
   `_meta.io.modelcontextprotocol/serverInfo`, which the revision asks for.
-- `tools/list` returning all 42 in `WIRE_NAMES` order, and the caching
+- **The `sql` exclusion (R29, ruled 2026-09-11).** The derivation walks
+  `WIRE_NAMES` and filters `sql` out, through a named constant carrying the
+  reason rather than a bare string in a predicate, so a reader finds the
+  ruling from the code. The exclusion applies to **both the tool list and
+  the dispatch**: a `tools/call` naming `sql` is an unknown tool. A server
+  that filtered the list and dispatched from the whole enum would ship a
+  tool nobody advertises and anybody can call, which is the side door the
+  charter's T3 paragraph forbids. The verb itself is untouched and stays
+  reachable through `yeomna call` and the CLI tree.
+- `tools/list` returning the 41 in `WIRE_NAMES` order, and the caching
   hints the revision requires on cacheable results. `server/discover` and
   `tools/list` both carry `ttlMs`, an integer at or above zero, and
   `cacheScope`, which is `"public"` here because the list is derived at
@@ -135,7 +144,9 @@ log is not the record section 6 promises.
 - Any new verb, request field, or schema version. Wanting one is a
   finding that stops the build.
 - Caching verb results. The tool list may carry a TTL. Results never do.
-- Curating the tool set (D6). See R29.
+- Curating the tool set per caller. The one exclusion is `sql` by name
+  under R29, applied identically for every caller, since the revision
+  forbids a tool set that varies by connection.
 
 ## Files to Modify
 
@@ -162,11 +173,19 @@ log is not the record section 6 promises.
 - **FR1** `yeomna-mcp --local` answers `server/discover` with the
   `tools` capability and a `supportedVersions` list including the
   revision it implements.
-- **FR2** `tools/list` returns exactly 42 tools, one per `WIRE_NAMES`
-  entry, in that order, each with a non-empty description and an
-  `inputSchema` that is a valid JSON Schema object. The description
-  check passes today because all 42 variants are documented, and its
-  job is to fail the day one is not.
+- **FR2** `tools/list` returns exactly 41 tools, one per `WIRE_NAMES`
+  entry except `sql`, in that order, each with a non-empty description and
+  an `inputSchema` that is a valid JSON Schema object. The description
+  check passes today because all 42 variants are documented, and its job is
+  to fail the day one is not.
+- **FR2a** The census names the absence rather than counting to it. The
+  test asserts `sql` is the one wire name missing and that every other is
+  present. **A count of 41 alone is not sufficient**, because it passes if
+  another verb went missing while `sql` was present, which is FR3a's lesson
+  in a second place: a count cannot see an identity problem.
+- **FR2b** `tools/call` with `name` of `sql` is a JSON-RPC error for an
+  unknown tool, proven by calling it directly rather than inferred from its
+  absence in the list.
 - **FR3** A verb taking no arguments emits
   `{"type": "object", "additionalProperties": false}`, never `null`.
   `Empty` already renders exactly this, so the requirement is that it
@@ -330,9 +349,11 @@ DON'T:
 
 ## Success Criteria
 
-1. 42 tools, derived, one per wire name, each with a description that
-   came from the contract's own doc comment and an `inputSchema` whose
-   references all resolve.
+1. 41 tools, derived, one per wire name except `sql`, each with a
+   description that came from the contract's own doc comment and an
+   `inputSchema` whose references all resolve. `sql` is absent from the
+   list and unreachable through dispatch, and the test names it rather
+   than counting to it.
 2. A tool call from the laptop leaves an audit row on the appliance
    naming a person, proven by reading the row.
 3. Nothing but MCP messages on stdout, proven by driving the server over
@@ -345,7 +366,8 @@ DON'T:
 
 - `cargo build`, `cargo test` (3x, cluster up), `cargo clippy
   --all-targets`, `cargo fmt --check`, all clean.
-- Tests cover FR1 through FR12, FR3a included, and EC-1 through EC-8.
+- Tests cover FR1 through FR18, FR2a, FR2b, and FR3a included, and EC-1
+  through EC-11.
 - An end-to-end check from the laptop: `yeomna-mcp --ssh olympus`, a
   `tools/list`, a `query --hybrid` tool call against the `weavertools`
   graph, and the audit row read back on the appliance. **Which database

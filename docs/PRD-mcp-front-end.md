@@ -1,7 +1,7 @@
 # PRD: The MCP Front End
 
 Parent: `README.md`, the Yeomna Charter, sections 5.2 and 6.
-Status: draft v0.3, 2026-09-10.
+Status: draft v0.4, 2026-09-11.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually. These govern prose. Rust, JSON,
@@ -13,6 +13,7 @@ and SQL keep their syntax.
 |---|---|---|
 | 0.1 | 2026-09-10 | First draft. Unparks MCP for the stdio case only, on Todd's direction, and front-loads thirteen decisions plus one open ruling. |
 | 0.2 | 2026-09-10 | Review pass. D7 gained `resultType` and the ssh-255 distinction, D10 became the fuller cancellation rule, and D12 and D13 are new: the request travels on stdin rather than argv, and the target owns which database a call reaches. The argv finding was a real defect. |
+| 0.4 | 2026-09-11 | **R29 ruled by Todd: tool abstractions only, `sql` excluded by name.** D6 goes to 41 of 42 and the R29 section records the reasoning, including that the exclusion rests on section 6's sentence and on authorship rather than on a hazard, since R17a already makes the corpus structurally unreachable. The verb itself is untouched and stays reachable through `yeomna call` and the CLI. |
 | 0.3 | 2026-09-10 | Second review pass. **D13 was wrong and is rewritten**: `QueryRequest` carries no `graph` field and `hybrid` reads the session's scope, so a session-scoped verb takes its graph from the target's config and not from the tool's arguments. D12 gained the stdin-close requirement, the caching contract is stated for the two cacheable operations, and the architecture diagram and Phase 2 example were still showing the argv form v0.2 had abolished. |
 
 ## Executive Summary
@@ -285,11 +286,32 @@ because a builder who assumes an inlined schema produces 42 tools whose
 `inputSchema` is a dangling reference, which no test of the tool *count*
 would catch.
 
-**D6. All 42 verbs, no curation.** A subset is a second contract that
-drifts, and the revision forbids a per-connection tool set anyway.
-Destructive verbs already carry their own `force` gates and their own
-audit rows. Order is `WIRE_NAMES` order, which satisfies the
-deterministic-ordering guidance for free. See R29.
+**D6. Tool abstractions only: 41 of the 42, with `sql` excluded by name.**
+**Ruled by Todd 2026-09-11 (R29).** A model-controlled surface carries the
+verbs that abstract over SQL and not the one that passes it through. The
+charter sentence being honored is section 6's: "Nobody writes SQL, JSONB
+path expressions, traversals, or search calls." The verb layer emits those
+underneath, and a model composing a statement through a tool is something
+writing SQL one layer above where that line was drawn.
+
+This is a principle rather than a one-off. `sql` is the only passthrough
+among the 42 today, so the rule names one verb, and a future verb that
+hands raw text to the engine is excluded by the same rule without a new
+ruling.
+
+What did not change: **the verb is untouched.** `sql` stays in the
+contract at 42 wire names, stays reachable through `yeomna call` and the
+CLI tree, and keeps R17 and R17a's scoping. Only this surface omits it.
+The exclusion is not a claim that the verb is unsafe. R17a already refuses
+the appliance's own footing, templates, and any kg-pattern database by
+catalog probe, running as a role with no grant on any KG table, so the
+corpus was structurally unreachable already. The exclusion is about who
+authors a statement, not about what the statement can touch.
+
+Everything else stays as it was: no per-caller curation, since the
+revision forbids a tool set that varies by connection, and `WIRE_NAMES`
+order for the 41 that remain, which satisfies the deterministic-ordering
+guidance for free.
 
 **D7. Error mapping follows the exit code, and transport is not a verb.**
 Exit 2 becomes a JSON-RPC error, because the caller or the machine was
@@ -388,37 +410,56 @@ each entry can carry its own `YEOMNA_CONFIG`. This is a limit of the
 design and not a defect, and naming it here is cheaper than discovering
 it when a second graph is wanted.
 
-### R29, open: does `sql` belong on a model-controlled surface
+### R29, ruled: `sql` does not belong on a model-controlled surface
 
-D6 exposes all 42 verbs, and one of them is `sql`. It is already scoped
-by R17 and R17a, refusing KG-pattern targets at runtime, and the CLI
-exposes it today. The difference is that MCP tools are model-controlled
-by design, and charter section 6 forbids a raw query surface. A verb a
-human can type is not the same object as a tool a model may choose.
+**Ruled by Todd 2026-09-11: no `sql` on the model-controlled surface, tool
+abstractions only.** Recorded with the reasoning that produced it, because
+the narrow part is what makes the ruling worth keeping.
 
-The build proceeds with all 42 because a curated list is a second
-contract, and carving one out later is a smaller change than growing one
-back. If Todd rules that `sql` comes out, it comes out as a named
-exception with the charter sentence cited, not as a silent omission.
+MCP sorts its primitives by who chooses. Tools are model-controlled, which
+the specification defines as the model discovering and invoking them on its
+own from context. That is the difference from the CLI, and it is a
+difference about authorship rather than about permission: when a person
+types a statement they decided those exact bytes should run, and when a
+model calls the tool it composes them. The audit row names the same actor
+either way and stays true, while what the actor authored thins from a
+statement to an intent. That is the third place this theme has come up,
+after R22 and the actor-over-a-network question.
 
-**What a ruling against `sql` changes, so the change stays mechanical:**
-D6's count, the spec's FR2 census and its success criterion (41 rather
-than 42, with `sql` named as the excluded wire name and a test asserting
-it is absent rather than merely uncounted), and nothing else. The
-derivation walks `WIRE_NAMES`, so an exclusion is a filter over the
-contract rather than a second table beside it, which is why this stays a
-one-line change and why the review's alternative of building a
-conditional allowlist first would cost more than waiting for the ruling.
+**The blast radius was already narrow, and the ruling is not about blast
+radius.** `crates/yeomna-verbs/src/sql.rs` refuses the current database,
+`yeomna`, and `postgres` as the appliance's own footing, refuses templates,
+and refuses any kg-pattern database by probing the catalog for five
+signature tables, erring toward refusal so structure decides and a
+hand-stamped graph is protected like a generated one. Statements run as
+`yeomna_provision` on a per-call connection that holds no grant on any KG
+table, and the drop is the reset. The corpus is structurally unreachable.
 
-The ruling is not a blocker for writing the spec and it is a blocker for
-merging an implementation that exposes `sql`, which is the shape of the
-dependency. This section is where it is recorded rather than left to be
-rediscovered at review time.
+So the ruling rests on section 6's sentence and on authorship, not on a
+hazard R17a left open. Todd's phrasing was "for now", which is what the
+next paragraph is for.
+
+**What would reopen it.** A caller that needs plain-database utility
+through this surface and cannot reach a shell, or a client-side
+confirmation property the appliance can verify rather than hope for. The
+present answer relies on neither, which is why it is cheap to hold: the
+exclusion is a filter over `WIRE_NAMES`, so reversing it is one line and
+re-including a verb costs nothing that removing it did not already pay.
 
 ## Testing Strategy
 
-- **Census.** One tool per `WIRE_NAMES` entry, 42 tools, no extras, in
-  contract order. The same inversion spec 021 used.
+- **Census, and it must assert identity rather than only count.** 41
+  tools, one per `WIRE_NAMES` entry except `sql`, in contract order. **A
+  count of 41 is not sufficient on its own**, because it passes if some
+  other verb went missing while `sql` was present. The test names `sql` as
+  the expected absence and asserts every other wire name is present, which
+  is the same lesson FR3a learned: a count cannot see an identity problem.
+- **The exclusion covers dispatch and not only the list.** A `tools/call`
+  naming `sql` is an unknown tool, tested by calling it directly. A server
+  that filters its list from the enum and builds its dispatch from the
+  whole enum would leave a tool nobody advertises and anybody can call,
+  which is the side-door shape the charter's T3 paragraph exists to
+  forbid.
 - **Descriptions are present.** Every tool carries a non-empty
   description, which holds today because all 42 variants are documented
   and turns a future undocumented variant into a failing test. The real
