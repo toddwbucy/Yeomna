@@ -1,6 +1,8 @@
 # The Holes Ledger
 
-Status: v2.6, 2026-09-11. **The MCP front end is built** (spec 024, PRs
+Status: v2.7, 2026-09-11. **R30 ruled: Yeomna is developed
+independently of every consumer**, charter section 12 at v0.5. WeaverTools
+is the first corpus and the first consumer, not the driver. **The MCP front end is built** (spec 024, PRs
 #57 and #59). A twelfth crate, `yeomna-mcp`, serves 41 of the 42 verbs as
 model-controlled tools over stdio, with ssh as the remote leg. **508 tests
 green three times.** The actor property is verified against the live
@@ -8,9 +10,13 @@ appliance rather than argued: a tool call leaves the same audit row a
 direct `yeomna call` writes. It is a new surface rather than a
 hole, since no verb refuses for want of it. The transport is stdio with
 ssh as the remote leg, chosen so that a call from a second machine lands
-here as a real uid and every audit row stays kernel-named. The streamable
-HTTP transport is Phase 3 and **blocked on ruling what an actor is when it
-is not a uid**, which pairs with R22. **R29 is ruled**: tool abstractions
+here as a real uid and every audit row stays kernel-named. **There is no
+networked transport on this product's roadmap**: a front end that
+authenticates callers must hold state, and a second store does not live in
+this box, so it is a separate product calling this one over the socket. An
+earlier draft claimed a blocking actor ruling. There is none. V3 already
+rules the actor the kernel's answer with no client-supplied field to
+spoof, and R22 stands on its own. **R29 is ruled**: tool abstractions
 only, so the surface carries 41 of the 42 and `sql` is excluded by name
 while the verb itself is untouched.
 
@@ -375,6 +381,7 @@ Recorded during lifts, riding in the review notes, none blocking:
 | R27 | The embedder backend is Python behind the contract | **Proposed in spec 022, implemented as proposed.** jina-v4 ships custom modeling code, a Qwen2.5-VL backbone, and LoRA adapters selected per task, so reimplementing it in Candle is new construction whose only deliverable is the same vectors, and inherit-do-not-author points the other way. The service is replaceable because the contract is narrow: three operations, one of which exists only for a test. Recorded cost: Python in the box is a supply chain, seven packages and a committed lockfile, and `PrivateNetwork=yes` is what makes that supply chain unable to act at run time. The HTTP server is the standard library, because fastapi and uvicorn would be four more packages for a service the GPU already serializes |
 | R28 | Does the `code` task need a query and passage split | **Open, raised by spec 022's build.** The model's snapshot fixes two prompt prefixes and forces the query one for `text-matching` whatever it is asked. For `code` it fixes nothing, so the service uses the query prompt for both halves and says so. Whether that is right is a retrieval-quality question about whether ingested code is a passage: if it is, the contract grows `code.passage` and `code.query`, the pairing table gains one line, and every code corpus embedded under the old answer is a re-ingest away from the new one. Cheap to hold open, because R26 put the task on every embeddings row, so whichever way it is ruled a reader can tell which corpora were embedded under which answer |
 | R29 | Does `sql` belong on a model-controlled surface | **Ruled by Todd 2026-09-11: no, tool abstractions only.** MCP defines tools as model-controlled, meaning the model discovers and invokes them from context, so the difference from the CLI is authorship rather than permission: a person who types a statement decided those bytes, and a model composing one leaves an audit row whose actor is still true while what the actor authored thins from a statement to an intent. The charter sentence honored is section 6's "Nobody writes SQL". **The ruling does not rest on blast radius, which R17a had already closed**: `sql` refuses the appliance's own footing, templates, and any kg-pattern database by catalog probe, running as a role with no grant on any KG table, so the corpus was structurally unreachable. The verb is untouched at 42 wire names and stays reachable through `yeomna call` and the CLI. The MCP surface carries 41, the exclusion is a named filter over `WIRE_NAMES` covering dispatch as well as the list, and the census names the absence rather than counting to it. Todd said "for now", and what would reopen it is a caller needing plain-database utility through this surface with no shell available, or a client confirmation property the appliance can verify rather than hope for |
+| R30 | Yeomna is developed independently of every consumer | **Ruled by Todd 2026-09-11, recorded in charter section 12 (v0.5).** Yeomna is a standalone product, not a component or a deliverable of any project that uses it, and its roadmap, release cadence, and version are its own. The reason is what a consumer needs: WeaverTools establishes baseline agent behaviour on a fixed substrate and then reintroduces network variables to track what changes, so its deliverable is attribution, and a substrate co-developed with the experiment measuring against it is a confound by construction. This is R15's package pin raised a level, refusing a consumer's cadence rather than upstream's. Binding consequences: **a consumer is a caller and never a driver**, so work is not reordered for one, and **the substrate owes a pinnable identity it cannot currently give**, since every crate is at 0.1.0 and `SCHEMA_VERSION` tracks tables rather than ranking. Retrieval behaviour is what a consumer measures through, so M5's fix, R28, and macro-window chunking each change their instrument. Charter section 14 carries that as open, shaped like R26 a level up. D9's boundary in the other direction is unchanged: a consumer is never a component supplier here either |
 
 ## Two open items that spec 023 opened
 

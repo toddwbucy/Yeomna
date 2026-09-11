@@ -1,12 +1,16 @@
 # Yeomna: Charter PRD
 
-Status: draft v0.4, 2026-08-08. Founding artifact. This document sets the
-context a project is built inside: who it is for, what it is made of, what it
-refuses, and why. It supersedes v0.2 (2026-08-08) and folds in the v0.3
-ratification batch held from the socket-boundary review session of the same day.
-Requirements from v0.1 (2026-06-14) that survive are carried by reference and
-noted in section 11. Appendix A records what changed from v0.2 and which of
-those changes are still awaiting ratification.
+Status: draft v0.5, 2026-09-11. Founding artifact. This document sets the
+context a project is built inside: who it is for, what it is made of, what
+it refuses, and why. It supersedes v0.4 (2026-08-08), which superseded v0.2
+of the same day and folded in the v0.3 ratification batch from that day's
+socket-boundary review session. Requirements from v0.1 (2026-06-14) that
+survive are carried by reference and noted in section 11.
+
+v0.5 adds one decision to section 12, that this appliance is developed
+independently of every consumer, and one open item to section 14 that
+follows from it. Nothing else in v0.4 changed. Appendix A records what
+changed across versions and which changes are still awaiting ratification.
 
 Editorial rules for this document and its descendants: ASCII only, no em-dashes,
 no semicolons, never the words genuinely, honestly, or actually.
@@ -548,6 +552,33 @@ a compliance question, and multi-user serving is not its shape. sqlite-vec is
 also pre-v1 alpha with an unstable storage format. Worth revisiting only if the
 product ever targets a single-developer deployment.
 
+**Developed independently of every consumer, including the one that drove
+its resumption.** Ruled 2026-09-11. Yeomna is a standalone product, not a
+component or a deliverable of any project that uses it. Its roadmap, its
+release cadence, and its version are its own.
+
+The reason is stronger than clean boundaries, and it comes from what a
+consumer needs rather than from what this project prefers. An instrument
+that establishes baseline behaviour for an agent has to hold its substrate
+fixed, because the deliverable is attribution: when behaviour shifts, the
+instrument must be able to say whether the agent moved or the ground did.
+A substrate co-developed with the experiment that measures against it is a
+confound by construction, so it cannot be co-developed and still be a
+substrate. This is the same rule as the package pin of section 5, which
+refuses upstream's cadence during development, raised one level to refuse
+a consumer's cadence.
+
+Two consequences, both binding. **A consumer is a caller and never a
+driver**, so what gets built next is decided by this product's own order
+and not by what a consumer needs this week. And **the substrate owes its
+consumers a pinnable identity**, which is the open item added to section 14
+below: retrieval behaviour is what a consumer measures through, so a change
+to ranking is a change to their instrument, and it has to be declarable
+rather than discovered.
+
+Nothing here loosens the boundary already drawn in the other direction. A
+consumer is never a component supplier to this product either.
+
 **Premises falsified during design, recorded so they are not re-imported:**
 
 1. There were no fusion-splitter verbs, because nothing was fused. The
@@ -677,13 +708,48 @@ Open, and not for this document to close:
   embedding or carries a frozen local copy.
 - Whether the substrate-choice control of section 12 item 5 is wanted, and who
   owns it.
+- **What a version of this appliance means, and what counts as a
+  retrieval-affecting change.** Raised 2026-09-11 by the independence
+  ruling in section 12. A consumer that measures through this appliance
+  needs to record which one it measured through, and today there is no
+  number that says: the crates are all at an initial version and the only
+  meaningful marker is the schema version, which tracks tables rather than
+  ranking. The shape of the answer is the one R26 already used a level
+  down, where a vector is comparable to a corpus only when the model, the
+  model revision, and the task all match. The same triple is wanted here,
+  at the appliance rather than the row.
 
 Next: a technical spec beneath this charter covering the schema, the verb
 inventory, and the ingestion operation set. Then the first slice, which the
 prior PRD recommended be chunking plus code analysis as pure libraries with no
 store dependency, and that recommendation still holds.
 
-## Appendix A. Change log, v0.2 to v0.4
+## Appendix A. Change log
+
+### v0.4 to v0.5, 2026-09-11
+
+One decision and one open item, both from the same session.
+
+Section 12 gains **developed independently of every consumer**. The
+reasoning is not about clean boundaries: an instrument that establishes
+baseline behaviour for an agent has to hold its substrate fixed, because
+its deliverable is attribution, and a substrate co-developed with the
+experiment measuring against it is a confound by construction. It is the
+package pin of section 5 raised a level, refusing a consumer's cadence
+rather than upstream's. Two binding consequences: a consumer is a caller
+and never a driver, and the substrate owes its consumers a pinnable
+identity.
+
+Section 14 gains the open item that second consequence creates: **what a
+version of this appliance means, and what counts as a retrieval-affecting
+change.** Unratified and needing a ruling. The shape of the answer is
+R26's, one level up.
+
+Nothing else moved. The charter never named a consumer, so this is an
+addition rather than a correction, and the entanglement it answers lived
+in the working notes rather than here.
+
+### v0.2 to v0.4
 
 Ratified in session and applied here: T2 rewritten from a size claim to a
 necessity claim (section 3). The verb-layer swappability boundary named as a

@@ -52,10 +52,12 @@ with no flags on `yeomna` at all (D9), built because two machines need
 one graph, and the charter paragraph that parks MCP is the same one that
 names MCP as where a wire surface belongs.
 
-The streamable HTTP transport is not in scope and not merely unbuilt: it
-cannot be built until an actor over a network is ruled, because there is
-no `SO_PEERCRED` on a network socket and one service account in the audit
-log is not the record section 6 promises.
+The streamable HTTP transport is not in scope and is not a later phase of
+this product either. A transport that authenticates remote callers has to
+remember them, and remembering is a database, which "one store, one
+engine" puts on the far side of the socket with the front end that owns
+it. That is a separate product calling this one, and an earlier draft was
+wrong to schedule it here.
 
 ## Task Scope
 
@@ -146,8 +148,9 @@ log is not the record section 6 promises.
 
 ## Out of Scope
 
-- The streamable HTTP transport, OAuth, and any credential handling
-  (Phase 3, blocked on the actor ruling).
+- The streamable HTTP transport, OAuth, and any credential handling. Not
+  deferred: a front end that authenticates callers holds state, and a
+  second store does not live in this box.
 - MCP resources and MCP prompts. Tools only.
 - Any flag on the `yeomna` binary.
 - Any second execution path. The server never links `yeomna-store`,

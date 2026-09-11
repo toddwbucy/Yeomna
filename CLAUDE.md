@@ -79,13 +79,23 @@ the build and its review corrected several claims that looked settled.
   from `/proc/self/status` the way it does locally and every audit row
   stays kernel-named. No listener opens, no credential is authored, no
   schema version is spent, and no charter amendment is needed.
-- **The streamable HTTP transport is Phase 3 and it is blocked, not
-  merely unscheduled.** Over a network there is no `SO_PEERCRED`, so every
-  remote call would land in the log as one service account. Keeping the
-  log honest means `Session` gains a way to be told who it is, which
-  `actor.rs` exists to refuse, plus an `audit_log` schema change and the
-  charter's second named opening. **This pairs with R22 and neither should
-  be ruled alone.**
+- **There is no networked transport on this product's roadmap, and this is
+  a boundary rather than a deferral.** A front end that authenticates
+  remote callers must remember them, and remembering is a database, which
+  charter section 9's "one store, one engine, no second store of any kind"
+  puts on the far side of the socket with the front end that owns it. Such
+  a thing is a separate product that calls this appliance like any other
+  client. The test for any future front end is whether it needs to
+  remember anything: the stdio server passes because it remembers nothing.
+- **The actor is not an open question and must not be reopened.** V3 rules
+  it the kernel's answer, with no client-supplied identity field in the
+  protocol so there is nothing to spoof. A front end running as its own
+  system user is recorded as that user, which is accurate at this boundary
+  rather than degraded, and who it acted for is its own records' business.
+  An earlier draft of the MCP PRD proposed carrying an authenticated remote
+  subject into the audit row, which would have added the field V3 forbids
+  and made the log forgeable. Withdrawn. **R22 is unrelated and stands on
+  its own.**
 - **The request travels on stdin, never in argv** (D12). ssh joins its
   command arguments into one string and hands it to a shell on the far
   side, so a request carrying a quote, a backtick, or a dollar sign would
@@ -206,12 +216,15 @@ on a logout (2026-08-28), and the server limped a week before dying on
 applied 2026-09-09. The deployment-era fix is a dedicated system user
 for the unit, which is immune by category.
 
-**The resumption driver is a semantic KG over the WeaverTools codebase**:
-its code, documents, databases, services, and agents, and the edges
-between them. The boundary is ruled (D9): Yeomna is an external RAG
-appliance, never a part of the WeaverTools architecture, and its first
-caller is Claude Code itself, using the graph as the RAG for building
-these projects. **Phase 4 is merged** (spec 014, PR #36, 2026-09-09): seven
+**What resumed the project was a semantic KG over the WeaverTools
+codebase**: its code, documents, databases, services, and agents, and the
+edges between them. **WeaverTools is the first corpus and the first
+consumer. It is not the driver**, and the charter's section 12 says so as
+of v0.5: this appliance is developed independently of every consumer,
+including that one. What gets built next is decided by this project's own
+order. The boundary was already ruled in the other direction by D9, that
+Yeomna is an external RAG appliance and WeaverTools is never its component
+supplier, and independence is that rule applied both ways. **Phase 4 is merged** (spec 014, PR #36, 2026-09-09): seven
 verbs including R18's `edge.assert` and `edge.retract`, the contract at
 42 wire names, and the audit transaction proven by a crash-shaped test.
 **Spec 015 followed the same day** (PR #39): extraction went native for
@@ -288,6 +301,50 @@ correspond across them. Commands are
 `cargo build`, `cargo test`, `cargo clippy --all-targets`,
 `cargo fmt --check`, all from the repository root. Per charter section 13,
 the string `yeomna` is what belongs in crate metadata.
+
+## Independence, and what it obliges
+
+Ruled 2026-09-11 and recorded in charter section 12. **Yeomna is a
+standalone product, not a component or a deliverable of any project that
+uses it.** Its roadmap, release cadence, and version are its own.
+
+The reason comes from what a consumer needs rather than from what this
+project prefers, and it is worth carrying because it decides arguments that
+otherwise look like preference. WeaverTools establishes baseline behaviour
+for an agent on a fixed substrate, then moves parts of that agent back onto
+the network and tracks what changes. Its deliverable is **attribution**:
+when behaviour shifts, being able to say whether the agent moved or the
+ground did. A substrate co-developed with the experiment measuring against
+it is a confound by construction, so it cannot be co-developed and still be
+a substrate. This is the package pin (R15, `IgnorePkg`) raised one level: it
+refuses upstream's cadence during development, and independence refuses a
+consumer's.
+
+Two consequences bind the work:
+
+- **A consumer is a caller, never a driver.** Do not reorder this project's
+  work because a consumer wants something sooner. They reach the socket like
+  any client.
+- **The substrate owes its consumers a pinnable identity, and cannot
+  currently give one.** Every crate is at `0.1.0` and the only meaningful
+  marker is `SCHEMA_VERSION`, which tracks tables rather than ranking.
+  **Retrieval behaviour is what a consumer measures through**, so M5's index
+  fix, R28's query and passage split, and macro-window chunking are each a
+  change to their instrument rather than only to this one. That has to be
+  declarable rather than discovered. Charter section 14 carries it as open,
+  and the shape of the answer is R26's a level up: a vector is comparable to
+  a corpus only when model, model revision, and task all match, and a
+  baseline is comparable to another baseline only when the appliance
+  version, the schema version, and the embedding cohort all match.
+
+It also promotes the operator surface. An independent appliance's operator
+is not its developer, and a consumer needs the appliance to be able to say
+that its own invariants held and which version held them. That makes
+introspection a requirement rather than a convenience, and it is why the
+admin surface discussion is about **verification rather than
+orchestration**: charter 8.3 already says the appliance does not orchestrate
+snapshots, and 5.1 says backup rides standard tooling with nothing bespoke
+to trust.
 
 ## How work is done here
 

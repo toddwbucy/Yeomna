@@ -1,7 +1,7 @@
 # PRD: The MCP Front End
 
 Parent: `README.md`, the Yeomna Charter, sections 5.2 and 6.
-Status: v0.5, 2026-09-11. Phases 1 and 2 built.
+Status: v0.6, 2026-09-11. Phases 1 and 2 built, and they are all the phases there are.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually. These govern prose. Rust, JSON,
@@ -13,6 +13,7 @@ and SQL keep their syntax.
 |---|---|---|
 | 0.1 | 2026-09-10 | First draft. Unparks MCP for the stdio case only, on Todd's direction, and front-loads thirteen decisions plus one open ruling. |
 | 0.2 | 2026-09-10 | Review pass. D7 gained `resultType` and the ssh-255 distinction, D10 became the fuller cancellation rule, and D12 and D13 are new: the request travels on stdin rather than argv, and the target owns which database a call reaches. The argv finding was a real defect. |
+| 0.6 | 2026-09-11 | **Phase 3 removed, and the actor question withdrawn.** Both were mistakes of scope. A front end that authenticates callers must hold state, and state is a second database, which "one store, one engine" puts outside this box: it is a separate product, not a later phase. And the actor was never open, since V3 already rules it the kernel's answer with no client-supplied field to spoof. The draft's proposed actor pair would have added that field. |
 | 0.5 | 2026-09-11 | Built as spec 024. **D10 amended by a build finding**: end of input finishes in-flight work rather than cancelling it, because the first build's reading lost answers for calls that had already committed. Everything else built as decided. |
 | 0.4 | 2026-09-11 | **R29 ruled by Todd: tool abstractions only, `sql` excluded by name.** D6 goes to 41 of 42 and the R29 section records the reasoning, including that the exclusion rests on section 6's sentence and on authorship rather than on a hazard, since R17a already makes the corpus structurally unreachable. The verb itself is untouched and stays reachable through `yeomna call` and the CLI. |
 | 0.3 | 2026-09-10 | Second review pass. **D13 was wrong and is rewritten**: `QueryRequest` carries no `graph` field and `hybrid` reads the session's scope, so a session-scoped verb takes its graph from the target's config and not from the tool's arguments. D12 gained the stdin-close requirement, the caching contract is stated for the two cacheable operations, and the architecture diagram and Phase 2 example were still showing the argv form v0.2 had abolished. |
@@ -37,10 +38,11 @@ uid, and `crates/yeomna-verbs/src/actor.rs` names it from
 stays kernel-named. Nothing about the three-layer seal changes and
 nothing about the provenance model changes.
 
-The streamable HTTP transport is the natural next step and it is
-deferred rather than dropped (Phase 3), because it cannot be built
-without ruling what an actor is when it is not a uid. That ruling pairs
-with R22 and it is named here so it is not discovered later.
+A networked transport is not the next step in this product, and an earlier
+draft was wrong to call it one. Authenticating remote callers means
+remembering them, remembering is a database, and this appliance has one
+store which holds the corpus. Such a front end is a separate product that
+calls this one over the socket.
 
 The second thing this PRD buys is documentation. The verb contract
 already documents itself: all 42 `Verb` variants carry a doc comment, 48
@@ -106,22 +108,38 @@ letters, digits, underscore, hyphen, and dot. `graph.traverse` is a legal
 tool name. The wire name transfers verbatim with no transformation at
 all (D4), which is a better outcome than the CLI got.
 
-### The one thing that is not free
+### Where this product ends, and why
 
-Over a network there is no `SO_PEERCRED`. An HTTP MCP server is a local
-process with its own uid, so every remote call would land in the audit
-log as one service account, and section 6 calls that log a compliance
-property rather than a convenience. OAuth 2.1 authenticates a client to
-the server and does not fix this by itself: to keep the log honest the
-authenticated subject has to reach the verb layer as the actor, which
-means `Session` gains a way to be told who it is instead of asking the
-kernel, and `actor.rs` exists to refuse precisely that.
+**Yeomna ends at the socket.** Charter 5.2 says anything needing the wire
+"lives on the far side of that socket and owns that concern itself," and
+section 9's "one store, one engine. No second store of any kind" is what
+makes that a boundary rather than a preference.
 
-The clean shape is an actor pair, the kernel-named local process plus an
-authenticated remote subject, recorded as one row that reads "the front
-end acting for todd@laptop". That is an `audit_log` schema change, and
-T4 prices a schema change at drop, re-apply, template re-stamp, and
-re-ingest. It is Phase 3 and it needs a ruling first.
+The test for whether a front end belongs in this product is therefore
+simple: **does it need to remember anything?**
+
+A front end that authenticates remote callers must hold state that is not
+the corpus. Tokens, sessions, an identity mapping. That state is a
+database, and a second database cannot live in this box, so it lives on
+the far side with the front end that owns it. A component with its own
+store is a separate product, not a later phase of this one.
+
+The stdio server passes that test and it is the reason this PRD is short.
+It remembers nothing: the MCP core is stateless by this revision, the
+actor comes from the kernel, authentication comes from ssh, and no
+database connection is held. It is a translator between a pipe and a
+socket.
+
+**The actor needs no ruling, and asking for one was a mistake.** V3 in
+`docs/PRD-verb-layer.md` settled it: the actor is the kernel's answer, and
+"no client-supplied identity field exists in the protocol, so there is
+nothing to spoof." A front end running as its own system user is recorded
+as that user, which is an accurate record at this boundary rather than a
+degraded one. Who the front end was acting for is the front end's own
+accountability, in the front end's own records. An earlier draft of this
+PRD proposed carrying an authenticated remote subject into the audit row,
+which would have added the very field V3 forbids and made the log
+forgeable by the front end. It is withdrawn.
 
 ## User Stories
 
@@ -153,8 +171,10 @@ re-ingest. It is Phase 3 and it needs a ruling first.
 
 ### Non-Goals
 
-1. **No streamable HTTP transport.** Phase 3, blocked on the actor
-   ruling. This is the biggest non-goal and the reason the rest is
+1. **No streamable HTTP transport, and not as a later phase either.** A
+   transport that authenticates callers must hold state, and that state is
+   a second database. It belongs to a separate product that calls this one
+   over the socket. This is the biggest non-goal and the reason the rest is
    cheap.
 2. **No OAuth, no authorization framework, no credential handling.** The
    stdio server authenticates nobody, because ssh and the kernel already
@@ -204,14 +224,23 @@ the request to that process's stdin, per D12. Connection reuse is ssh's
 The laptop then runs `yeomna-mcp --ssh olympus` with no Yeomna install,
 no config file, and no credential of its own.
 
-### Phase 3: Deferred, and named so it is not discovered
+### There is no Phase 3, and that is a boundary rather than a deferral
 
-The streamable HTTP transport with OAuth 2.1, resource indicators, and
-RFC 9207 `iss` validation. Blocked on the actor ruling above, and it
-carries a charter amendment with it: section 5.2 requires each network
-opening be named in the charter and secured at the router and at the
-machine before traffic is routed to the socket. GitHub is the first
-named opening. This would be the second.
+An earlier draft carried the streamable HTTP transport as a deferred third
+phase. It does not belong in this PRD at all, for the reason above: an
+HTTP front end must authenticate callers, authentication needs state, and
+state is a database this box does not get to have a second of.
+
+If such a thing is ever wanted it is a separate product with its own
+store, reaching this appliance over the socket like any other client, and
+it inherits nothing from this PRD except the contract it calls. The
+charter's requirement that each network opening be named in it applies to
+that product's deployment, not to this crate.
+
+What remains true on this side, and it is small: a front end that connects
+as its own system user needs a uid this machine can name, because D6
+refuses one it cannot. That is a deployment note of the same kind the
+embedder already carries.
 
 ## Technical Architecture
 
@@ -241,9 +270,12 @@ SQL.
 
 ### Resolved Design Decisions
 
-**D1. stdio, not streamable HTTP.** The actor. stdio needs no listener,
-no charter amendment, no authorization framework, and no schema change,
-and it preserves kernel-named actors exactly. HTTP is Phase 3.
+**D1. stdio, and no networked transport in this product.** stdio needs no
+listener, no charter amendment, no authorization framework, and no schema
+change, and it keeps the actor the kernel's answer. The deeper reason is
+the boundary above: a transport that authenticates callers has to remember
+them, and remembering is a database. This product has one store and it
+holds the corpus.
 
 **D2. The remote leg is ssh, not a Yeomna transport.** Charter section 5
 argues for standard tooling a buyer's IT staff already recognizes, and
@@ -532,5 +564,6 @@ re-including a verb costs nothing that removing it did not already pay.
 ## Timeline
 
 Phase 1 and Phase 2 are one spec and one PR, because Phase 2 is a second
-target for a spawn that already exists. Phase 3 is not scheduled and
-does not start before the actor ruling and R22 are settled together.
+target for a spawn that already exists. There is no third phase: a
+networked front end is a different product, for the reasons under "Where
+this product ends".
