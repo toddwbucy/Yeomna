@@ -8,8 +8,17 @@ rust-version.workspace = true
 
 [features]
 # The MCP front end derives its tool schemas from this crate's types
-# (spec 024 D5). Non-default so the CLI and the daemon do not carry
-# schemars for a surface they are not.
+# (spec 024 D5).
+#
+# It is off by default so a consumer that builds this crate alone does not
+# pull schemars in. **It does not keep schemars out of the CLI or the
+# daemon**, and the first draft of this comment claimed it did. Cargo
+# unifies features across the members of one build, so under the
+# documented gate (`cargo build`, `cargo test --workspace`) this crate
+# compiles once with `schema` on and every binary in the workspace links
+# schemars. `cargo tree --workspace -i schemars` says so plainly. Keeping
+# them apart would take a separate crate for the derives, which is not
+# worth a build-time dependency.
 schema = ["dep:schemars"]
 
 [dependencies]

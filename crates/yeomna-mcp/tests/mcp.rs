@@ -27,6 +27,21 @@ fn request(id: i64, method: &str, params: Value) -> String {
     json!({"jsonrpc": "2.0", "id": id, "method": method, "params": p}).to_string()
 }
 
+/// Child-spawning tests run one at a time.
+///
+/// **Not a style choice.** These tests write an executable stand-in and
+/// then exec it. When one test is mid-write while another forks, the
+/// forked process briefly holds a writable descriptor to the first
+/// script, and the later exec fails with `ETXTBSY`, "Text file busy".
+/// It reproduced about once in four full runs of this file and surfaced
+/// as a different test each time, which is the shape of a harness race
+/// rather than a defect in what is being tested. Serializing the writes
+/// against the forks closes the window.
+fn serial() -> &'static tokio::sync::Mutex<()> {
+    static S: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
 /// Write an executable stand-in and return its path.
 fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     let p = dir.join(name);
@@ -78,6 +93,24 @@ impl Client {
         serde_json::from_str(&line).unwrap_or_else(|e| panic!("not a JSON-RPC line: {e}: {line:?}"))
     }
 
+    /// Messages that arrive within a window. Lets a test assert that
+    /// something did *not* come back, which a blocking read cannot.
+    async fn drain_for(&mut self, ms: u64) -> Vec<Value> {
+        let mut seen = Vec::new();
+        let deadline = std::time::Duration::from_millis(ms);
+        let started = std::time::Instant::now();
+        while started.elapsed() < deadline {
+            let mut line = String::new();
+            let left = deadline.saturating_sub(started.elapsed());
+            match tokio::time::timeout(left, self.from_server.read_line(&mut line)).await {
+                Ok(Ok(n)) if n > 0 => seen.push(serde_json::from_str(&line).unwrap()),
+                Ok(_) => break,
+                Err(_) => break,
+            }
+        }
+        seen
+    }
+
     /// Close the input, which is the client's shutdown signal (FR11).
     async fn close(&mut self) {
         self.to_server.shutdown().await.unwrap();
@@ -93,6 +126,7 @@ fn local(dir: &Path, body: &str) -> Target {
 #[tokio::test]
 async fn discover_reports_the_version_and_the_tools_capability() {
     // FR1, FR13, FR17.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let mut c = Client::start(local(d.path(), "exit 0"));
     c.send(&request(1, "server/discover", json!({}))).await;
@@ -107,6 +141,7 @@ async fn discover_reports_the_version_and_the_tools_capability() {
 #[tokio::test]
 async fn tools_list_is_the_contract_minus_the_excluded_verb() {
     // FR2, FR2a, FR17.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let mut c = Client::start(local(d.path(), "exit 0"));
     c.send(&request(1, "tools/list", json!({}))).await;
@@ -128,6 +163,7 @@ async fn the_excluded_verb_is_unreachable_through_dispatch_too() {
     // FR2b, and the side door this guards: a server that filtered its
     // list and dispatched from the whole enum would ship a tool nobody
     // advertises and anybody can call.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let mut c = Client::start(local(d.path(), "exit 0"));
     for excluded in tools::EXCLUDED {
@@ -148,6 +184,7 @@ async fn the_excluded_verb_is_unreachable_through_dispatch_too() {
 #[tokio::test]
 async fn an_answer_arrives_as_structured_content() {
     // FR4, FR13.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let body = format!("cat > /dev/null\nprintf '%s' '{OK_ENVELOPE}'\nexit 0");
     let mut c = Client::start(local(d.path(), &body));
@@ -160,7 +197,7 @@ async fn an_answer_arrives_as_structured_content() {
     let r = c.recv().await;
     assert_eq!(r["id"], 7);
     assert_eq!(r["result"]["resultType"], "complete");
-    assert_eq!(r["result"]["isError"], false);
+    assert_eq!(r["result"]["isError"], false, "got {r}");
     assert_eq!(r["result"]["structuredContent"]["data"]["actor"], "todd");
     assert!(
         r["result"]["content"][0]["text"]
@@ -176,6 +213,7 @@ async fn an_answer_arrives_as_structured_content() {
 #[tokio::test]
 async fn a_refusal_is_a_result_the_model_can_read_and_not_a_protocol_error() {
     // FR5. Yeomna's refusals are written to be read.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let envelope = r#"{"success":false,"command":"query","error":"hybrid ranking needs a graph","timestamp":"t"}"#;
     let body = format!("cat > /dev/null\nprintf '%s' '{envelope}'\nexit 1");
@@ -203,6 +241,7 @@ async fn a_refusal_is_a_result_the_model_can_read_and_not_a_protocol_error() {
 #[tokio::test]
 async fn an_unknown_tool_is_a_protocol_error() {
     // FR6.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let mut c = Client::start(local(d.path(), "exit 0"));
     c.send(&request(3, "tools/call", json!({"name": "not.a.verb"})))
@@ -215,6 +254,7 @@ async fn an_unknown_tool_is_a_protocol_error() {
 async fn a_failure_with_nothing_on_stdout_is_never_an_empty_success() {
     // EC-1. A test that checked only the result would read a crash as an
     // empty answer.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let mut c = Client::start(local(
         d.path(),
@@ -241,6 +281,7 @@ async fn the_request_reaches_the_child_on_stdin_byte_for_byte() {
     // arguments into one string and hands it to a shell on the far side,
     // so a request carrying these characters in argv would be
     // interpreted there rather than delivered.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let capture = d.path().join("seen.json");
     let body = format!(
@@ -256,7 +297,7 @@ async fn the_request_reaches_the_child_on_stdin_byte_for_byte() {
     ))
     .await;
     let r = c.recv().await;
-    assert_eq!(r["result"]["isError"], false);
+    assert_eq!(r["result"]["isError"], false, "got {r}");
 
     let seen: Value = serde_json::from_str(&std::fs::read_to_string(&capture).unwrap()).unwrap();
     assert_eq!(seen["verb"], "query");
@@ -272,6 +313,7 @@ async fn the_child_sees_end_of_input_after_exactly_one_request() {
     // stdin stays open waits rather than answering. The symptom of
     // omitting the close is a hang, which is why this stand-in blocks
     // until EOF and the assertion is that the call returns at all.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let body = format!("payload=$(cat)\nprintf '%s' '{OK_ENVELOPE}'\nexit 0");
     let mut c = Client::start(local(d.path(), &body));
@@ -282,7 +324,7 @@ async fn the_child_sees_end_of_input_after_exactly_one_request() {
     ))
     .await;
     let r = c.recv().await;
-    assert_eq!(r["result"]["isError"], false, "the call completed");
+    assert_eq!(r["result"]["isError"], false, "the call completed: {r}");
 }
 
 #[tokio::test]
@@ -292,6 +334,7 @@ async fn a_child_that_floods_stderr_does_not_deadlock_the_call() {
     // stderr pipe buffer: it blocks writing stderr, so it never exits, so
     // stdout never reaches end of input. An ingest that logs is exactly
     // that child, and the symptom is a hang rather than an error.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     // Comfortably past a 64 KiB pipe buffer.
     let body = format!(
@@ -308,7 +351,7 @@ async fn a_child_that_floods_stderr_does_not_deadlock_the_call() {
     .await;
     let r = c.recv().await;
     assert_eq!(r["id"], 41);
-    assert_eq!(r["result"]["isError"], false, "the call completed");
+    assert_eq!(r["result"]["isError"], false, "the call completed: {r}");
 }
 
 #[tokio::test]
@@ -316,6 +359,7 @@ async fn ssh_failing_is_reported_as_the_transport_and_not_as_a_refusal() {
     // FR16, EC-3. `yeomna call` returns only 0, 1, or 2, so 255 is
     // distinguishable, and a caller who cannot tell transport from
     // appliance debugs the wrong machine.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let fake_ssh = script(
         d.path(),
@@ -340,6 +384,7 @@ async fn ssh_failing_is_reported_as_the_transport_and_not_as_a_refusal() {
 async fn an_unexpected_exit_status_is_reported_as_itself() {
     // FR16's other half: a status this contract does not define is not
     // folded into a verb outcome.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let mut c = Client::start(local(d.path(), "cat > /dev/null\nexit 42"));
     c.send(&request(
@@ -361,6 +406,7 @@ async fn nothing_but_mcp_messages_reaches_stdout() {
     // envelope to stdout and the CLI tree puts headers and rows there
     // together, so a child whose stdout were inherited would put a table
     // on the MCP channel.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let body = format!(
         "cat > /dev/null\nprintf 'KIND\\tKEY\\nnode\\ta\\n'\nprintf '%s' '{OK_ENVELOPE}'\n\
@@ -380,7 +426,7 @@ async fn nothing_but_mcp_messages_reaches_stdout() {
     assert!(r["jsonrpc"] == "2.0", "every line is JSON-RPC: {r}");
     assert!(r.get("error").is_some(), "the mixed output did not parse");
     let m = r["error"]["message"].as_str().unwrap();
-    assert!(m.contains("not an envelope"), "got {m:?}");
+    assert!(m.contains("not an envelope"), "got {m:?} in {r}");
     assert!(m.contains("KIND"), "it quotes what arrived: {m:?}");
 }
 
@@ -393,6 +439,7 @@ async fn end_of_input_finishes_work_already_running_before_it_exits() {
     // for work that succeeded. Abandoning committed work is the client's
     // call to make explicitly, never something to infer from a closed
     // pipe.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let body = format!("cat > /dev/null\nsleep 1\nprintf '%s' '{OK_ENVELOPE}'\nexit 0");
     let mut c = Client::start(local(d.path(), &body));
@@ -406,12 +453,13 @@ async fn end_of_input_finishes_work_already_running_before_it_exits() {
     c.close().await;
     let r = c.recv().await;
     assert_eq!(r["id"], 40, "the answer survived the close");
-    assert_eq!(r["result"]["isError"], false);
+    assert_eq!(r["result"]["isError"], false, "got {r}");
 }
 
 #[tokio::test]
 async fn end_of_input_ends_the_session() {
     // FR11.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let mut c = Client::start(local(d.path(), "exit 0"));
     c.send(&request(11, "tools/list", json!({}))).await;
@@ -430,17 +478,27 @@ async fn end_of_input_ends_the_session() {
 
 #[tokio::test]
 async fn a_cancelled_call_is_killed_and_answered_with_nothing() {
-    // FR10, D10. The revision says stop and send nothing further for
-    // that id.
+    // FR10, D10. The first version of this test asserted only that the
+    // next message had the later id, which was true whether or not
+    // cancellation did anything: the stand-in slept longer than the test
+    // ran either way. Deleting the whole cancellation branch left it
+    // passing. This one binds the requirement two ways: the child must
+    // not reach its own finish line, and the cancelled id must produce
+    // no message at all.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
-    let mut c = Client::start(local(d.path(), "cat > /dev/null\nsleep 120\nexit 0"));
+    let finished = d.path().join("finished");
+    let body = format!(
+        "cat > /dev/null\nsleep 2\ntouch '{}'\nprintf '%s' '{OK_ENVELOPE}'\nexit 0",
+        finished.display()
+    );
+    let mut c = Client::start(local(d.path(), &body));
     c.send(&request(
         12,
         "tools/call",
         json!({"name": "status", "arguments": {}}),
     ))
     .await;
-    // Give the child a moment to exist before cancelling it.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     c.send(
         &json!({
@@ -451,11 +509,98 @@ async fn a_cancelled_call_is_killed_and_answered_with_nothing() {
         .to_string(),
     )
     .await;
-    // Nothing for 12, and the session still answers other work, which is
-    // how we know the cancellation did not take the server with it.
     c.send(&request(13, "tools/list", json!({}))).await;
-    let r = c.recv().await;
-    assert_eq!(r["id"], 13, "the only answer is the later request");
+
+    // Well past the stand-in's own sleep, so an uncancelled child would
+    // have finished and answered inside this window.
+    let seen = c.drain_for(3_500).await;
+    let ids: Vec<i64> = seen.iter().filter_map(|m| m["id"].as_i64()).collect();
+    assert!(ids.contains(&13), "the session kept working: {ids:?}");
+    assert!(
+        !ids.contains(&12),
+        "the cancelled id was answered anyway: {ids:?}"
+    );
+    assert!(
+        !finished.exists(),
+        "the child ran to completion, so it was never killed"
+    );
+}
+
+#[tokio::test]
+async fn a_reused_id_is_refused_instead_of_killing_both_calls() {
+    // Found in review. The first build inserted over the live entry in
+    // the in-flight map, which dropped the running call's cancellation
+    // sender. A dropped sender completes its receiver exactly as a real
+    // cancellation does, so both calls were killed and the client got
+    // nothing at all, forever.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let body = format!("cat > /dev/null\nsleep 1\nprintf '%s' '{OK_ENVELOPE}'\nexit 0");
+    let mut c = Client::start(local(d.path(), &body));
+    c.send(&request(
+        50,
+        "tools/call",
+        json!({"name": "status", "arguments": {}}),
+    ))
+    .await;
+    c.send(&request(
+        50,
+        "tools/call",
+        json!({"name": "status", "arguments": {}}),
+    ))
+    .await;
+
+    let seen = c.drain_for(4_000).await;
+    assert_eq!(seen.len(), 2, "both lines were answered: {seen:?}");
+    let refused = seen
+        .iter()
+        .filter(|m| m.get("error").is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(refused.len(), 1, "exactly one was refused for the reuse");
+    assert_eq!(refused[0]["error"]["code"], -32600);
+    let answered = seen.iter().filter(|m| m.get("result").is_some()).count();
+    assert_eq!(answered, 1, "the first call still ran and answered");
+}
+
+#[tokio::test]
+async fn a_message_that_is_not_an_object_is_refused_rather_than_dropped() {
+    // Found in review. A batch array or a bare scalar parses, carries no
+    // `id` and no `method`, and so fell into the notification branch and
+    // vanished. A client that batched its requests waited forever.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let mut c = Client::start(local(d.path(), "exit 0"));
+    for bad in ["[{\"jsonrpc\":\"2.0\"}]", "5", "\"hello\""] {
+        c.send(bad).await;
+        let r = c.recv().await;
+        assert_eq!(r["error"]["code"], -32600, "for {bad}");
+    }
+    c.send(&request(51, "tools/list", json!({}))).await;
+    assert_eq!(c.recv().await["id"], 51, "the session still works");
+}
+
+#[tokio::test]
+async fn more_calls_than_slots_all_complete() {
+    // The concurrency ceiling bounds how many children exist at once. It
+    // must not lose or stall the ones beyond it.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let body = format!("cat > /dev/null\nprintf '%s' '{OK_ENVELOPE}'\nexit 0");
+    let mut c = Client::start(local(d.path(), &body));
+    for id in 60..80 {
+        c.send(&request(
+            id,
+            "tools/call",
+            json!({"name": "status", "arguments": {}}),
+        ))
+        .await;
+    }
+    let mut seen = Vec::new();
+    for _ in 0..20 {
+        seen.push(c.recv().await["id"].as_i64().unwrap());
+    }
+    seen.sort_unstable();
+    assert_eq!(seen, (60..80).collect::<Vec<_>>());
 }
 
 #[tokio::test]
@@ -463,6 +608,7 @@ async fn concurrent_calls_each_get_their_own_child() {
     // EC-6. Each call spawns its own `yeomna call`, its own connection,
     // and its own session, so the appliance's per-session serialization
     // is unaffected.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let body = format!("cat > /dev/null\nsleep 1\nprintf '%s' '{OK_ENVELOPE}'\nexit 0");
     let mut c = Client::start(local(d.path(), &body));
@@ -494,6 +640,7 @@ async fn a_request_without_the_required_metadata_is_invalid_params() {
     // FR14, EC-10, and the connection stays usable afterwards because
     // the protocol is stateless and one bad request is not a broken
     // session.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let mut c = Client::start(local(d.path(), "exit 0"));
     c.send(&json!({"jsonrpc": "2.0", "id": 30, "method": "tools/list"}).to_string())
@@ -520,6 +667,7 @@ async fn a_request_without_the_required_metadata_is_invalid_params() {
 #[tokio::test]
 async fn an_unsupported_version_names_what_is_supported() {
     // FR14's version half.
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let mut c = Client::start(local(d.path(), "exit 0"));
     c.send(
@@ -540,6 +688,7 @@ async fn an_unsupported_version_names_what_is_supported() {
 
 #[tokio::test]
 async fn a_line_that_is_not_json_is_a_parse_error_and_not_a_crash() {
+    let _serial = serial().lock().await;
     let d = tempfile::tempdir().unwrap();
     let mut c = Client::start(local(d.path(), "exit 0"));
     c.send("{not json").await;

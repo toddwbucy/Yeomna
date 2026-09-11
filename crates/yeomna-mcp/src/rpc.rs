@@ -22,8 +22,17 @@ pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
 pub const INTERNAL_ERROR: i64 = -32603;
 /// Defined by MCP, and usable only with its specified meaning.
-pub const MISSING_CAPABILITY: i64 = -32021;
 pub const UNSUPPORTED_VERSION: i64 = -32022;
+
+// MCP also defines `MissingRequiredClientCapability` (-32021), for a
+// request whose handling needs a capability the client did not declare.
+// **No operation on this surface needs one**: `server/discover`,
+// `tools/list`, and `tools/call` are answered from the contract and a
+// subprocess, and none of them asks anything of the client. So the code
+// has no path that raises it, and a constant sitting here unused would
+// imply one exists. It belongs with the first operation that needs a
+// client capability, which on this surface would be a new feature rather
+// than a new error.
 
 const META: &str = "_meta";
 const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
@@ -141,6 +150,8 @@ pub fn check_meta(params: Option<&Value>) -> Result<(), RpcError> {
         }
         Some(_) => {}
     }
+    // Capabilities are required and are checked for shape, not for
+    // content, because nothing here needs a capability from the client.
     if version != PROTOCOL_VERSION {
         return Err(
             RpcError::new(UNSUPPORTED_VERSION, "Unsupported protocol version").with_data(json!({

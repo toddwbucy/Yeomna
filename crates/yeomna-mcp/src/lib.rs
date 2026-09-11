@@ -20,17 +20,26 @@ pub mod tools;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 
 pub use target::Target;
 
 use rpc::{
-    INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR, PROTOCOL_VERSION, RpcError,
-    check_meta, error_response, result_response, with_cache_hints,
+    INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
+    PROTOCOL_VERSION, RpcError, check_meta, error_response, result_response, with_cache_hints,
 };
+
+/// How many verb calls may run at once.
+///
+/// Each one is a process and an appliance session, so an unbounded read
+/// loop turns a client's burst into that many Postgres connections or ssh
+/// channels. The appliance serializes within a session and not across
+/// them, so this is the only place a ceiling exists.
+const MAX_CONCURRENT_CALLS: usize = 8;
 
 /// In-flight calls, so `notifications/cancelled` can reach one.
 type InFlight = Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>;
@@ -66,11 +75,7 @@ fn list_tools() -> Value {
 
 /// `tools/call`: build the verb request, run it on the target, and map
 /// the outcome per D7.
-async fn call_tool(
-    target: &Target,
-    params: Option<&Value>,
-    cancel: oneshot::Receiver<()>,
-) -> Response {
+async fn call_tool(target: &Target, params: Option<&Value>) -> Response {
     let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
         return Response::Error(RpcError::new(
             INVALID_PARAMS,
@@ -107,29 +112,20 @@ async fn call_tool(
         Err(e) => return Response::Error(RpcError::new(rpc::INTERNAL_ERROR, e)),
     };
 
-    tokio::select! {
-        // Cancellation wins, and nothing further is sent for this id.
-        _ = cancel => {
-            running.terminate().await;
-            Response::Silent
-        }
-        outcome = running.finish() => match outcome {
-            target::Outcome::Answered(envelope) => Response::Result(json!({
-                "content": [{"type": "text", "text": text_of(&envelope)}],
-                "structuredContent": envelope,
-                "isError": false,
-            })),
-            // A refusal is a result the model can correct against, never
-            // a JSON-RPC error. Yeomna's refusals are written to be read.
-            target::Outcome::Refused(envelope) => Response::Result(json!({
-                "content": [{"type": "text", "text": text_of(&envelope)}],
-                "structuredContent": envelope,
-                "isError": true,
-            })),
-            target::Outcome::Failed(why) => Response::Error(
-                RpcError::new(rpc::INTERNAL_ERROR, why),
-            ),
-        }
+    match running.finish().await {
+        target::Outcome::Answered(envelope) => Response::Result(json!({
+            "content": [{"type": "text", "text": text_of(&envelope)}],
+            "structuredContent": envelope,
+            "isError": false,
+        })),
+        // A refusal is a result the model can correct against, never a
+        // JSON-RPC error. Yeomna's refusals are written to be read.
+        target::Outcome::Refused(envelope) => Response::Result(json!({
+            "content": [{"type": "text", "text": text_of(&envelope)}],
+            "structuredContent": envelope,
+            "isError": true,
+        })),
+        target::Outcome::Failed(why) => Response::Error(RpcError::new(rpc::INTERNAL_ERROR, why)),
     }
 }
 
@@ -153,19 +149,14 @@ enum Response {
 }
 
 /// Handle one request, metadata checked first.
-async fn handle(
-    target: &Target,
-    method: &str,
-    params: Option<&Value>,
-    cancel: oneshot::Receiver<()>,
-) -> Response {
+async fn handle(target: &Target, method: &str, params: Option<&Value>) -> Response {
     if let Err(e) = check_meta(params) {
         return Response::Error(e);
     }
     match method {
         "server/discover" => Response::Result(discover()),
         "tools/list" => Response::Result(list_tools()),
-        "tools/call" => call_tool(target, params, cancel).await,
+        "tools/call" => call_tool(target, params).await,
         other => Response::Error(RpcError::new(
             METHOD_NOT_FOUND,
             format!("Unknown method: {other}"),
@@ -175,9 +166,12 @@ async fn handle(
 
 /// Serve MCP over a byte stream until end of input.
 ///
-/// Exits promptly when the input closes, cancelling everything still in
-/// flight first, which is the same cleanup a `notifications/cancelled`
-/// runs (D10).
+/// On end of input the server stops accepting requests, **finishes and
+/// answers what is already in flight**, and exits. It does not cancel
+/// that work: abandoning a verb that may already have committed is the
+/// client's call to make explicitly through `notifications/cancelled`,
+/// never something to infer from a closed pipe (D10, as amended by the
+/// build).
 pub async fn serve<R, W>(reader: R, writer: W, target: Target) -> std::io::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send,
@@ -185,13 +179,19 @@ where
 {
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
     // One writer, so concurrent calls cannot interleave a line and so
-    // every byte on this stream is a message this code produced.
+    // every byte on this stream is a message this code produced. It
+    // reports a broken output stream rather than exiting quietly, because
+    // a server that keeps spawning destructive verbs it can no longer
+    // answer is worse than one that stops.
+    let writable = Arc::new(AtomicBool::new(true));
+    let pump_flag = Arc::clone(&writable);
     let pump = tokio::spawn(async move {
         let mut w = writer;
         while let Some(v) = rx.recv().await {
             let line = v.to_string();
             debug_assert!(!line.contains('\n'), "a message must be one line");
             if w.write_all(line.as_bytes()).await.is_err() || w.write_all(b"\n").await.is_err() {
+                pump_flag.store(false, Ordering::SeqCst);
                 break;
             }
             let _ = w.flush().await;
@@ -199,11 +199,34 @@ where
     });
 
     let in_flight: InFlight = Arc::new(Mutex::new(HashMap::new()));
+    // Calls run concurrently, and without a ceiling one client loop turns
+    // into one `yeomna call` process and one appliance session per line.
+    let slots = Arc::new(Semaphore::new(MAX_CONCURRENT_CALLS));
     let target = Arc::new(target);
     let mut lines = BufReader::new(reader).lines();
-    let mut tasks = Vec::new();
+    let mut tasks: Vec<(Value, tokio::task::JoinHandle<()>)> = Vec::new();
 
-    while let Some(line) = lines.next_line().await? {
+    loop {
+        if !writable.load(Ordering::SeqCst) {
+            break;
+        }
+        // Reap finished work as we go, so a long session does not
+        // accumulate a handle per call, and so a handler that panicked
+        // still answers rather than leaving its id unanswered forever.
+        reap(&mut tasks, &tx, false).await;
+
+        let line = match lines.next_line().await {
+            Ok(Some(l)) => l,
+            Ok(None) => break,
+            // A read error ends the session the same way end of input
+            // does. Returning here would skip the join below and abandon
+            // in-flight work, which is the failure the EOF amendment
+            // exists to prevent.
+            Err(e) => {
+                eprintln!("yeomna-mcp: cannot read input: {e}");
+                break;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -217,6 +240,20 @@ where
                 continue;
             }
         };
+        // A batch array or a bare scalar parses but is not a message.
+        // Without this it would fall into the notification branch below
+        // and be dropped in silence, leaving a client that batched its
+        // requests waiting for answers that were never queued.
+        if !message.is_object() {
+            let _ = tx.send(error_response(
+                None,
+                &RpcError::new(
+                    INVALID_REQUEST,
+                    "a message must be a JSON object. This revision has no batch form",
+                ),
+            ));
+            continue;
+        }
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let id = message.get("id").cloned();
 
@@ -245,45 +282,108 @@ where
             continue;
         }
 
+        // **A reused id is refused rather than allowed to overwrite.**
+        // JSON-RPC forbids reusing an id that has not been answered, and
+        // the first build inserted over the old entry, which dropped the
+        // running call's cancellation sender. A dropped sender completes
+        // its receiver exactly as a real cancellation does, so both calls
+        // were killed and neither ever answered.
+        let key = id_key(&id);
+        let mut live = in_flight.lock().await;
+        if live.contains_key(&key) {
+            drop(live);
+            let _ = tx.send(error_response(
+                Some(&id),
+                &RpcError::new(
+                    INVALID_REQUEST,
+                    "this id is already in flight. An id must not be reused until it is answered",
+                ),
+            ));
+            continue;
+        }
         let (stop, cancel) = oneshot::channel();
-        in_flight.lock().await.insert(id_key(&id), stop);
+        live.insert(key.clone(), stop);
+        drop(live);
 
         let tx = tx.clone();
         let target = Arc::clone(&target);
         let in_flight = Arc::clone(&in_flight);
+        let slots = Arc::clone(&slots);
         let method = method.to_string();
         let params = message.get("params").cloned();
-        tasks.push(tokio::spawn(async move {
-            let response = handle(&target, &method, params.as_ref(), cancel).await;
-            in_flight.lock().await.remove(&id_key(&id));
-            match response {
-                Response::Result(r) => {
-                    let _ = tx.send(result_response(&id, r));
+        let task_id = id.clone();
+        tasks.push((
+            id.clone(),
+            tokio::spawn(async move {
+                // Cancellation covers every method, not only `tools/call`.
+                // Dropping the handler future drops the child with it,
+                // and the command carries `kill_on_drop`.
+                let response = tokio::select! {
+                    // A dropped sender resolves to `Err`, which is not a
+                    // cancellation. The pattern disables that branch so
+                    // only a real signal wins.
+                    Ok(()) = cancel => Response::Silent,
+                    r = async {
+                        let _permit = slots.acquire().await;
+                        handle(&target, &method, params.as_ref()).await
+                    } => r,
+                };
+                in_flight.lock().await.remove(&id_key(&task_id));
+                match response {
+                    Response::Result(r) => {
+                        let _ = tx.send(result_response(&task_id, r));
+                    }
+                    Response::Error(e) => {
+                        let _ = tx.send(error_response(Some(&task_id), &e));
+                    }
+                    Response::Silent => {}
                 }
-                Response::Error(e) => {
-                    let _ = tx.send(error_response(Some(&id), &e));
-                }
-                Response::Silent => {}
-            }
-        }));
+            }),
+        ));
     }
 
     // End of input. **In-flight calls are finished and answered, not
-    // cancelled.** The first build of this cancelled them, on a reading
-    // of "exit promptly when stdin closes" that dogfooding falsified: a
-    // client that writes its requests and closes the stream lost every
-    // answer whose call was still running, and worse, a verb that had
-    // already committed left a NULL audit outcome for work that
-    // succeeded. Abandoning committed work is the client's call to make
-    // explicitly, through `notifications/cancelled`, and never something
-    // to infer from a closed pipe. Prompt exit is still honored: nothing
-    // new is accepted, and the binding gives the client SIGTERM and
-    // SIGKILL as its backstop if a call runs longer than it will wait.
-    for t in tasks {
-        let _ = t.await;
-    }
-    in_flight.lock().await.clear();
+    // cancelled.** The first build cancelled them, on a reading of "exit
+    // promptly when stdin closes" that dogfooding falsified: a client
+    // that writes its requests and closes the stream lost every answer
+    // whose call was still running, and worse, a verb that had already
+    // committed left a NULL audit outcome for work that succeeded.
+    // Abandoning committed work is the client's call to make explicitly,
+    // through `notifications/cancelled`, and never something to infer
+    // from a closed pipe. Prompt exit is still honored: nothing new is
+    // accepted, and the binding gives the client SIGTERM and SIGKILL as
+    // its backstop if a call runs longer than it will wait.
+    reap(&mut tasks, &tx, true).await;
     drop(tx);
     let _ = pump.await;
     Ok(())
+}
+
+/// Collect finished handlers, answering for any that died.
+///
+/// A panicking handler never reaches its own `tx.send`, so without this
+/// its id is never answered and the client waits forever. `drain` is true
+/// at end of input, where every remaining task is awaited to completion.
+async fn reap(
+    tasks: &mut Vec<(Value, tokio::task::JoinHandle<()>)>,
+    tx: &mpsc::UnboundedSender<Value>,
+    drain: bool,
+) {
+    let mut keep = Vec::new();
+    for (id, handle) in std::mem::take(tasks) {
+        if !drain && !handle.is_finished() {
+            keep.push((id, handle));
+            continue;
+        }
+        if let Err(e) = handle.await {
+            let _ = tx.send(error_response(
+                Some(&id),
+                &RpcError::new(
+                    INTERNAL_ERROR,
+                    format!("the server failed while handling this request: {e}"),
+                ),
+            ));
+        }
+    }
+    *tasks = keep;
 }

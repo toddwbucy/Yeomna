@@ -234,9 +234,12 @@ log is not the record section 6 promises.
 - **FR14** A request missing `protocolVersion` or `clientCapabilities`,
   or carrying either malformed, is rejected with `-32602`. A version this
   server does not support is rejected with `-32022` listing what it does
-  support. A request whose handling would need an undeclared client
-  capability is rejected with `-32021` naming the missing capabilities in
-  `data.requiredCapabilities`.
+  support. **Build finding:** the `-32021` case has no trigger on this
+  surface and the code therefore has no path that raises it. None of
+  `server/discover`, `tools/list`, or `tools/call` needs anything of the
+  client, so the requirement is vacuous here and is recorded as vacuous
+  rather than implemented as an unreachable branch. It returns with the
+  first operation that needs a client capability.
 - **FR15** The request reaches the child on stdin and is byte-identical
   to what the server built, for both targets, including requests whose
   text contains `'`, `"`, backtick, `$(`, `;`, and a newline. No shell on

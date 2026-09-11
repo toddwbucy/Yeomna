@@ -57,9 +57,15 @@ impl Target {
         }
     }
 
-    /// The same target with another program name. Used by tests to point
-    /// at a stand-in, and deliberately not reachable from the command
-    /// line: what runs on the far side is not a caller's choice.
+    /// The same target with another program name, used by tests to point
+    /// at a stand-in.
+    ///
+    /// Not reachable from the command line, though that buys less than it
+    /// looks: `Target::local` names the program without a path, so `PATH`
+    /// decides which binary runs, and an MCP client launched from a
+    /// desktop session often has a `PATH` that does not include it at
+    /// all. Which binary answers is the operator's to fix by launching
+    /// this process with an environment that resolves it.
     pub fn with_program(self, p: impl Into<String>) -> Self {
         match self {
             Self::Local { .. } => Self::Local { program: p.into() },
@@ -137,10 +143,14 @@ pub enum Outcome {
 }
 
 /// A spawned call, kept separate from its completion so a cancellation
-/// can reach the child.
+/// can reach the child. Dropping it kills the child, because the command
+/// is built with `kill_on_drop`.
 pub struct Running {
     child: Child,
     is_ssh: bool,
+    /// Written to the child's stdin while its output is being drained,
+    /// never before.
+    body: Vec<u8>,
 }
 
 impl Running {
@@ -154,47 +164,66 @@ impl Running {
         let _ = self.child.kill().await;
     }
 
-    /// Wait for the child and read its exit status as an outcome.
+    /// Send the request, drain both pipes, and read the exit status.
     ///
     /// Borrows rather than consumes so a cancellation racing this in a
-    /// `select!` can still reach the child.
+    /// `select!` can drop the whole future and take the child with it.
+    ///
+    /// **Writing and draining happen together, and that is the whole
+    /// shape of this function.** Three pipes can each block the child,
+    /// and doing any of them to completion before the others deadlocks:
+    /// a child that fills its stderr buffer blocks, so it never exits, so
+    /// stdout never reaches end of input. An ingest that logs is exactly
+    /// that child. The same is true of the request going in: `embed.text`
+    /// at the 16,384-token ceiling is well past a 64 KiB pipe, and for
+    /// the ssh target the far side's output fills our unread pipes while
+    /// ssh is still taking our stdin, so writing first can block forever.
+    /// The first build wrote the request before returning `Running`,
+    /// which put that write outside both the drain and the cancellation.
     pub async fn finish(&mut self) -> Outcome {
+        use tokio::io::AsyncReadExt;
         let is_ssh = self.is_ssh;
+        let mut stdin_pipe = self.child.stdin.take();
         let mut stdout_pipe = self.child.stdout.take();
         let mut stderr_pipe = self.child.stderr.take();
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
-        // **Both pipes at once, and this is not a tidiness point.**
-        // Draining stdout to end of file first would deadlock a child
-        // that fills the stderr buffer: it blocks writing stderr, so it
-        // never exits, so stdout never reaches end of file. An ingest
-        // that logs is exactly that child.
-        {
-            use tokio::io::AsyncReadExt;
-            let out = async {
-                if let Some(p) = stdout_pipe.as_mut() {
-                    let _ = p.read_to_end(&mut stdout_buf).await;
-                }
-            };
-            let err = async {
-                if let Some(p) = stderr_pipe.as_mut() {
-                    let _ = p.read_to_end(&mut stderr_buf).await;
-                }
-            };
-            tokio::join!(out, err);
+        let body = std::mem::take(&mut self.body);
+
+        let send = async {
+            if let Some(mut p) = stdin_pipe.take() {
+                let r = p.write_all(&body).await;
+                // The close is the end of the request: `yeomna call -`
+                // reads until end of input, so a child whose stdin stays
+                // open waits rather than answering.
+                drop(p);
+                r
+            } else {
+                Ok(())
+            }
+        };
+        let out = async {
+            if let Some(p) = stdout_pipe.as_mut() {
+                let _ = p.read_to_end(&mut stdout_buf).await;
+            }
+        };
+        let err = async {
+            if let Some(p) = stderr_pipe.as_mut() {
+                let _ = p.read_to_end(&mut stderr_buf).await;
+            }
+        };
+        let (sent, (), ()) = tokio::join!(send, out, err);
+        if let Err(e) = sent {
+            return Outcome::Failed(format!("cannot send the request: {e}"));
         }
+
         let status = match self.child.wait().await {
             Ok(s) => s,
             Err(e) => return Outcome::Failed(format!("could not run the call: {e}")),
         };
-        let out = Out {
-            status,
-            stdout: stdout_buf,
-            stderr: stderr_buf,
-        };
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let code = out.status.code();
+        let stdout = String::from_utf8_lossy(&stdout_buf);
+        let stderr = String::from_utf8_lossy(&stderr_buf);
+        let code = status.code();
 
         // Read the envelope only where an envelope is promised. A parse
         // failure quotes what arrived, truncated, because a failure that
@@ -244,13 +273,6 @@ impl Running {
     }
 }
 
-/// What a finished child produced.
-struct Out {
-    status: std::process::ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
 /// The first non-empty line of either stream, for an error message that
 /// says something without pasting a whole log into the model's context.
 fn first_line(stderr: &str, stdout: &str) -> String {
@@ -262,31 +284,19 @@ fn first_line(stderr: &str, stdout: &str) -> String {
     "it said nothing".into()
 }
 
-/// Spawn the call and hand it the request on stdin.
+/// Spawn the call, carrying the request for `finish` to send.
 ///
-/// Exactly one request is written and stdin is then closed, because
-/// `yeomna call -` reads until end of input and a child whose stdin stays
-/// open waits rather than answering. **Omitting the close hangs the call
-/// instead of failing it** (FR18).
+/// Nothing is written here: the write belongs beside the drain, for the
+/// reasons on `finish`.
 pub async fn start(target: &Target, request: &Value) -> Result<Running, String> {
     let body = serde_json::to_vec(request).map_err(|e| format!("cannot serialize: {e}"))?;
-    let mut child = target
+    let child = target
         .command()
         .spawn()
         .map_err(|e| format!("cannot start the call: {e}"))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "the call has no stdin".to_string())?;
-    if let Err(e) = stdin.write_all(&body).await {
-        let _ = child.kill().await;
-        return Err(format!("cannot send the request: {e}"));
-    }
-    // The close is the end of the request. Dropping the handle is what
-    // sends it, and it is load bearing rather than tidiness.
-    drop(stdin);
     Ok(Running {
         child,
         is_ssh: target.is_ssh(),
+        body,
     })
 }

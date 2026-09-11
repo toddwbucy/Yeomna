@@ -59,14 +59,50 @@ impl Tool {
     }
 }
 
-/// True when any `$ref` appears anywhere in the subtree, which is what
-/// decides whether a tool needs the definitions carried with it.
-fn contains_ref(v: &Value) -> bool {
+/// Every `#/$defs/<name>` this subtree points at, directly.
+fn refs_in(v: &Value, out: &mut Vec<String>) {
     match v {
-        Value::Object(m) => m.iter().any(|(k, x)| k == "$ref" || contains_ref(x)),
-        Value::Array(a) => a.iter().any(contains_ref),
-        _ => false,
+        Value::Object(m) => {
+            for (k, x) in m {
+                if k == "$ref"
+                    && let Some(name) = x.as_str().and_then(|s| s.strip_prefix("#/$defs/"))
+                {
+                    out.push(name.to_string());
+                }
+                refs_in(x, out);
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|x| refs_in(x, out)),
+        _ => {}
     }
+}
+
+/// The definitions a schema actually reaches, following references
+/// through the definitions themselves.
+///
+/// **Carrying the whole `$defs` map instead is what the first build did,
+/// and it was wrong in a way worth naming.** Three tools grew to about
+/// 10 KB each out of a 46.8 KB `tools/list`, most of it definitions
+/// nothing in that tool points at, and `tools/list` lands in the model's
+/// context every session. Worse, the map carries `SqlRequest`, so the
+/// verb R29 deliberately kept off this surface had its schema shipped to
+/// the model anyway. An exclusion that leaves the shape behind is not an
+/// exclusion.
+fn reachable(schema: &Value, defs: &Map<String, Value>) -> Map<String, Value> {
+    let mut want = Vec::new();
+    refs_in(schema, &mut want);
+    let mut taken = Map::new();
+    while let Some(name) = want.pop() {
+        if taken.contains_key(&name) {
+            continue;
+        }
+        let Some(body) = defs.get(&name) else {
+            continue;
+        };
+        taken.insert(name, body.clone());
+        refs_in(body, &mut want);
+    }
+    taken
 }
 
 /// The definition a `#/$defs/<name>` pointer names, if it is that shape.
@@ -138,13 +174,14 @@ fn derive() -> Vec<Tool> {
             // An inlined schema is legal too, and costs nothing to accept.
             None => args.clone(),
         };
-        // Carry the definitions only when something points at them, so a
-        // verb taking nothing keeps the exact empty-object shape the
-        // revision recommends rather than growing a `$defs` it never uses.
-        if contains_ref(&schema)
+        // Carry only what this tool reaches, so a verb taking nothing
+        // keeps the exact empty-object shape the revision recommends and
+        // no tool ships a definition it cannot use.
+        let needed = reachable(&schema, &defs);
+        if !needed.is_empty()
             && let Some(m) = schema.as_object_mut()
         {
-            m.insert("$defs".into(), Value::Object(defs.clone()));
+            m.insert("$defs".into(), Value::Object(needed));
         }
         out.push(Tool {
             name,
@@ -277,6 +314,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn no_tool_carries_a_definition_it_cannot_reach() {
+        // The first build copied the whole `$defs` map into any tool with
+        // a reference, which shipped `SqlRequest` to the model despite
+        // R29 and tripled the payload.
+        for t in tools() {
+            let Some(defs) = t.input_schema.get("$defs").and_then(Value::as_object) else {
+                continue;
+            };
+            let mut pointed = Vec::new();
+            refs_in(&t.input_schema, &mut pointed);
+            for name in defs.keys() {
+                assert!(
+                    pointed.contains(name),
+                    "{} carries {name}, which nothing in it points at",
+                    t.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_excluded_verbs_schema_never_reaches_the_model() {
+        // R29 keeps `sql` off this surface. A tool list that still
+        // carries `SqlRequest` has excluded the name and shipped the
+        // shape, which is not an exclusion.
+        let all =
+            serde_json::to_string(&tools().iter().map(Tool::to_json).collect::<Vec<_>>()).unwrap();
+        assert!(
+            !all.contains("SqlRequest"),
+            "the excluded verb's request schema is in the tool list"
+        );
     }
 
     #[test]
