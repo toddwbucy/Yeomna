@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 /// as the R4 close made executable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verb", content = "args", deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Verb {
     // -- Orientation (Phase 2) --------------------------------------------
     /// Per-graph survey (V-Q3): what a KG is about and where it stands.
@@ -171,11 +172,13 @@ pub enum Verb {
 /// The empty request, for verbs that take nothing.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Empty {}
 
 /// A request scoped to one graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GraphScoped {
     pub graph: String,
 }
@@ -183,6 +186,7 @@ pub struct GraphScoped {
 /// A graph name for lifecycle verbs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GraphName {
     pub name: String,
 }
@@ -190,6 +194,7 @@ pub struct GraphName {
 /// A node addressed within a graph.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GraphKey {
     pub graph: String,
     pub key: String,
@@ -198,6 +203,7 @@ pub struct GraphKey {
 /// A document addressed by kind and key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct KindKey {
     pub kind: String,
     pub key: String,
@@ -208,6 +214,7 @@ pub struct KindKey {
 /// an identifier and deliberately not enumerated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EdgeAssertRequest {
     pub from: String,
     pub to: String,
@@ -222,6 +229,7 @@ pub struct EdgeAssertRequest {
 /// One asserted edge to remove (R18).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EdgeRetractRequest {
     pub from: String,
     pub to: String,
@@ -230,6 +238,7 @@ pub struct EdgeRetractRequest {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OrientRequest {
     /// Survey this graph, or all graphs when absent (V-Q3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -238,12 +247,14 @@ pub struct OrientRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CheckRequest {
     pub key: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct StatsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<String>,
@@ -251,6 +262,7 @@ pub struct StatsRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct QueryRequest {
     pub search_text: String,
     #[serde(default = "default_limit")]
@@ -268,6 +280,7 @@ pub struct QueryRequest {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ListRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
@@ -282,6 +295,7 @@ pub struct ListRequest {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CountRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
@@ -289,6 +303,7 @@ pub struct CountRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RecentRequest {
     #[serde(default = "default_limit")]
     pub limit: u32,
@@ -296,6 +311,7 @@ pub struct RecentRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WriteRequest {
     pub kind: String,
     pub key: String,
@@ -304,6 +320,7 @@ pub struct WriteRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PurgeRequest {
     pub key: String,
     /// Skip confirmation. The daemon has no prompt, so this is the
@@ -314,6 +331,7 @@ pub struct PurgeRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TraverseRequest {
     pub graph: String,
     pub start: String,
@@ -332,6 +350,7 @@ pub struct TraverseRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct NeighborsRequest {
     pub graph: String,
     pub key: String,
@@ -348,6 +367,7 @@ pub struct NeighborsRequest {
 /// Edge direction for neighbor queries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum Direction {
     Out,
     In,
@@ -357,6 +377,7 @@ pub enum Direction {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ShortestPathRequest {
     pub graph: String,
     pub from: String,
@@ -375,6 +396,7 @@ pub struct ShortestPathRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DropRequest {
     pub name: String,
     /// The audit-carried acknowledgement for a destructive verb.
@@ -384,6 +406,7 @@ pub struct DropRequest {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SchemaApplyRequest {
     /// Target database, defaulting to the session's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -392,6 +415,7 @@ pub struct SchemaApplyRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DatabaseCreateRequest {
     pub name: String,
     pub kind: DatabaseKind,
@@ -400,6 +424,7 @@ pub struct DatabaseCreateRequest {
 /// What a new database is born as (V-Q4: the pattern is stampable).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum DatabaseKind {
     /// The yeomna pattern: schema applied at birth, content through verbs.
     Kg,
@@ -409,6 +434,7 @@ pub enum DatabaseKind {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SqlRequest {
     /// Target database. KG-pattern targets are refused at runtime.
     pub database: String,
@@ -418,6 +444,7 @@ pub struct SqlRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EmbedTextRequest {
     pub text: String,
     /// The embedder task name (retrieval, passage, and friends).
@@ -427,6 +454,7 @@ pub struct EmbedTextRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GraphEmbedNeighborsRequest {
     pub graph: String,
     pub key: String,
@@ -436,6 +464,7 @@ pub struct GraphEmbedNeighborsRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct GraphEmbedUpdateRequest {
     pub graph: String,
     /// What to refresh: everything, or only stale rows.
@@ -446,6 +475,7 @@ pub struct GraphEmbedUpdateRequest {
 /// Refresh scope for embedding updates.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum UpdateScope {
     #[default]
     Stale,
@@ -454,6 +484,7 @@ pub enum UpdateScope {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IngestRequest {
     pub path: String,
     pub graph: String,
@@ -479,6 +510,7 @@ pub struct IngestRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RetireRequest {
     pub graph: String,
     /// Retire under this path prefix, and only what the tree no longer
@@ -498,6 +530,7 @@ pub struct RetireRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DropScoped {
     pub graph: String,
     #[serde(default)]
@@ -506,6 +539,7 @@ pub struct DropScoped {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DriftRequest {
     pub graph: String,
     /// The working tree to compare against.

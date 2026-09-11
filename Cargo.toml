@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/yeomna-chunking", "crates/yeomna-keys", "crates/yeomna-batch", "crates/yeomna-proto", "crates/yeomna-embed", "crates/yeomna-code", "crates/yeomna-pipeline", "crates/yeomna-store", "crates/yeomna-verbs", "crates/yeomna-cli", "crates/yeomna-daemon"]
+members = ["crates/yeomna-chunking", "crates/yeomna-keys", "crates/yeomna-batch", "crates/yeomna-proto", "crates/yeomna-embed", "crates/yeomna-code", "crates/yeomna-pipeline", "crates/yeomna-store", "crates/yeomna-verbs", "crates/yeomna-cli", "crates/yeomna-daemon", "crates/yeomna-mcp"]
 resolver = "2"
 
 [workspace.package]
@@ -28,6 +28,10 @@ tracing = "0.1"
 # than being formatted into a string in SQL (spec 012).
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
 anyhow = "1"
+# JSON Schema from the contract's own types, for the MCP tool list
+# (spec 024 D5). Pinned major: the rendering of an adjacently-tagged enum
+# is a shape this build depends on, measured 2026-09-10.
+schemars = "1"
 tempfile = "3"
 tonic = "0.13"
 prost = "0.13"

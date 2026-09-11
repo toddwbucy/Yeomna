@@ -6,7 +6,8 @@ since no verb refuses for want of this. Ruled by that PRD's D1 through
 D13, and by **R29, ruled by Todd 2026-09-11: tool abstractions only, so
 `sql` is excluded from this surface by name.** The verb itself is
 untouched and stays reachable through `yeomna call` and the CLI tree.
-Status: draft, 2026-09-11. Revised twice on 2026-09-10 for CodeRabbit's
+Status: built 2026-09-11, with one amendment recorded in Task Scope from
+a build finding about stdin EOF. Revised twice on 2026-09-10 for CodeRabbit's
 protocol and transport findings (round one: six applied, one referred to
 Todd, round two: four applied, one of which corrected a wrong claim about
 where a session-scoped verb gets its graph), then again for R29's ruling.
@@ -129,9 +130,19 @@ log is not the record section 6 promises.
   only 0, 1, or 2, so an ssh exit of 255 is ssh's own failure and every
   other unexpected status is reported as itself rather than mapped onto a
   verb outcome.
-- `notifications/cancelled`: terminate and reap the in-flight child, send
-  nothing further for that id, and apply the same cleanup to every
-  in-flight call on stdin EOF.
+- `notifications/cancelled`: terminate and reap the in-flight child and
+  send nothing further for that id.
+- **Build finding, 2026-09-11, amending this spec.** The draft above said
+  the same cleanup runs on stdin EOF, and the first build did that.
+  Dogfooding falsified it: a client that writes its requests and closes
+  the stream loses every answer whose call is still running, and a verb
+  that had already committed leaves a NULL audit outcome for work that
+  succeeded. **On EOF the server finishes and answers what is already in
+  flight, then exits.** Abandoning committed work is the client's call to
+  make explicitly through `notifications/cancelled` and never something to
+  infer from a closed pipe. Prompt exit is still honored, since nothing
+  new is accepted and the binding gives the client SIGTERM and SIGKILL as
+  its backstop.
 
 ## Out of Scope
 
@@ -211,7 +222,9 @@ log is not the record section 6 promises.
   than a service account.
 - **FR10** `notifications/cancelled` for an in-flight id kills the child
   and produces no further message for that id.
-- **FR11** stdin EOF exits the process promptly.
+- **FR11** stdin EOF stops accepting new requests, finishes and answers
+  what is already in flight, and then exits. It does not cancel work
+  (see the build finding in Task Scope).
 - **FR12** Exactly one of `--local` and `--ssh` is required. Neither, or
   both, is a usage error.
 - **FR13** Every result carries `resultType: "complete"`, including
@@ -221,9 +234,12 @@ log is not the record section 6 promises.
 - **FR14** A request missing `protocolVersion` or `clientCapabilities`,
   or carrying either malformed, is rejected with `-32602`. A version this
   server does not support is rejected with `-32022` listing what it does
-  support. A request whose handling would need an undeclared client
-  capability is rejected with `-32021` naming the missing capabilities in
-  `data.requiredCapabilities`.
+  support. **Build finding:** the `-32021` case has no trigger on this
+  surface and the code therefore has no path that raises it. None of
+  `server/discover`, `tools/list`, or `tools/call` needs anything of the
+  client, so the requirement is vacuous here and is recorded as vacuous
+  rather than implemented as an unreachable branch. It returns with the
+  first operation that needs a client capability.
 - **FR15** The request reaches the child on stdin and is byte-identical
   to what the server built, for both targets, including requests whose
   text contains `'`, `"`, backtick, `$(`, `;`, and a newline. No shell on
@@ -291,8 +307,8 @@ log is not the record section 6 promises.
   `protocolVersion` as a number: `-32602`, and the connection stays
   usable, because the protocol is stateless and one bad request is not a
   broken session.
-- **EC-11** A cancelled or disconnected call whose remote verb is already
-  inside its transaction: the local child is terminated and reaped and
+- **EC-11** A cancelled call whose remote verb is already inside its
+  transaction: the local child is terminated and reaped and
   nothing further is sent for that id, and the remote verb may still run
   to completion. ssh does not forward signals without a tty, and closing
   the channel leaves the far side to notice. This is stated rather than
