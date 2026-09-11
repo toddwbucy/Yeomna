@@ -1,7 +1,7 @@
 # PRD: The MCP Front End
 
 Parent: `README.md`, the Yeomna Charter, sections 5.2 and 6.
-Status: draft v0.4, 2026-09-11.
+Status: v0.5, 2026-09-11. Phases 1 and 2 built.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually. These govern prose. Rust, JSON,
@@ -13,6 +13,7 @@ and SQL keep their syntax.
 |---|---|---|
 | 0.1 | 2026-09-10 | First draft. Unparks MCP for the stdio case only, on Todd's direction, and front-loads thirteen decisions plus one open ruling. |
 | 0.2 | 2026-09-10 | Review pass. D7 gained `resultType` and the ssh-255 distinction, D10 became the fuller cancellation rule, and D12 and D13 are new: the request travels on stdin rather than argv, and the target owns which database a call reaches. The argv finding was a real defect. |
+| 0.5 | 2026-09-11 | Built as spec 024. **D10 amended by a build finding**: end of input finishes in-flight work rather than cancelling it, because the first build's reading lost answers for calls that had already committed. Everything else built as decided. |
 | 0.4 | 2026-09-11 | **R29 ruled by Todd: tool abstractions only, `sql` excluded by name.** D6 goes to 41 of 42 and the R29 section records the reasoning, including that the exclusion rests on section 6's sentence and on authorship rather than on a hazard, since R17a already makes the corpus structurally unreachable. The verb itself is untouched and stays reachable through `yeomna call` and the CLI. |
 | 0.3 | 2026-09-10 | Second review pass. **D13 was wrong and is rewritten**: `QueryRequest` carries no `graph` field and `hybrid` reads the session's scope, so a session-scoped verb takes its graph from the target's config and not from the tool's arguments. D12 gained the stdin-close requirement, the caching contract is stated for the two cacheable operations, and the architecture diagram and Phase 2 example were still showing the argv form v0.2 had abolished. |
 
@@ -345,10 +346,19 @@ disagree. The laptop needs no `/etc/yeomna`.
 do-not-reproduce item, and keeps a front-end concern out of a surface
 the charter says is the only surface.
 
-**D10. Cancellation terminates what this process owns, and says so.**
-`notifications/cancelled` means stop and send nothing further for that
-id, and the same cleanup runs for every in-flight call on stdin EOF. The
-local child is terminated and reaped in both cases. **A remote verb
+**D10. Cancellation terminates what this process owns, and says so. End
+of input does not.** `notifications/cancelled` means stop and send nothing
+further for that id, and the local child is terminated and reaped.
+
+**Amended 2026-09-11 by a build finding.** This decision first said the
+same cleanup runs on stdin EOF, and dogfooding falsified it inside an
+hour: a client that writes its requests and closes the stream lost every
+answer whose call was still running, and a verb that had already
+committed left a NULL audit outcome for work that succeeded. On EOF the
+server finishes and answers what is in flight, then exits. Abandoning
+committed work is the client's call to make explicitly and never
+something to infer from a closed pipe, and the binding already gives the
+client SIGTERM and SIGKILL if a call outlasts its patience. **A remote verb
 already inside its transaction may still run to completion**, because ssh
 does not forward signals without a tty. This is named rather than papered
 over, and the existing audit design is what makes it visible: the row

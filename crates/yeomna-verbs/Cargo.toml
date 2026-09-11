@@ -6,8 +6,15 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# The MCP front end derives its tool schemas from this crate's types
+# (spec 024 D5). Non-default so the CLI and the daemon do not carry
+# schemars for a surface they are not.
+schema = ["dep:schemars"]
+
 [dependencies]
 chrono.workspace = true
+schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
