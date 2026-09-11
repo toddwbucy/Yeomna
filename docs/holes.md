@@ -1,8 +1,11 @@
 # The Holes Ledger
 
-Status: v2.5, 2026-09-11. **The MCP front end is specified and MCP is
-unparked for the stdio case** (PR #57): `docs/PRD-mcp-front-end.md` and
-spec 024, documents only, no code yet. It is a new surface rather than a
+Status: v2.6, 2026-09-11. **The MCP front end is built** (spec 024, PRs
+#57 and #59). A twelfth crate, `yeomna-mcp`, serves 41 of the 42 verbs as
+model-controlled tools over stdio, with ssh as the remote leg. **508 tests
+green three times.** The actor property is verified against the live
+appliance rather than argued: a tool call leaves the same audit row a
+direct `yeomna call` writes. It is a new surface rather than a
 hole, since no verb refuses for want of it. The transport is stdio with
 ssh as the remote leg, chosen so that a call from a second machine lands
 here as a real uid and every audit row stays kernel-named. The streamable

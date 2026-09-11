@@ -59,11 +59,19 @@ before touching the embedding path:
   tail out of vector search while leaving it in keyword search with
   nothing saying so.
 
-**MCP is unparked for the stdio case, and specified rather than built**
-(PR #57, merged 2026-09-11). `docs/PRD-mcp-front-end.md` and spec 024 are
-documents only: no crate exists yet. Read the PRD before writing any of
-it, because five things in it are load bearing and one of them corrects a
-claim the first draft got wrong.
+**MCP is unparked for the stdio case and built** (spec 024, PRs #57 and
+#59, merged 2026-09-11). `crates/yeomna-mcp` is the twelfth crate and
+serves 41 of the 42 verbs as model-controlled tools over stdio, with ssh
+as the remote leg. `yeomna-verbs` carries a non-default `schema` feature
+for the derives. **508 is what `cargo test --workspace` now reports.**
+
+Run it as `yeomna-mcp --local` or `yeomna-mcp --ssh <destination>`. Which
+database and which session graph a call reaches is the target's business,
+from the config where `yeomna call` runs, so reaching a KG for
+`query --hybrid` needs a config naming both.
+
+Read the PRD before touching it. Five things in it are load bearing, and
+the build and its review corrected several claims that looked settled.
 
 - **The transport is stdio and the remote leg is ssh, chosen for the actor
   rather than for convenience** (D1, D2). A call from another machine
@@ -100,6 +108,23 @@ claim the first draft got wrong.
   `inputSchema` is not liftable straight out of its entry, and a builder
   who assumes otherwise ships 42 dangling references that no count test
   can see.
+
+Four things the build and its review established, each of which cost a
+defect to learn:
+
+- **End of input finishes in-flight work, it does not cancel it**, which
+  amends D10. A client that writes its requests and closes the stream must
+  still get its answers, and a verb that already committed must not leave a
+  NULL audit outcome for work that succeeded.
+- **Three pipes can each block the child, so the request write and both
+  drains happen in one `join!`.** Doing any of them to completion first
+  deadlocks, and an ingest that logs is exactly the child that triggers it.
+- **A dropped `oneshot::Sender` is indistinguishable from a fired one.** A
+  reused request id used to overwrite the in-flight entry, which killed
+  both calls and answered neither. Ids are refused on reuse and the select
+  arm matches `Ok(())`.
+- **An answer over 16 MiB is refused, never truncated**, matching the
+  daemon's frame cap (R21 D5) on the embedder PRD's D5 reasoning.
 
 **R29 is ruled (Todd, 2026-09-11): tool abstractions only, so the MCP
 surface carries 41 of the 42 and `sql` is excluded by name.** MCP defines
