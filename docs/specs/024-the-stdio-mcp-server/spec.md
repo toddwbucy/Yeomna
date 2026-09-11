@@ -251,6 +251,25 @@ wrong to schedule it here.
   `server/discover`, `tools/list`, a successful `tools/call`, and a
   `tools/call` that returns `isError: true`. A refusal is a result and so
   it carries `resultType` too.
+- **FR13a** The era is judged by
+  `_meta.io.modelcontextprotocol/protocolVersion` and never by the
+  presence of `_meta`. **`_meta` is the specification's open extension
+  slot**, a `progressToken` lives in it in every era, and reading the
+  block's presence as a promise about this server's own keys refuses
+  ordinary client behaviour.
+- **FR13b** An era settled by a handshake is never promoted away. A single
+  request carrying an extension block used to flip an established session
+  to the modern era for the rest of the process, so every later request
+  failed too: one progress token poisoned the whole connection.
+- **FR13c** A target may be pointed at a config with `--config <path>`, a
+  path on the machine that runs the call. **With `--ssh` this is the only
+  way**, because ssh forwards no environment (`LANG` and `LC_*` only,
+  absent `SendEnv` and `AcceptEnv` on both ends), so a `YEOMNA_CONFIG` set
+  beside the local process names a path on the wrong machine and is read by
+  nobody, and the remote falls back to its own resolution, which is a
+  different database and no session graph. The path is restricted to what a
+  path needs and nothing a shell reads as syntax, because it reaches a
+  shell on the far side.
 - **FR14a** An `initialize` request is answered with an
   `InitializeResult` naming a negotiated version, the `tools` capability,
   and this server's identity. A version this server knows is echoed back,
@@ -412,8 +431,8 @@ DON'T:
 
 - `cargo build`, `cargo test` (3x, cluster up), `cargo clippy
   --all-targets`, `cargo fmt --check`, all clean.
-- Tests cover FR1 through FR18, FR2a, FR2b, FR3a, and FR14a through
-  FR14c, and EC-1 through EC-11.
+- Tests cover FR1 through FR18, FR2a, FR2b, FR3a, FR13a through FR13c,
+  and FR14a through FR14c, and EC-1 through EC-11.
 - An end-to-end check from the laptop: `yeomna-mcp --ssh olympus`, a
   `tools/list`, a `query --hybrid` tool call against the `weavertools`
   graph, and the audit row read back on the appliance. **Which database

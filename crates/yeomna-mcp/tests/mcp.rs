@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
-use yeomna_mcp::{Target, serve, tools};
+use yeomna_mcp::{RemoteConfig, Target, serve, tools};
 
 const VERSION: &str = "2026-07-28";
 
@@ -65,7 +65,7 @@ impl Client {
         let (to_server, server_reads) = tokio::io::duplex(64 * 1024);
         let (server_writes, from_server) = tokio::io::duplex(1024 * 1024);
         tokio::spawn(async move {
-            let _ = serve(server_reads, server_writes, target).await;
+            let _ = serve(server_reads, server_writes, target, RemoteConfig::default()).await;
         });
         Self {
             to_server,
@@ -811,6 +811,76 @@ async fn a_client_that_opens_with_a_handshake_is_served() {
     .await;
     let r = c.recv().await;
     assert_eq!(r["result"]["isError"], false, "got {r}");
+}
+
+#[tokio::test]
+async fn an_extension_block_carrying_only_a_progress_token_is_ordinary() {
+    // **Two defects in one sequence, both reported from a live session.**
+    // `_meta` is the specification's open extension slot and a
+    // `progressToken` lives in it in every era, so reading the block's
+    // presence as a promise about this server's own keys refused ordinary
+    // client behaviour. Worse, the era was promoted on sight, so that one
+    // request flipped an established handshake session to the modern era
+    // for the rest of the process and every later request failed too. One
+    // progress token poisoned the whole connection.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let body = format!("cat > /dev/null\nprintf '%s' '{OK_ENVELOPE}'\nexit 0");
+    let mut c = Client::start(local(d.path(), &body));
+    c.send(&initialize(0, "2025-06-18")).await;
+    let _ = c.recv().await;
+
+    // The block, carrying a key that belongs to no era in particular.
+    c.send(&legacy_request(
+        1,
+        "tools/list",
+        json!({"_meta": {"progressToken": 1}}),
+    ))
+    .await;
+    let r = c.recv().await;
+    assert!(
+        r.get("error").is_none(),
+        "a progress token is not an era: {r}"
+    );
+    assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 41);
+
+    // And the session is not poisoned: a plain request still works, which
+    // is the half that made this fatal rather than annoying.
+    c.send(&legacy_request(2, "tools/list", json!({}))).await;
+    let r = c.recv().await;
+    assert!(r.get("error").is_none(), "the session survived: {r}");
+
+    // Including a call that reaches the appliance.
+    c.send(&legacy_request(
+        3,
+        "tools/call",
+        json!({"name": "status", "arguments": {}, "_meta": {"progressToken": "abc"}}),
+    ))
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r["result"]["isError"], false, "got {r}");
+}
+
+#[tokio::test]
+async fn the_modern_era_still_wants_its_version_on_every_request() {
+    // The fix must not loosen the modern era: the version key is required
+    // per request there, and an extension block without it is malformed.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let mut c = Client::start(local(d.path(), "exit 0"));
+    // A well-formed modern request settles the era.
+    c.send(&request(1, "tools/list", json!({}))).await;
+    assert_eq!(c.recv().await["id"], 1);
+    // Then one carrying only a progress token, with no handshake behind
+    // it, is still the modern era's malformed case.
+    c.send(&legacy_request(
+        2,
+        "tools/list",
+        json!({"_meta": {"progressToken": 9}}),
+    ))
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r["error"]["code"], -32602, "got {r}");
 }
 
 #[tokio::test]

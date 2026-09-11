@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 
-pub use target::Target;
+pub use target::{RemoteConfig, Target};
 
 use rpc::{
     Era, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
@@ -75,7 +75,12 @@ fn list_tools(modern: bool) -> Value {
 
 /// `tools/call`: build the verb request, run it on the target, and map
 /// the outcome per D7.
-async fn call_tool(target: &Target, params: Option<&Value>, slots: &Semaphore) -> Response {
+async fn call_tool(
+    target: &Target,
+    config: &RemoteConfig,
+    params: Option<&Value>,
+    slots: &Semaphore,
+) -> Response {
     let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
         return Response::Error(RpcError::new(
             INVALID_PARAMS,
@@ -112,7 +117,7 @@ async fn call_tool(target: &Target, params: Option<&Value>, slots: &Semaphore) -
     // process behind them, so making them queue behind eight running
     // verbs would be a ceiling on the wrong thing.
     let _permit = slots.acquire().await;
-    let mut running = match target::start(target, &request).await {
+    let mut running = match target::start(target, config, &request).await {
         Ok(r) => r,
         Err(e) => return Response::Error(RpcError::new(rpc::INTERNAL_ERROR, e)),
     };
@@ -162,6 +167,7 @@ enum Response {
 /// unreachable from the client it was built for.
 async fn handle(
     target: &Target,
+    config: &RemoteConfig,
     method: &str,
     params: Option<&Value>,
     slots: &Semaphore,
@@ -178,7 +184,7 @@ async fn handle(
         "ping" => Response::Result(json!({})),
         "server/discover" => Response::Result(discover(modern)),
         "tools/list" => Response::Result(list_tools(modern)),
-        "tools/call" => call_tool(target, params, slots).await,
+        "tools/call" => call_tool(target, config, params, slots).await,
         other => Response::Error(RpcError::new(
             METHOD_NOT_FOUND,
             format!("Unknown method: {other}"),
@@ -194,7 +200,12 @@ async fn handle(
 /// client's call to make explicitly through `notifications/cancelled`,
 /// never something to infer from a closed pipe (D10, as amended by the
 /// build).
-pub async fn serve<R, W>(reader: R, writer: W, target: Target) -> std::io::Result<()>
+pub async fn serve<R, W>(
+    reader: R,
+    writer: W,
+    target: Target,
+    config: RemoteConfig,
+) -> std::io::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -231,6 +242,7 @@ where
     // into one `yeomna call` process and one appliance session per line.
     let slots = Arc::new(Semaphore::new(MAX_CONCURRENT_CALLS));
     let target = Arc::new(target);
+    let config = Arc::new(config);
     let mut lines = BufReader::new(reader).lines();
     let mut tasks: Vec<(Value, tokio::task::JoinHandle<()>)> = Vec::new();
 
@@ -341,15 +353,26 @@ where
             continue;
         }
 
-        // Which era this request is in. Metadata present means the modern
-        // one, whatever came before. Absent means the older one if a
-        // handshake established it, and otherwise the modern era's
-        // malformed case, which `check_meta` reports with both eras named.
-        let request_era = if message.pointer("/params/_meta").is_some() {
+        // Which era this request is in, and **two things here were wrong
+        // the first time.**
+        //
+        // The era was read off the presence of `_meta`. That block is the
+        // specification's open extension slot and a `progressToken` lives
+        // in it in every era, so an ordinary legacy request carrying one
+        // was taken for a modern request and refused for want of keys it
+        // never promised. The marker is the version key, not the block.
+        //
+        // And the era was promoted on sight, which let that same request
+        // flip an established handshake session to modern **for the rest
+        // of the process**, so every later request failed too. One
+        // progress token poisoned the whole connection. A handshake
+        // settles the era for the life of the stdio process, which is the
+        // scope that revision gives it, so it is never promoted away.
+        let request_era = if era == Era::Legacy {
+            Era::Legacy
+        } else if rpc::declares_modern(&message) {
             era = Era::Modern;
             Era::Modern
-        } else if era == Era::Legacy {
-            Era::Legacy
         } else {
             Era::Undetermined
         };
@@ -379,6 +402,7 @@ where
 
         let tx = tx.clone();
         let target = Arc::clone(&target);
+        let config = Arc::clone(&config);
         let in_flight = Arc::clone(&in_flight);
         let slots = Arc::clone(&slots);
         let method = method.to_string();
@@ -406,7 +430,8 @@ where
                         // not a cancellation. The pattern disables that
                         // branch so only a real signal wins.
                         Ok(()) = cancel => Response::Silent,
-                        r = handle(&target, &method, params.as_ref(), &slots, request_era.clone()) => r,
+                        r = handle(&target, &config, &method, params.as_ref(), &slots, request_era.clone())
+                        => r,
                     };
                     match response {
                         Response::Result(r) => {

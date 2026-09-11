@@ -1,7 +1,7 @@
 # PRD: The MCP Front End
 
 Parent: `README.md`, the Yeomna Charter, sections 5.2 and 6.
-Status: v0.7, 2026-09-11. Phases 1 and 2 built, and they are all the phases there are.
+Status: v0.8, 2026-09-11. Phases 1 and 2 built, and they are all the phases there are.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually. These govern prose. Rust, JSON,
@@ -13,6 +13,7 @@ and SQL keep their syntax.
 |---|---|---|
 | 0.1 | 2026-09-10 | First draft. Unparks MCP for the stdio case only, on Todd's direction, and front-loads thirteen decisions plus one open ruling. |
 | 0.2 | 2026-09-10 | Review pass. D7 gained `resultType` and the ssh-255 distinction, D10 became the fuller cancellation rule, and D12 and D13 are new: the request travels on stdin rather than argv, and the target owns which database a call reaches. The argv finding was a real defect. |
+| 0.8 | 2026-09-11 | **D0a and D0b, both from live seats.** The era was read off `_meta`'s presence rather than the version key inside it, and was promoted on sight, so one ordinary progress token was refused and then poisoned the whole connection. And no remote target could be pointed at a config, so every ssh caller reached the wrong database silently. Both are the same lesson as D0: the surface was correct against a document and wrong in use. |
 | 0.7 | 2026-09-11 | **D0 added: both protocol eras.** The surface failed to connect, because it was built modern-only against a revision that dropped the `initialize` handshake while the client in front of it still opens that way. The compatibility matrix predicting this was read during the build and filed as background rather than as a requirement. |
 | 0.6 | 2026-09-11 | **Phase 3 removed, and the actor question withdrawn.** Both were mistakes of scope. A front end that authenticates callers must hold state, and state is a second database, which "one store, one engine" puts outside this box: it is a separate product, not a later phase. And the actor was never open, since V3 already rules it the kernel's answer with no client-supplied field to spoof. The draft's proposed actor pair would have added that field. |
 | 0.5 | 2026-09-11 | Built as spec 024. **D10 amended by a build finding**: end of input finishes in-flight work rather than cancelling it, because the first build's reading lost answers for calls that had already committed. Everything else built as decided. |
@@ -290,6 +291,29 @@ this was read during the build and recorded in the PRD as background, under
 "what the revision changed and why it helps". It was treated as context
 rather than as a requirement, which is how a spec ends up correct against a
 document and wrong against the world.
+
+**D0a. The era is a key, not a block, and a handshake is final.** Added
+2026-09-11 from a live seat's report. `_meta` is the specification's open
+extension slot and a `progressToken` lives in it in every era, so the era
+is judged by `io.modelcontextprotocol/protocolVersion` and never by the
+block that carries it. And an era settled by a handshake is never promoted
+away: reading one extension block as a conversion flipped an established
+session for the rest of the process, so a single progress token failed
+every request after it. The first version of D0 fixed the door and left
+this behind it.
+
+**D0b. A target is pointed at its config, and with ssh that is the only
+way.** `--config <path>` names a path on the machine that runs the call.
+Locally that is an env set on the child. Over ssh it travels as part of the
+remote command, because **ssh forwards no environment**: OpenSSH sends
+`LANG` and `LC_*` and nothing more unless both ends are configured for it.
+Without this, an operator who sets `YEOMNA_CONFIG` beside a remote target
+names a path on the wrong machine, nothing reads it, and the remote falls
+back to a different database with no session graph, so a hybrid query
+refuses for a reason two machines from the symptom. That is what a second
+seat hit, and the env var it was told to set could never have worked. The
+path is restricted to what a path needs, since it reaches a shell on the
+far side.
 
 **D1. stdio, and no networked transport in this product.** stdio needs no
 listener, no charter amendment, no authorization framework, and no schema

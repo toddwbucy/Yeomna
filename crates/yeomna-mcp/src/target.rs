@@ -48,6 +48,30 @@ const STDOUT_LIMIT: usize = 16 * 1024 * 1024;
 /// to return rather than anything ssh reserves.
 const SSH_FAILED: i32 = 255;
 
+/// A config path this appliance will carry to the machine that runs the
+/// call, and the characters it may contain.
+///
+/// **This exists because a remote target could not be pointed at a
+/// graph.** `--local` inherits `YEOMNA_CONFIG` from its own environment,
+/// but ssh forwards no environment: OpenSSH sends `LANG` and `LC_*` and
+/// nothing else unless both ends are configured for it. So an env var set
+/// beside a remote target names a path on the wrong machine and is read by
+/// nobody, and the remote `yeomna` falls back to its own defaults, which
+/// is a different database and no session graph. A hybrid query then
+/// refuses and the reason is two machines away from the symptom.
+///
+/// The value is operator-supplied at launch rather than caller-supplied
+/// per request, so it is not the injection class D12 is about. It still
+/// reaches a shell on the far side, because ssh always runs its command
+/// through one, so the shape is restricted to what a path needs and
+/// nothing a shell reads as syntax.
+fn config_path_is_plain(p: &str) -> bool {
+    p.starts_with('/')
+        && !p.is_empty()
+        && p.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+}
+
 /// Where `yeomna call` runs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
@@ -60,6 +84,24 @@ pub enum Target {
         destination: String,
         program: String,
     },
+}
+
+/// The config a target should read, as a path on the machine that runs the
+/// call. `None` leaves that machine's own resolution alone.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RemoteConfig(pub Option<String>);
+
+impl RemoteConfig {
+    /// Refuses anything a shell would read as more than a path.
+    pub fn new(path: Option<String>) -> Result<Self, String> {
+        match &path {
+            Some(p) if !config_path_is_plain(p) => Err(format!(
+                "a config path must be absolute and contain only letters, digits, and \
+                 the characters . _ - /, and {p:?} is not"
+            )),
+            _ => Ok(Self(path)),
+        }
+    }
 }
 
 impl Target {
@@ -123,11 +165,16 @@ impl Target {
 
     /// `yeomna call -` locally, or through ssh. The trailing `-` is what
     /// makes the CLI read the request from stdin.
-    fn command(&self) -> Command {
+    fn command(&self, config: &RemoteConfig) -> Command {
         let mut c = match self {
             Self::Local { program } => {
                 let mut c = Command::new(program);
                 c.arg("call").arg("-");
+                // Locally the child inherits this process's environment,
+                // so naming the config is a plain env set.
+                if let Some(path) = &config.0 {
+                    c.env("YEOMNA_CONFIG", path);
+                }
                 c
             }
             Self::Ssh {
@@ -136,7 +183,13 @@ impl Target {
                 program,
             } => {
                 let mut c = Command::new(ssh);
-                c.arg(destination).arg(program).arg("call").arg("-");
+                c.arg(destination);
+                // ssh forwards no environment, so the assignment has to
+                // travel as part of the remote command.
+                if let Some(path) = &config.0 {
+                    c.arg("env").arg(format!("YEOMNA_CONFIG={path}"));
+                }
+                c.arg(program).arg("call").arg("-");
                 c
             }
         };
@@ -368,10 +421,14 @@ fn first_line(stderr: &str, stdout: &str) -> String {
 ///
 /// Nothing is written here: the write belongs beside the drain, for the
 /// reasons on `finish`.
-pub async fn start(target: &Target, request: &Value) -> Result<Running, String> {
+pub async fn start(
+    target: &Target,
+    config: &RemoteConfig,
+    request: &Value,
+) -> Result<Running, String> {
     let body = serde_json::to_vec(request).map_err(|e| format!("cannot serialize: {e}"))?;
     let child = target
-        .command()
+        .command(config)
         .spawn()
         .map_err(|e| format!("cannot start the call: {e}"))?;
     Ok(Running {
@@ -400,6 +457,26 @@ mod tests {
         Target::local().with_program(p.display().to_string())
     }
 
+    #[test]
+    fn a_config_path_must_look_like_a_path() {
+        assert!(RemoteConfig::new(None).is_ok(), "absent is fine");
+        assert!(RemoteConfig::new(Some("/etc/yeomna/yeomna.toml".into())).is_ok());
+        assert!(RemoteConfig::new(Some("/home/todd/.config/yeomna/a-b_1.toml".into())).is_ok());
+        for bad in [
+            "relative/path.toml",
+            "/tmp/a;rm -rf /",
+            "/tmp/$(id).toml",
+            "/tmp/a`whoami`",
+            "/tmp/a b.toml",
+            "/tmp/a\"b",
+        ] {
+            assert!(
+                RemoteConfig::new(Some(bad.into())).is_err(),
+                "{bad} should be refused"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_failure_message_stays_small_however_much_the_child_wrote() {
         // The empty-stdout branch used to put the whole of stderr into a
@@ -408,6 +485,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut running = start(
             &noisy(d.path()),
+            &RemoteConfig::default(),
             &serde_json::json!({"verb": "status", "args": {}}),
         )
         .await

@@ -31,6 +31,16 @@ pub const PROTOCOL_VERSION: &str = "2026-07-28";
 /// than a second implementation.
 pub const LEGACY_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
+/// Is this request speaking the modern era, judged by the one key that
+/// says so rather than by the extension block that carries it.
+pub fn declares_modern(message: &Value) -> bool {
+    message
+        .get("params")
+        .and_then(|p| p.get(META))
+        .and_then(|m| m.get(VERSION_KEY))
+        .is_some()
+}
+
 /// Which era a request is being served under.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Era {
@@ -68,7 +78,14 @@ pub const UNSUPPORTED_VERSION: i64 = -32022;
 // than a new error.
 
 const META: &str = "_meta";
-const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
+/// The key whose presence means a request is speaking the modern era.
+///
+/// **`_meta` itself does not mean that**, and reading it that way was a
+/// defect. `_meta` is the specification's open extension slot: a
+/// `progressToken` lives there in every era, so a server that treats the
+/// block's presence as a promise about its own keys refuses ordinary
+/// client behaviour.
+pub const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
 const CAPABILITIES_KEY: &str = "io.modelcontextprotocol/clientCapabilities";
 const SERVER_INFO_KEY: &str = "io.modelcontextprotocol/serverInfo";
 

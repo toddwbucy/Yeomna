@@ -16,7 +16,7 @@
 
 use std::process::ExitCode;
 
-use yeomna_mcp::{Target, serve};
+use yeomna_mcp::{RemoteConfig, Target, serve};
 
 const USAGE: &str = r"yeomna-mcp serves the verb contract as MCP tools over stdio.
 
@@ -28,13 +28,22 @@ USAGE
     --ssh <destination>      run it through ssh, so the call lands there
                              as a real uid and the audit row is named by
                              that machine's kernel
+    --config <path>          the appliance config the call should read, as
+                             a path on the machine that runs it
 
 Exactly one target is required. Connection reuse for --ssh is ssh's own
-ControlMaster, configured in your ~/.ssh/config.";
+ControlMaster, configured in your ~/.ssh/config.
+
+--config is how a target is pointed at a database and a session graph.
+With --ssh it is the only way: ssh forwards no environment, so a
+YEOMNA_CONFIG set beside this process names a path on the wrong machine
+and is read by nobody. Without it the remote falls back to its own
+resolution, which may be a different database and no session graph, and a
+hybrid query then refuses for a reason two machines from the symptom.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let target = match parse(&args) {
+    let (target, config) = match parse(&args) {
         Ok(t) => t,
         Err(e) => {
             // Usage goes to stderr. Nothing but MCP messages may reach
@@ -50,7 +59,12 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match runtime.block_on(serve(tokio::io::stdin(), tokio::io::stdout(), target)) {
+    match runtime.block_on(serve(
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+        target,
+        config,
+    )) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("the session ended badly: {e}");
@@ -59,9 +73,10 @@ fn main() -> ExitCode {
     }
 }
 
-/// Exactly one of `--local` and `--ssh` (FR12).
-fn parse(args: &[String]) -> Result<Target, String> {
+/// Exactly one of `--local` and `--ssh` (FR12), plus an optional config.
+fn parse(args: &[String]) -> Result<(Target, RemoteConfig), String> {
     let mut target: Option<Target> = None;
+    let mut config: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -86,12 +101,27 @@ fn parse(args: &[String]) -> Result<Target, String> {
                 target = Some(Target::ssh(dest));
                 i += 1;
             }
+            "--config" => {
+                if config.is_some() {
+                    return Err("name one config, not two".into());
+                }
+                let Some(path) = args.get(i + 1) else {
+                    return Err("--config needs a path".into());
+                };
+                if path.starts_with('-') {
+                    return Err(format!("--config needs a path, and {path:?} is a flag"));
+                }
+                config = Some(path.clone());
+                i += 1;
+            }
             "-h" | "--help" => return Err("".into()),
             other => return Err(format!("unknown argument {other:?}")),
         }
         i += 1;
     }
-    target.ok_or_else(|| "name a target: --local or --ssh <destination>".into())
+    let target =
+        target.ok_or_else(|| "name a target: --local or --ssh <destination>".to_string())?;
+    Ok((target, RemoteConfig::new(config)?))
 }
 
 #[cfg(test)]
@@ -104,9 +134,9 @@ mod tests {
 
     #[test]
     fn exactly_one_target_is_required() {
-        assert_eq!(parse(&args(&["--local"])).unwrap(), Target::local());
+        assert_eq!(parse(&args(&["--local"])).unwrap().0, Target::local());
         assert_eq!(
-            parse(&args(&["--ssh", "olympus"])).unwrap(),
+            parse(&args(&["--ssh", "olympus"])).unwrap().0,
             Target::ssh("olympus")
         );
         assert!(parse(&args(&[])).is_err(), "neither");
@@ -122,6 +152,37 @@ mod tests {
         // A flag where a destination belongs would otherwise be taken as
         // a hostname, which is the mistake the CLI tree already made once.
         assert!(parse(&args(&["--ssh", "--local"])).is_err());
+    }
+
+    #[test]
+    fn a_config_is_optional_and_its_shape_is_checked() {
+        assert_eq!(
+            parse(&args(&["--local"])).unwrap().1,
+            RemoteConfig::default()
+        );
+        let (_, c) = parse(&args(&[
+            "--ssh",
+            "olympus",
+            "--config",
+            "/etc/yeomna/yeomna.toml",
+        ]))
+        .unwrap();
+        assert_eq!(
+            c,
+            RemoteConfig::new(Some("/etc/yeomna/yeomna.toml".into())).unwrap()
+        );
+        assert!(
+            parse(&args(&["--local", "--config"])).is_err(),
+            "needs a path"
+        );
+        assert!(
+            parse(&args(&["--local", "--config", "relative.toml"])).is_err(),
+            "must be absolute"
+        );
+        assert!(
+            parse(&args(&["--local", "--config", "/tmp/a;id"])).is_err(),
+            "no shell syntax"
+        );
     }
 
     #[test]
