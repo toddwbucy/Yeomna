@@ -1,13 +1,15 @@
 # Specification: 024 The stdio MCP Server
 
-Parent PRD: `docs/PRD-mcp-front-end.md` v0.2, Phases 1 and 2.
+Parent PRD: `docs/PRD-mcp-front-end.md` v0.3, Phases 1 and 2.
 Owner: epic #21 (the holes ledger) as a new surface rather than a hole,
 since no verb refuses for want of this. Ruled by that PRD's D1 through
 D13. **R29 proposed** on whether `sql` belongs on a model-controlled
 surface, which gates merging an implementation that exposes `sql` and
 does not gate this spec.
-Status: draft, 2026-09-10. Revised the same day for CodeRabbit's
-protocol and transport findings, six applied and one referred to Todd.
+Status: draft, 2026-09-10. Revised twice the same day for CodeRabbit's
+protocol and transport findings. Round one: six applied, one referred to
+Todd. Round two: four applied, one of which corrected a wrong claim about
+where a session-scoped verb gets its graph.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually. These govern prose. Rust, JSON,
@@ -91,8 +93,14 @@ log is not the record section 6 promises.
   belongs to the envelope MCP wraps rather than to anything Yeomna
   produces. Results also carry
   `_meta.io.modelcontextprotocol/serverInfo`, which the revision asks for.
-- `tools/list` returning all 42 in `WIRE_NAMES` order, with a TTL
-  advertised because the list is static.
+- `tools/list` returning all 42 in `WIRE_NAMES` order, and the caching
+  hints the revision requires on cacheable results. `server/discover` and
+  `tools/list` both carry `ttlMs`, an integer at or above zero, and
+  `cacheScope`, which is `"public"` here because the list is derived at
+  compile time and is identical for every caller. **`tools/call` is not a
+  cacheable operation**, so a verb result carries no `ttlMs` and no
+  `cacheScope`. `listChanged` is false, since a list derived from a
+  compiled-in enum cannot change while the process runs.
 - `tools/call` building `{"verb": name, "args": arguments}`, spawning the
   target, and mapping the exit code per D7.
 - Two targets, both invoking the fixed remote form `yeomna call -` and
@@ -104,6 +112,10 @@ log is not the record section 6 promises.
   dollar sign, or a semicolon would be interpreted there rather than
   delivered. Request text is corpus-derived and caller-supplied, which
   makes argv an injection path and stdin the only correct channel.
+  **Exactly one request is written and then stdin is closed**, because
+  `yeomna call -` reads until end of input and a child whose stdin stays
+  open waits rather than answering. The close is how the request is
+  terminated, so omitting it hangs the call instead of failing it.
 - Transport failure distinguished from verb failure. `yeomna call` exits
   only 0, 1, or 2, so an ssh exit of 255 is ssh's own failure and every
   other unexpected status is reported as itself rather than mapped onto a
@@ -200,6 +212,14 @@ log is not the record section 6 promises.
 - **FR16** An ssh exit status of 255 is reported as a transport failure
   naming the destination, not as a verb refusal. Statuses other than 0,
   1, 2, and 255 are reported as unexpected, quoting the status.
+- **FR17** `server/discover` and `tools/list` each carry `ttlMs` as an
+  integer at or above zero and `cacheScope` equal to `"public"`. A
+  `tools/call` result carries neither field, because it is not a cacheable
+  operation. The `tools` capability advertises `listChanged: false`.
+- **FR18** The child receives exactly one request on stdin and then end of
+  input, for both targets, so `yeomna call -` returns rather than waiting.
+  A test asserts the call completes without a timeout, since the symptom
+  of omitting the close is a hang and not an error.
 
 ## Edge Cases
 

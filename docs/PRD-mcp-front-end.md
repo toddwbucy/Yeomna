@@ -1,7 +1,7 @@
 # PRD: The MCP Front End
 
 Parent: `README.md`, the Yeomna Charter, sections 5.2 and 6.
-Status: draft v0.2, 2026-09-10.
+Status: draft v0.3, 2026-09-10.
 
 Editorial rules: ASCII only, no em-dashes, no semicolons, never the
 words genuinely, honestly, or actually. These govern prose. Rust, JSON,
@@ -13,6 +13,7 @@ and SQL keep their syntax.
 |---|---|---|
 | 0.1 | 2026-09-10 | First draft. Unparks MCP for the stdio case only, on Todd's direction, and front-loads thirteen decisions plus one open ruling. |
 | 0.2 | 2026-09-10 | Review pass. D7 gained `resultType` and the ssh-255 distinction, D10 became the fuller cancellation rule, and D12 and D13 are new: the request travels on stdin rather than argv, and the target owns which database a call reaches. The argv finding was a real defect. |
+| 0.3 | 2026-09-10 | Second review pass. **D13 was wrong and is rewritten**: `QueryRequest` carries no `graph` field and `hybrid` reads the session's scope, so a session-scoped verb takes its graph from the target's config and not from the tool's arguments. D12 gained the stdin-close requirement, the caching contract is stated for the two cacheable operations, and the architecture diagram and Phase 2 example were still showing the argv form v0.2 had abolished. |
 
 ## Executive Summary
 
@@ -193,8 +194,8 @@ to be read.
 
 ### Phase 2: The ssh target
 
-`--ssh <destination>` runs the same request as
-`ssh <destination> yeomna call <json>`. Connection reuse is ssh's
+`--ssh <destination>` runs `ssh <destination> yeomna call -` and writes
+the request to that process's stdin, per D12. Connection reuse is ssh's
 `ControlMaster` and `ControlPersist`, configured in the user's own
 `~/.ssh/config`, which is the inherit-do-not-author answer to spawn cost.
 
@@ -217,17 +218,19 @@ Claude Code (laptop)                    olympus
   |                                       |
   | stdio (newline JSON-RPC)              |
   v                                       |
-yeomna-mcp --ssh olympus  --- ssh --->  yeomna call <json>
-  |                                       |  (real uid: todd)
-  | links yeomna-verbs                    v
+yeomna-mcp --ssh olympus  --- ssh --->  yeomna call -
+  |                       request on stdin |  (real uid: todd)
+  | links yeomna-verbs                     v
   | for schemas only                    yeomnad or embedded
-                                          v
+                                           v
                                      Unix socket, port 5433
 ```
 
 On this machine the ssh hop is absent and `yeomna-mcp --local` spawns
-`yeomna call` directly. Both legs end in the same binary reaching the
-same socket, which is why there is one execution path and not two.
+`yeomna call -` directly, writing the request to its stdin the same way.
+Both legs invoke the same fixed command and end in the same binary
+reaching the same socket, which is why there is one execution path and
+not two, and why no request text is ever a command-line argument.
 
 `crates/yeomna-mcp` depends on `yeomna-verbs` with a non-default
 `schema` feature for the derivation, and on nothing else from the
@@ -349,15 +352,41 @@ injection path rather than a formatting choice. Using one form for both
 targets also removes the argv length ceiling and leaves one code path to
 get right.
 
-**D13. The target owns which database a call reaches.** `yeomna call`
-resolves the database from the config on the machine where it runs, so
-reaching the WeaverTools KG needs a config there naming
-`database = "weavertools"`. The MCP server passes no database and no
-graph of its own. The graph is a request field the contract already
-defines for the verbs that take one, so it arrives in the tool's
-arguments like any other and needs no new surface. There is no implicit
-override and none is added, which keeps this front end from becoming a
-second place scope is decided.
+**Exactly one request per child, and its stdin is closed after writing.**
+`yeomna call -` reads a request from stdin, so a child whose stdin stays
+open waits for more input and the call never returns. The close is the
+signal that the request is complete, which makes it a correctness
+requirement rather than tidiness, and it is the kind of omission that
+hangs rather than errors.
+
+**D13. The target owns the database and the session graph. The contract
+owns the rest.** The first draft of this decision said the graph is
+always a request field, and that is wrong for a class of verbs. Both
+sources are real and which one applies is the contract's business:
+
+- **Verbs whose request struct carries a `graph` field** name it in the
+  tool's arguments. `graph.traverse`, `graph.neighbors`, and the rest of
+  that family work this way, and the derived `inputSchema` already
+  exposes the field.
+- **Verbs that read the session's scope** get it from the config on the
+  machine where `yeomna call` runs. `QueryRequest` has no `graph` field
+  at all, and `hybrid` reads `s.graph()` and refuses without one, so
+  `query --hybrid` is in this class. The config key exists already and is
+  documented as "the graph a session starts scoped to when the caller
+  names none".
+
+So the target supplies `database` and, for session-scoped verbs, `graph`.
+Reaching the WeaverTools KG for a hybrid query needs a config naming both.
+The MCP server passes neither of its own and adds no override, because an
+override would make this front end a second place scope is decided and
+would need an argument no request struct defines.
+
+**The consequence worth stating: one server instance is scoped to one
+graph for session-scoped verbs.** Two graphs means two entries in the MCP
+client's config, which composes with D8 rather than fighting it, since
+each entry can carry its own `YEOMNA_CONFIG`. This is a limit of the
+design and not a defect, and naming it here is cheaper than discovering
+it when a second graph is wanted.
 
 ### R29, open: does `sql` belong on a model-controlled surface
 
@@ -416,6 +445,14 @@ rediscovered at review time.
   `resultType` present on every result, the two required `_meta` fields
   enforced with `-32602`, and `-32021` and `-32022` used only with their
   specified meanings.
+- **Caching hints where the revision requires them and nowhere else.**
+  `server/discover` and `tools/list` carry `ttlMs` as an integer at or
+  above zero and `cacheScope: "public"`, public because the tool list is
+  derived at compile time and is identical for every caller. `tools/call`
+  is not a cacheable operation, so a verb result carries no caching hint
+  at all, which is the same claim as non-goal 9 made in the protocol's
+  own vocabulary. `listChanged` is false, because a list derived from a
+  compiled-in enum cannot change while the process runs.
 - **No shell ever sees request bytes as syntax.** A request whose
   arguments carry `'`, `"`, backtick, `$(`, `;`, and a newline arrives at
   the verb byte-identical over both targets. This is the test whose
