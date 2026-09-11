@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
-use yeomna_mcp::{Target, serve, tools};
+use yeomna_mcp::{RemoteConfig, Target, serve, tools};
 
 const VERSION: &str = "2026-07-28";
 
@@ -65,7 +65,7 @@ impl Client {
         let (to_server, server_reads) = tokio::io::duplex(64 * 1024);
         let (server_writes, from_server) = tokio::io::duplex(1024 * 1024);
         tokio::spawn(async move {
-            let _ = serve(server_reads, server_writes, target).await;
+            let _ = serve(server_reads, server_writes, target, RemoteConfig::default()).await;
         });
         Self {
             to_server,
@@ -754,6 +754,216 @@ async fn concurrent_calls_each_get_their_own_child() {
         started.elapsed() < std::time::Duration::from_secs(4),
         "four one-second calls ran concurrently, not in series"
     );
+}
+
+// -- the older era, which is how a real client opened -----------------
+
+/// The handshake a client of the previous era sends first.
+fn initialize(id: i64, version: &str) -> String {
+    json!({
+        "jsonrpc": "2.0", "id": id, "method": "initialize",
+        "params": {
+            "protocolVersion": version,
+            "capabilities": {},
+            "clientInfo": {"name": "test-client", "version": "1.0.0"}
+        }
+    })
+    .to_string()
+}
+
+/// A request with no per-request metadata, which is all the older era sends.
+fn legacy_request(id: i64, method: &str, params: Value) -> String {
+    json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string()
+}
+
+#[tokio::test]
+async fn a_client_that_opens_with_a_handshake_is_served() {
+    // **This is the defect that shipped.** The server required per-request
+    // metadata before it looked at the method, so `initialize` died at the
+    // door with -32602 and the client reported "failed to connect". The
+    // specification's own compatibility matrix names the cell, and says a
+    // client of that era has no fall-forward mechanism.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let body = format!("cat > /dev/null\nprintf '%s' '{OK_ENVELOPE}'\nexit 0");
+    let mut c = Client::start(local(d.path(), &body));
+
+    c.send(&initialize(0, "2025-06-18")).await;
+    let r = c.recv().await;
+    assert_eq!(r["result"]["protocolVersion"], "2025-06-18", "got {r}");
+    assert_eq!(r["result"]["capabilities"]["tools"]["listChanged"], false);
+    assert_eq!(r["result"]["serverInfo"]["name"], "yeomna-mcp");
+
+    // The notification that closes the handshake wants no answer.
+    c.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string())
+        .await;
+
+    // And now everything works with no metadata on anything.
+    c.send(&legacy_request(1, "tools/list", json!({}))).await;
+    let r = c.recv().await;
+    assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 41);
+
+    c.send(&legacy_request(
+        2,
+        "tools/call",
+        json!({"name": "status", "arguments": {}}),
+    ))
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r["result"]["isError"], false, "got {r}");
+}
+
+#[tokio::test]
+async fn an_extension_block_carrying_only_a_progress_token_is_ordinary() {
+    // **Two defects in one sequence, both reported from a live session.**
+    // `_meta` is the specification's open extension slot and a
+    // `progressToken` lives in it in every era, so reading the block's
+    // presence as a promise about this server's own keys refused ordinary
+    // client behaviour. Worse, the era was promoted on sight, so that one
+    // request flipped an established handshake session to the modern era
+    // for the rest of the process and every later request failed too. One
+    // progress token poisoned the whole connection.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let body = format!("cat > /dev/null\nprintf '%s' '{OK_ENVELOPE}'\nexit 0");
+    let mut c = Client::start(local(d.path(), &body));
+    c.send(&initialize(0, "2025-06-18")).await;
+    let _ = c.recv().await;
+
+    // The block, carrying a key that belongs to no era in particular.
+    c.send(&legacy_request(
+        1,
+        "tools/list",
+        json!({"_meta": {"progressToken": 1}}),
+    ))
+    .await;
+    let r = c.recv().await;
+    assert!(
+        r.get("error").is_none(),
+        "a progress token is not an era: {r}"
+    );
+    assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 41);
+
+    // And the session is not poisoned: a plain request still works, which
+    // is the half that made this fatal rather than annoying.
+    c.send(&legacy_request(2, "tools/list", json!({}))).await;
+    let r = c.recv().await;
+    assert!(r.get("error").is_none(), "the session survived: {r}");
+
+    // Including a call that reaches the appliance.
+    c.send(&legacy_request(
+        3,
+        "tools/call",
+        json!({"name": "status", "arguments": {}, "_meta": {"progressToken": "abc"}}),
+    ))
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r["result"]["isError"], false, "got {r}");
+}
+
+#[tokio::test]
+async fn the_modern_era_still_wants_its_version_on_every_request() {
+    // The fix must not loosen the modern era: the version key is required
+    // per request there, and an extension block without it is malformed.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let mut c = Client::start(local(d.path(), "exit 0"));
+    // A well-formed modern request settles the era.
+    c.send(&request(1, "tools/list", json!({}))).await;
+    assert_eq!(c.recv().await["id"], 1);
+    // Then one carrying only a progress token, with no handshake behind
+    // it, is still the modern era's malformed case.
+    c.send(&legacy_request(
+        2,
+        "tools/list",
+        json!({"_meta": {"progressToken": 9}}),
+    ))
+    .await;
+    let r = c.recv().await;
+    assert_eq!(r["error"]["code"], -32602, "got {r}");
+}
+
+#[tokio::test]
+async fn the_older_era_is_not_sent_fields_from_the_newer_one() {
+    // A client validating what it receives should not have to tolerate
+    // fields from a revision it did not negotiate. `resultType` and the
+    // caching hints are both 2026-07-28.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let mut c = Client::start(local(d.path(), "exit 0"));
+    c.send(&initialize(0, "2025-11-25")).await;
+    let r = c.recv().await;
+    assert!(r["result"].get("resultType").is_none(), "got {r}");
+    assert!(r["result"].get("_meta").is_none(), "got {r}");
+
+    c.send(&legacy_request(1, "tools/list", json!({}))).await;
+    let r = c.recv().await;
+    assert!(r["result"].get("resultType").is_none(), "got {r}");
+    assert!(r["result"].get("ttlMs").is_none(), "no caching hints: {r}");
+    assert!(r["result"].get("cacheScope").is_none(), "got {r}");
+}
+
+#[tokio::test]
+async fn an_unknown_handshake_version_gets_a_counter_offer_not_a_refusal() {
+    // The older lifecycle says the server answers with a version it does
+    // support rather than failing, and lets the client decide.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let mut c = Client::start(local(d.path(), "exit 0"));
+    c.send(&initialize(0, "1.0.0")).await;
+    let r = c.recv().await;
+    assert!(
+        r.get("error").is_none(),
+        "a counter-offer, not an error: {r}"
+    );
+    assert_eq!(r["result"]["protocolVersion"], "2025-11-25");
+}
+
+#[tokio::test]
+async fn the_newer_era_still_works_and_is_unaffected() {
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let mut c = Client::start(local(d.path(), "exit 0"));
+    c.send(&request(1, "server/discover", json!({}))).await;
+    let r = c.recv().await;
+    assert_eq!(r["result"]["resultType"], "complete");
+    assert_eq!(r["result"]["supportedVersions"], json!([VERSION]));
+    assert_eq!(r["result"]["cacheScope"], "public");
+}
+
+#[tokio::test]
+async fn ping_is_answered_in_both_eras() {
+    // Its absence is a hang rather than an error, which is the worst kind
+    // of gap in a protocol a client drives.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let mut c = Client::start(local(d.path(), "exit 0"));
+    c.send(&request(1, "ping", json!({}))).await;
+    assert_eq!(c.recv().await["id"], 1);
+    c.send(&initialize(2, "2025-06-18")).await;
+    let _ = c.recv().await;
+    c.send(&legacy_request(3, "ping", json!({}))).await;
+    assert_eq!(c.recv().await["id"], 3);
+}
+
+#[tokio::test]
+async fn the_metadata_error_names_both_eras_so_a_person_can_act_on_it() {
+    // The client that could not connect surfaced exactly this string and
+    // nothing else, so it has to say what to do.
+    let _serial = serial().lock().await;
+    let d = tempfile::tempdir().unwrap();
+    let mut c = Client::start(local(d.path(), "exit 0"));
+    c.send(&legacy_request(1, "tools/list", json!({}))).await;
+    let r = c.recv().await;
+    assert_eq!(r["error"]["code"], -32602);
+    assert!(
+        r["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("initialize handshake"),
+        "got {r}"
+    );
+    assert_eq!(r["error"]["data"]["supportedLegacy"][0], "2025-11-25");
 }
 
 // -- the stateless core ------------------------------------------------

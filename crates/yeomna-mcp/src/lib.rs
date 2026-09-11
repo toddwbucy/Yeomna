@@ -26,11 +26,12 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, Semaphore, mpsc, oneshot};
 
-pub use target::Target;
+pub use target::{RemoteConfig, Target};
 
 use rpc::{
-    INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
-    PROTOCOL_VERSION, RpcError, check_meta, error_response, result_response, with_cache_hints,
+    Era, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR,
+    PROTOCOL_VERSION, RpcError, check_meta, error_response, initialize_result, negotiate,
+    result_response, with_cache_hints,
 };
 
 /// How many verb calls may run at once.
@@ -50,32 +51,36 @@ fn id_key(id: &Value) -> String {
 }
 
 /// `server/discover`, which the revision requires every server to answer.
-fn discover() -> Value {
-    with_cache_hints(json!({
+fn discover(modern: bool) -> Value {
+    let body = json!({
         "supportedVersions": [PROTOCOL_VERSION],
         "capabilities": {
             // False because the list is derived from a compiled-in enum
             // and cannot change while this process runs.
             "tools": {"listChanged": false}
         },
-        "instructions":
-            "Yeomna's verb contract as tools. Every call is audited on the appliance under \
-             the calling user. Graph-scoped verbs take `graph` in their arguments. Verbs that \
-             read the session's scope, `query` among them, take their graph and database from \
-             the appliance's own config, so `query` with `hybrid` needs a config there naming \
-             both.",
-    }))
+        "instructions": rpc::INSTRUCTIONS,
+    });
+    if modern { with_cache_hints(body) } else { body }
 }
 
 /// `tools/list`, in contract order, with R29's exclusion applied.
-fn list_tools() -> Value {
+fn list_tools(modern: bool) -> Value {
     let tools: Vec<Value> = tools::tools().iter().map(tools::Tool::to_json).collect();
-    with_cache_hints(json!({ "tools": tools }))
+    let body = json!({ "tools": tools });
+    // Caching hints are a 2026-07-28 utility. The older era has no notion
+    // of them, so they are not sent into it.
+    if modern { with_cache_hints(body) } else { body }
 }
 
 /// `tools/call`: build the verb request, run it on the target, and map
 /// the outcome per D7.
-async fn call_tool(target: &Target, params: Option<&Value>, slots: &Semaphore) -> Response {
+async fn call_tool(
+    target: &Target,
+    config: &RemoteConfig,
+    params: Option<&Value>,
+    slots: &Semaphore,
+) -> Response {
     let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
         return Response::Error(RpcError::new(
             INVALID_PARAMS,
@@ -112,7 +117,7 @@ async fn call_tool(target: &Target, params: Option<&Value>, slots: &Semaphore) -
     // process behind them, so making them queue behind eight running
     // verbs would be a ceiling on the wrong thing.
     let _permit = slots.acquire().await;
-    let mut running = match target::start(target, &request).await {
+    let mut running = match target::start(target, config, &request).await {
         Ok(r) => r,
         Err(e) => return Response::Error(RpcError::new(rpc::INTERNAL_ERROR, e)),
     };
@@ -153,20 +158,33 @@ enum Response {
     Silent,
 }
 
-/// Handle one request, metadata checked first.
+/// Handle one request under the era it arrived in.
+///
+/// **Metadata is required in the modern era and absent in the older one**,
+/// which is the whole of dual-era support at this layer. A client that
+/// opened with an `initialize` handshake sends no `_meta` on anything
+/// afterwards, and requiring it there is what made this surface
+/// unreachable from the client it was built for.
 async fn handle(
     target: &Target,
+    config: &RemoteConfig,
     method: &str,
     params: Option<&Value>,
     slots: &Semaphore,
+    era: Era,
 ) -> Response {
-    if let Err(e) = check_meta(params) {
+    if era != Era::Legacy
+        && let Err(e) = check_meta(params)
+    {
         return Response::Error(e);
     }
+    let modern = era == Era::Modern;
     match method {
-        "server/discover" => Response::Result(discover()),
-        "tools/list" => Response::Result(list_tools()),
-        "tools/call" => call_tool(target, params, slots).await,
+        // A ping costs nothing and its absence is a hang. Both eras.
+        "ping" => Response::Result(json!({})),
+        "server/discover" => Response::Result(discover(modern)),
+        "tools/list" => Response::Result(list_tools(modern)),
+        "tools/call" => call_tool(target, config, params, slots).await,
         other => Response::Error(RpcError::new(
             METHOD_NOT_FOUND,
             format!("Unknown method: {other}"),
@@ -182,7 +200,12 @@ async fn handle(
 /// client's call to make explicitly through `notifications/cancelled`,
 /// never something to infer from a closed pipe (D10, as amended by the
 /// build).
-pub async fn serve<R, W>(reader: R, writer: W, target: Target) -> std::io::Result<()>
+pub async fn serve<R, W>(
+    reader: R,
+    writer: W,
+    target: Target,
+    config: RemoteConfig,
+) -> std::io::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -208,11 +231,18 @@ where
         }
     });
 
+    // The era this process is serving. It starts undetermined, and the
+    // first thing that settles it settles it for good: an `initialize`
+    // handshake selects the older semantics for the life of the stdio
+    // process, which is what that revision scopes them to.
+    let mut era = Era::Undetermined;
+
     let in_flight: InFlight = Arc::new(Mutex::new(HashMap::new()));
     // Calls run concurrently, and without a ceiling one client loop turns
     // into one `yeomna call` process and one appliance session per line.
     let slots = Arc::new(Semaphore::new(MAX_CONCURRENT_CALLS));
     let target = Arc::new(target);
+    let config = Arc::new(config);
     let mut lines = BufReader::new(reader).lines();
     let mut tasks: Vec<(Value, tokio::task::JoinHandle<()>)> = Vec::new();
 
@@ -276,6 +306,9 @@ where
             {
                 let _ = stop.send(());
             }
+            // `notifications/initialized` closes the older handshake and
+            // wants no answer. Accepting it silently is the whole of what
+            // a server owes it.
             continue;
         };
         if id.is_null() {
@@ -292,6 +325,57 @@ where
             ));
             continue;
         }
+
+        // **The handshake, and the era it selects.** A client that opens
+        // this way sends no per-request metadata on anything afterwards,
+        // so the era has to be remembered rather than re-derived. Answered
+        // inline because it touches nothing and blocks nothing.
+        if method == "initialize" {
+            let requested = message
+                .pointer("/params/protocolVersion")
+                .and_then(Value::as_str);
+            match negotiate(requested) {
+                Ok(version) => {
+                    era = Era::Legacy;
+                    eprintln!(
+                        "yeomna-mcp: initialize handshake, serving the older era at {version}"
+                    );
+                    let _ = tx.send(result_response(
+                        &id,
+                        initialize_result(version),
+                        &Era::Legacy,
+                    ));
+                }
+                Err(e) => {
+                    let _ = tx.send(error_response(Some(&id), &e));
+                }
+            }
+            continue;
+        }
+
+        // Which era this request is in, and **two things here were wrong
+        // the first time.**
+        //
+        // The era was read off the presence of `_meta`. That block is the
+        // specification's open extension slot and a `progressToken` lives
+        // in it in every era, so an ordinary legacy request carrying one
+        // was taken for a modern request and refused for want of keys it
+        // never promised. The marker is the version key, not the block.
+        //
+        // And the era was promoted on sight, which let that same request
+        // flip an established handshake session to modern **for the rest
+        // of the process**, so every later request failed too. One
+        // progress token poisoned the whole connection. A handshake
+        // settles the era for the life of the stdio process, which is the
+        // scope that revision gives it, so it is never promoted away.
+        let request_era = if era == Era::Legacy {
+            Era::Legacy
+        } else if rpc::declares_modern(&message) {
+            era = Era::Modern;
+            Era::Modern
+        } else {
+            Era::Undetermined
+        };
 
         // **A reused id is refused rather than allowed to overwrite.**
         // JSON-RPC forbids reusing an id that has not been answered, and
@@ -318,11 +402,13 @@ where
 
         let tx = tx.clone();
         let target = Arc::clone(&target);
+        let config = Arc::clone(&config);
         let in_flight = Arc::clone(&in_flight);
         let slots = Arc::clone(&slots);
         let method = method.to_string();
         let params = message.get("params").cloned();
         let task_id = id.clone();
+        let request_era = request_era.clone();
         tasks.push((
             id.clone(),
             tokio::spawn(async move {
@@ -344,11 +430,12 @@ where
                         // not a cancellation. The pattern disables that
                         // branch so only a real signal wins.
                         Ok(()) = cancel => Response::Silent,
-                        r = handle(&target, &method, params.as_ref(), &slots) => r,
+                        r = handle(&target, &config, &method, params.as_ref(), &slots, request_era.clone())
+                        => r,
                     };
                     match response {
                         Response::Result(r) => {
-                            let _ = worker_tx.send(result_response(&worker_id, r));
+                            let _ = worker_tx.send(result_response(&worker_id, r, &request_era));
                         }
                         Response::Error(e) => {
                             let _ = worker_tx.send(error_response(Some(&worker_id), &e));

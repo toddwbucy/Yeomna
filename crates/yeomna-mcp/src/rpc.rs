@@ -8,8 +8,51 @@
 
 use serde_json::{Value, json};
 
-/// The revision this server implements.
+/// The revision this server implements natively, and the one it answers
+/// `server/discover` with.
 pub const PROTOCOL_VERSION: &str = "2026-07-28";
+
+/// Revisions this server also speaks, in the era that opens with an
+/// `initialize` handshake instead of per-request metadata.
+///
+/// **This exists because a client refused to connect without it.** The
+/// 2026-07-28 revision made the core stateless and dropped the handshake,
+/// and a server that implements only that revision is unreachable to a
+/// client that opens the older way. The specification's own compatibility
+/// matrix names the cell: a legacy client against a modern server fails,
+/// and "legacy clients have no fall-forward mechanism". A dual-era server
+/// is explicitly permitted, and it is the only thing that makes this
+/// surface usable today.
+///
+/// Newest first, because an unrecognized request gets the newest of these
+/// as the server's counter-proposal, which is what version negotiation
+/// asks for. The tool surface is two operations and does not vary across
+/// any of them, which is why supporting them costs a handshake rather
+/// than a second implementation.
+pub const LEGACY_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// Is this request speaking the modern era, judged by the one key that
+/// says so rather than by the extension block that carries it.
+pub fn declares_modern(message: &Value) -> bool {
+    message
+        .get("params")
+        .and_then(|p| p.get(META))
+        .and_then(|m| m.get(VERSION_KEY))
+        .is_some()
+}
+
+/// Which era a request is being served under.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Era {
+    /// Nothing has established an era yet. A request arriving here
+    /// without metadata is the modern era's malformed case.
+    Undetermined,
+    /// An `initialize` handshake selected the older semantics, scoped to
+    /// this process for the rest of its life.
+    Legacy,
+    /// The request carried per-request metadata.
+    Modern,
+}
 
 /// How long a client may consider the tool list fresh. The list is
 /// derived from a compiled-in enum, so it cannot change while this
@@ -35,7 +78,14 @@ pub const UNSUPPORTED_VERSION: i64 = -32022;
 // than a new error.
 
 const META: &str = "_meta";
-const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
+/// The key whose presence means a request is speaking the modern era.
+///
+/// **`_meta` itself does not mean that**, and reading it that way was a
+/// defect. `_meta` is the specification's open extension slot: a
+/// `progressToken` lives there in every era, so a server that treats the
+/// block's presence as a promise about its own keys refuses ordinary
+/// client behaviour.
+pub const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
 const CAPABILITIES_KEY: &str = "io.modelcontextprotocol/clientCapabilities";
 const SERVER_INFO_KEY: &str = "io.modelcontextprotocol/serverInfo";
 
@@ -89,18 +139,61 @@ pub fn error_response(id: Option<&Value>, e: &RpcError) -> Value {
 /// no response path can forget it (FR13): the field belongs to the
 /// envelope MCP wraps rather than to anything Yeomna produces, which is
 /// exactly why it is easy to omit.
-pub fn result_response(id: &Value, mut result: Value) -> Value {
-    if let Some(m) = result.as_object_mut() {
+pub fn result_response(id: &Value, mut result: Value, era: &Era) -> Value {
+    // `resultType` and the per-response server identity belong to the
+    // modern revision. The older era has no notion of either, so they are
+    // not sent into it: a client that validates what it receives should
+    // not have to tolerate fields from a revision it did not negotiate.
+    if *era == Era::Modern
+        && let Some(m) = result.as_object_mut()
+    {
         m.insert("resultType".into(), json!("complete"));
-        let meta = m
-            .entry(META)
-            .or_insert_with(|| json!({}))
-            .as_object_mut()
-            .expect("_meta is an object");
-        meta.insert(SERVER_INFO_KEY.into(), server_info());
+        // Not an expect: a result that already carried a non-object here
+        // would panic in the request path, and a panic is a worse answer
+        // than a missing courtesy field.
+        if let Some(meta) = m.entry(META).or_insert_with(|| json!({})).as_object_mut() {
+            meta.insert(SERVER_INFO_KEY.into(), server_info());
+        }
     }
     json!({"jsonrpc": "2.0", "id": id, "result": result})
 }
+
+/// The negotiated version for an `initialize` request, and whether it is
+/// one this server speaks.
+///
+/// Negotiation per the older lifecycle: answer with the requested version
+/// when it is supported, and otherwise answer with the newest this server
+/// supports and let the client decide whether to continue.
+pub fn negotiate(requested: Option<&str>) -> Result<&'static str, RpcError> {
+    let Some(requested) = requested else {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "initialize requires params.protocolVersion",
+        ));
+    };
+    if let Some(v) = LEGACY_VERSIONS.iter().find(|v| **v == requested) {
+        return Ok(v);
+    }
+    // The modern revision is a legal answer here too: a dual-era client
+    // that opened the old way can be told this server prefers the new one.
+    if requested == PROTOCOL_VERSION {
+        return Ok(PROTOCOL_VERSION);
+    }
+    Ok(LEGACY_VERSIONS[0])
+}
+
+/// The handshake answer for the older era.
+pub fn initialize_result(version: &str) -> Value {
+    json!({
+        "protocolVersion": version,
+        "capabilities": {"tools": {"listChanged": false}},
+        "serverInfo": server_info(),
+        "instructions": INSTRUCTIONS,
+    })
+}
+
+/// What a caller is told about this surface, in both eras.
+pub const INSTRUCTIONS: &str = "Yeomna's verb contract as tools. Every call is audited on the appliance under the      calling user. Graph-scoped verbs take `graph` in their arguments. Verbs that read the      session's scope, `query` among them, take their graph and database from the appliance's      own config, so `query` with `hybrid` needs a config there naming both.";
 
 /// Caching hints, which the revision requires on cacheable results and
 /// forbids nowhere else that matters here: `tools/call` is not a
@@ -123,8 +216,16 @@ pub fn check_meta(params: Option<&Value>) -> Result<(), RpcError> {
     let meta = params.and_then(|p| p.get(META)).ok_or_else(|| {
         RpcError::new(
             INVALID_PARAMS,
-            format!("params.{META} is required and carries the per-request protocol fields"),
+            format!(
+                "params.{META} is required and carries the per-request protocol fields. \
+                 This server speaks {PROTOCOL_VERSION} that way, and it also speaks the \
+                 older era if you open with an initialize handshake"
+            ),
         )
+        .with_data(json!({
+            "supported": [PROTOCOL_VERSION],
+            "supportedLegacy": LEGACY_VERSIONS,
+        }))
     })?;
     let version = meta.get(VERSION_KEY).ok_or_else(|| {
         RpcError::new(INVALID_PARAMS, format!("{META}.{VERSION_KEY} is required"))
@@ -221,10 +322,38 @@ mod tests {
     }
 
     #[test]
-    fn every_result_carries_result_type_and_server_info() {
-        let r = result_response(&json!(1), json!({"tools": []}));
+    fn a_modern_result_carries_result_type_and_server_info() {
+        let r = result_response(&json!(1), json!({"tools": []}), &Era::Modern);
         assert_eq!(r["result"]["resultType"], json!("complete"));
         assert_eq!(r["result"]["_meta"][SERVER_INFO_KEY]["name"], "yeomna-mcp");
+    }
+
+    #[test]
+    fn a_legacy_result_carries_neither() {
+        let r = result_response(&json!(1), json!({"tools": []}), &Era::Legacy);
+        assert!(r["result"].get("resultType").is_none());
+        assert!(r["result"].get("_meta").is_none());
+    }
+
+    #[test]
+    fn negotiation_echoes_a_supported_version_and_counter_offers_otherwise() {
+        assert_eq!(negotiate(Some("2025-11-25")).unwrap(), "2025-11-25");
+        assert_eq!(negotiate(Some("2025-06-18")).unwrap(), "2025-06-18");
+        assert_eq!(negotiate(Some(PROTOCOL_VERSION)).unwrap(), PROTOCOL_VERSION);
+        // Unknown gets this server's newest handshake version rather than
+        // a refusal, which is what the older lifecycle asks for.
+        assert_eq!(negotiate(Some("1.0.0")).unwrap(), LEGACY_VERSIONS[0]);
+        assert!(negotiate(None).is_err(), "the version is required");
+    }
+
+    #[test]
+    fn the_modern_metadata_error_names_both_eras() {
+        // A client that cannot connect may only ever see this string.
+        let e = check_meta(None).unwrap_err();
+        let d = e.data.expect("the error carries what is supported");
+        assert_eq!(d["supported"], json!([PROTOCOL_VERSION]));
+        assert_eq!(d["supportedLegacy"][0], json!(LEGACY_VERSIONS[0]));
+        assert!(e.message.contains("initialize handshake"), "{}", e.message);
     }
 
     #[test]
